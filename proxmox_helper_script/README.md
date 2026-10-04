@@ -3,13 +3,13 @@
 Run the generic launcher from the Proxmox host with the profile you want:
 
 ```bash
-bash proxmox_helper_script/create-lxc.sh proxmox_helper_script/lxc/ubuntu/controlplane.env
-bash proxmox_helper_script/create-lxc.sh proxmox_helper_script/lxc/ubuntu/jenkins-agent.env
-bash proxmox_helper_script/create-lxc.sh proxmox_helper_script/lxc/technitium_dns/dns01.env
-bash proxmox_helper_script/create-lxc.sh proxmox_helper_script/lxc/technitium_dns/dns02.env
+bash proxmox_helper_script/create-lxc.sh proxmox_helper_script/lxc/ubuntu/controlplane.profile.sh
+bash proxmox_helper_script/create-lxc.sh proxmox_helper_script/lxc/ubuntu/jenkins-agent.profile.sh
+bash proxmox_helper_script/create-lxc.sh proxmox_helper_script/lxc/technitium_dns/dns01.profile.sh
+bash proxmox_helper_script/create-lxc.sh proxmox_helper_script/lxc/technitium_dns/dns02.profile.sh
 ```
 
-Create another `.env` profile for each container. Profiles may use the
+Create another `.profile.sh` file for each container. Profiles may use the
 `LXC_PROFILE_*` and `LXC_DEFAULT_*` Bash variables; the launcher translates
 those defaults to the Community Scripts `var_*` settings, including installer
 URL and storage selection. Profiles are trusted Bash configuration files

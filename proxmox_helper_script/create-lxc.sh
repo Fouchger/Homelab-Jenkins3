@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 
 usage() {
-  printf 'Usage: %s <profile.env>\n' "${0##*/}" >&2
-  printf 'Example: %s lxc/ubuntu/controlplane.env\n' "${0##*/}" >&2
+  printf 'Usage: %s <profile.sh>\n' "${0##*/}" >&2
+  printf 'Example: %s lxc/ubuntu/controlplane.profile.sh\n' "${0##*/}" >&2
 }
 
 if [[ $# -ne 1 ]]; then
