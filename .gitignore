@@ -16,6 +16,8 @@
 !/jobs
 !/.gitignore
 !/*.xml
+!/proxmox_helper_script/
+!/proxmox_helper_script/**
 
 # Ignore all files in jobs subdirectories except for folders.
 # Note: git doesn't track folders, only file content.
