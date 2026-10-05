@@ -36,7 +36,52 @@ Ansible Galaxy. The agent connects outbound to the configured controller HTTP(S)
 port over WebSocket; no inbound agent port is needed for Jenkins connectivity.
 Community Scripts may prompt for host-specific provisioning choices.
 
-## Create and install
+## One-command bootstrap from Proxmox
+
+Push this updated project to the configured GitHub repository's `main` branch
+first. Then, in the Proxmox shell as root, run this single line:
+
+```bash
+bash -c 'set -e; bootstrap=$(curl -fsSL --retry 3 --connect-timeout 15 --max-time 120 https://raw.githubusercontent.com/Fouchger/Homelab-Jenkins3/refs/heads/main/proxmox_helper_script/controlplane.sh); test -n "$bootstrap"; bash -c "$bootstrap"'
+```
+
+The entry point downloads the entire repository using curl, extracts it into a
+private temporary folder, installs the controlplane first, then installs the
+agent on the same Proxmox host and enrols its WebSocket service. It removes the
+host temporary project on success and failure. Failed containers remain available
+for diagnosis. It does not require Git on Proxmox.
+
+For a first build, the agent must be created by this bootstrap, rather than by
+Jenkins: the controller/agent pair should be ready before it runs automation.
+After setup, use Jenkins on the controlplane for ongoing jobs, executed on the
+agent. Future Proxmox management jobs still require appropriate API or restricted
+SSH credentials; installing Jenkins alone does not grant Proxmox permissions.
+
+Matching existing LXCs are reused by hostname/MAC and their application installers
+rerun; stopped matching LXCs are started. Unrelated container IDs are rejected.
+Reruns may upgrade Jenkins and dependencies and briefly restart services.
+A copy of the downloaded project remains inside the controlplane at
+`/opt/homelab/bootstrap-project`; no repository checkout remains on Proxmox.
+The copy contains host hooks for reference, which must still run on Proxmox.
+
+Defaults are read from `jenkins/config/install.conf` in the downloaded repository.
+For a trusted host-specific override, set `HOMELAB_INSTALL_CONFIG` to an existing
+configuration file. The source owner/repository/ref can be overridden through
+`HOMELAB_BOOTSTRAP_OWNER`, `HOMELAB_BOOTSTRAP_REPOSITORY` and `HOMELAB_BOOTSTRAP_REF`.
+The GitHub branch remains mutable; this entry point does not pin it to a commit.
+
+This unauthenticated one-liner requires the raw script and repository to be
+publicly readable. For a private repository, the initial raw download also needs
+a GitHub credential. `HOMELAB_GITHUB_TOKEN` supplies authenticated archive access
+after the entry point starts; it is written only to a protected temporary curl
+configuration and is not displayed or passed as a curl command-line argument.
+That download token is not automatically imported into Jenkins.
+
+Bootstrap logs persist at `/var/log/homelab/jenkins-bootstrap.log`.
+The live GitHub URL could not be verified from this development environment;
+publish the supplied update before using the one-liner.
+
+## Install from an extracted local project
 
 From the project directory on Proxmox:
 
@@ -45,7 +90,9 @@ bash proxmox_helper_script/create-lxc.sh proxmox_helper_script/lxc/ubuntu/contro
 bash proxmox_helper_script/create-lxc.sh proxmox_helper_script/lxc/ubuntu/jenkins-agent.profile.sh
 ```
 
-`bash proxmox_helper_script/controlplane.sh` uses the same controlplane profile.
+`bash proxmox_helper_script/controlplane.sh` runs the complete download bootstrap
+and installs both servers. The two explicit commands above install the local
+project one server at a time.
 Each creation runs its host installation hook once. The hook copies guest
 installers to `/opt/homelab/jenkins/install` and executes them with `pct exec`.
 Failures propagate to the caller. Existing container IDs are rejected rather
@@ -160,6 +207,7 @@ pct exec 101 -- journalctl -u jenkins-agent --no-pager -n 50
 pct exec 101 -- runuser -u jenkins-agent -- task --version
 pct exec 101 -- runuser -u jenkins-agent -- ansible-galaxy collection list
 python3 tests/test_bootstrap.py -v
+python3 tests/test_download_bootstrap.py -v
 ```
 
 Tests mock downloads and Proxmox; no containers, packages or live Jenkins

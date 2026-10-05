@@ -26,9 +26,12 @@ Jenkins2's separate DNS/router/API provisioning workflow is not copied here.
 
 ## Checks completed
 
-- 16 isolated integration checks passed, including hook ordering, deferred and
+- 22 isolated integration checks passed, including hook ordering, deferred and
   successful enrolment, secret output protection, invalid-secret rejection,
   failure propagation and credential import file permissions/failures.
+- Six of those tests cover a standalone streamed bootstrap, both-container
+  ordering, matching-container reuse, unrelated-container rejection, archive
+  failures and temporary folder cleanup after success or failure.
 - All shell files passed Bash syntax checks.
 - The generated configure-jenkins-agent script passed Bash syntax checks.
 - Required baseline tools, plugin declarations and collection names were checked.
