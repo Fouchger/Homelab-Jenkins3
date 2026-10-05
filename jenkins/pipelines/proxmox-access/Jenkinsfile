@@ -1,0 +1,36 @@
+pipeline {
+    agent { label 'homelab-automation' }
+
+    options {
+        disableConcurrentBuilds()
+        timestamps()
+        timeout(time: 20, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+
+    parameters {
+        string(name: 'PROXMOX_HOST', defaultValue: '192.168.20.10', description: 'Proxmox node reachable from the Jenkins executor.')
+        string(name: 'PROXMOX_USER', defaultValue: 'homelab-automation@pve', description: 'Existing Proxmox account shown in the cluster user list.')
+        string(name: 'PROXMOX_ROLE', defaultValue: 'HomelabLxcOperator', description: 'Existing custom role shown in the cluster roles list.')
+        string(name: 'PROXMOX_STORAGE_IDS', defaultValue: 'local,local-lvm', description: 'Storage IDs the automation account may allocate space on.')
+        string(name: 'INFISICAL_URL', defaultValue: 'https://app.infisical.com', description: 'Infisical server URL.')
+        string(name: 'INFISICAL_PROJECT_ID', defaultValue: '535a4605-d859-4fad-b244-656c74a747b4', description: 'Infisical Homelab-Jenkins project UUID.')
+        string(name: 'INFISICAL_ENVIRONMENT', defaultValue: 'prod', description: 'Infisical environment slug.')
+    }
+
+    stages {
+        stage('Rotate Proxmox API token') {
+            steps {
+                withCredentials([
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-writer-api', usernameVariable: 'INFISICAL_WRITE_CLIENT_ID', passwordVariable: 'INFISICAL_WRITE_CLIENT_SECRET')
+                ]) {
+                    sh(label: 'Create least-privilege Proxmox token and update Infisical', script: '''#!/bin/sh
+set +x
+python3 jenkins/pipelines/proxmox-access/provision-proxmox-access.py
+''')
+                }
+            }
+        }
+    }
+}

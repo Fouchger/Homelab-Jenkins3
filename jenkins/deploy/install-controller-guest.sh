@@ -15,7 +15,7 @@ if command -v java >/dev/null 2>&1; then
   current_java_path="$(readlink -f "$(command -v java)")"
   update-alternatives --set java "$current_java_path"
 fi
-apt-get install -y ca-certificates curl fontconfig jq openjdk-25-jre
+apt-get install -y ca-certificates curl fontconfig jq openssh-client python3 openjdk-25-jre
 
 install -d -m 0755 /etc/apt/keyrings
 key_tmp="$(mktemp)"
@@ -64,6 +64,9 @@ githubBranch=${HOMELAB_GITHUB_BRANCH:-main}
 githubCredentialId=${HOMELAB_GITHUB_CREDENTIAL_ID:-github-homelab-jenkins-readonly}
 infisicalReadCredentialId=${HOMELAB_INFISICAL_CREDENTIAL_ID:-infisical-homelab-prod}
 infisicalUrl=${HOMELAB_INFISICAL_URL:-https://app.infisical.com}
+infisicalProjectId=${HOMELAB_INFISICAL_PROJECT_ID:-}
+infisicalEnvironment=${HOMELAB_INFISICAL_ENVIRONMENT:-prod}
+infisicalProjectSlug=${HOMELAB_INFISICAL_PROJECT_SLUG:-}
 PROJECT_SETTINGS
 chmod 0644 "$settings_dir/project.properties"
 plugin_dir="$jenkins_home/plugins"
@@ -165,6 +168,7 @@ import com.cloudbees.jenkins.plugins.sshcredentials.impl.BasicSSHUserPrivateKey
 import com.cloudbees.plugins.credentials.CredentialsScope
 import com.cloudbees.plugins.credentials.SystemCredentialsProvider
 import com.cloudbees.plugins.credentials.domains.Domain
+import com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl
 
 def keyFile = new File('/run/homelab-pve01-automation-key')
 if (!keyFile.isFile()) {
@@ -255,6 +259,7 @@ import com.cloudbees.plugins.credentials.SystemCredentialsProvider
 import com.cloudbees.plugins.credentials.domains.Domain
 import io.jenkins.plugins.infisicaljenkins.configuration.InfisicalConfiguration
 import io.jenkins.plugins.infisicaljenkins.credentials.InfisicalUniversalAuthCredential
+import com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl
 
 def projectSettings = new Properties()
 new File('/etc/homelab/project.properties').withInputStream { projectSettings.load(it) }
@@ -290,6 +295,15 @@ identities.each { identity ->
         def globalCredentials = new ArrayList(domainCredentials.get(Domain.global()) ?: [])
         globalCredentials.removeAll { it.id == identity.id }
         globalCredentials.add(credential)
+        def apiCredentialId = identity.statusName == 'writer'
+            ? 'infisical-homelab-prod-writer-api'
+            : 'infisical-homelab-prod-read-api'
+        globalCredentials.removeAll { it.id == apiCredentialId }
+        globalCredentials.add(new UsernamePasswordCredentialsImpl(
+            CredentialsScope.GLOBAL, apiCredentialId,
+            "Infisical ${identity.statusName} Universal Auth for API calls from Jenkins pipelines",
+            clientId, clientSecret
+        ))
         domainCredentials.put(Domain.global(), globalCredentials)
         provider.setDomainCredentialsMap(domainCredentials)
         provider.save()
@@ -343,35 +357,70 @@ def credentialId = projectSettings.getProperty('githubCredentialId', 'github-hom
 def branch = projectSettings.getProperty('githubBranch', 'main')
 def jobName = 'homelab-check'
 def job = jenkins.getItem(jobName)
+def scm = new GitSCM(
+    GitSCM.createRepoList(repositoryUrl, credentialId),
+    Collections.singletonList(new BranchSpec("*/${branch}")),
+    null,
+    null,
+    Collections.emptyList()
+)
+def definition = new CpsScmFlowDefinition(scm, 'jenkins/pipelines/toolchain-check.Jenkinsfile')
+definition.setLightweight(true)
 if (job == null) {
-    def scm = new GitSCM(
-        GitSCM.createRepoList(
-            repositoryUrl,
-            credentialId
-        ),
-        Collections.singletonList(new BranchSpec("*/${branch}")),
-        null,
-        null,
-        Collections.emptyList()
-    )
     job = jenkins.createProject(WorkflowJob, jobName)
-    def definition = new CpsScmFlowDefinition(scm, 'Jenkinsfile')
-    definition.setLightweight(true)
-    job.setDefinition(definition)
     job.setDescription('Read-only homelab worker checks from the private GitHub repository.')
     job.addTrigger(new SCMTrigger('H/5 * * * *'))
-    job.save()
     println("Created GitHub-backed Pipeline '${jobName}' for branch '${branch}'.")
 } else if (!(job instanceof WorkflowJob)) {
     throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
 } else {
-    println("Jenkins Pipeline '${jobName}' already exists; preserving its current configuration.")
+    println("Updating managed Pipeline '${jobName}' to use the repository's Jenkins pipeline folder.")
 }
+job.setDefinition(definition)
 job.setDescription('AUTOMATIC CHECK every 5 minutes: confirms the private repository can be read and the Jenkins agent/toolchain are available. It does not configure or change homelab services; normally do not start it manually.')
 job.save()
 JENKINS_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/95-homelab-github-pipeline.groovy"
 chmod 0640 "$jenkins_home/init.groovy.d/95-homelab-github-pipeline.groovy"
+
+# Seed the manual Proxmox access setup pipeline. It rotates a token only when
+# explicitly started by an operator and uses the existing GitHub SCM credential.
+cat >"$jenkins_home/init.groovy.d/96-homelab-proxmox-access-pipeline.groovy" <<'JENKINS_PVE_PIPELINE_HOOK'
+import hudson.plugins.git.BranchSpec
+import hudson.plugins.git.GitSCM
+import jenkins.model.Jenkins
+import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition
+import org.jenkinsci.plugins.workflow.job.WorkflowJob
+
+def jenkins = Jenkins.get()
+def projectSettings = new Properties()
+new File('/etc/homelab/project.properties').withInputStream { projectSettings.load(it) }
+def repositoryUrl = "https://github.com/${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
+def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
+def branch = projectSettings.getProperty('githubBranch', 'main')
+def jobName = '001 - Proxmox Access Setup'
+def job = jenkins.getItem(jobName)
+def scm = new GitSCM(
+    GitSCM.createRepoList(repositoryUrl, credentialId),
+    Collections.singletonList(new BranchSpec("*/${branch}")),
+    null, null, Collections.emptyList()
+)
+def definition = new CpsScmFlowDefinition(scm, 'jenkins/pipelines/proxmox-access/Jenkinsfile')
+definition.setLightweight(true)
+if (job == null) {
+    job = jenkins.createProject(WorkflowJob, jobName)
+    println("Created manual Pipeline '${jobName}' for branch '${branch}'.")
+} else if (!(job instanceof WorkflowJob)) {
+    throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
+} else {
+    println("Updating managed Pipeline '${jobName}' to use the repository's Jenkins pipeline folder.")
+}
+job.setDefinition(definition)
+job.setDescription('001 - Applies the existing HomelabLxcOperator role to the Proxmox automation account and selected guest/storage paths, creates or rotates its API token, updates /proxmox/automation in Infisical, verifies the saved values, then removes the prior token when it belongs to this account. Start manually when needed.')
+job.save()
+JENKINS_PVE_PIPELINE_HOOK
+chown jenkins:jenkins "$jenkins_home/init.groovy.d/96-homelab-proxmox-access-pipeline.groovy"
+chmod 0640 "$jenkins_home/init.groovy.d/96-homelab-proxmox-access-pipeline.groovy"
 install -o jenkins -g jenkins -m 0600 /dev/null "$jenkins_home/secrets/homelab-agent-enrollment.pending"
 
 install -d -m 0755 /etc/systemd/system/jenkins.service.d

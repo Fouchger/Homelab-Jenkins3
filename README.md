@@ -6,6 +6,11 @@ Proxmox host as root after extracting the complete project there.
 The host needs Bash, curl, pct, flock and tee; Git is installed inside the
 controller and agent, and is not required by this container launcher on Proxmox.
 
+Jenkins pipeline definitions live under [`jenkins/pipelines`](jenkins/pipelines/).
+The `proxmox_helper_script` directory is reserved for Proxmox host-side LXC
+creation scripts and profiles; those scripts bootstrap containers rather than
+define Jenkins jobs.
+
 ## Settings and prerequisites
 
 Edit `jenkins/config/install.conf` before deployment. Defaults:
@@ -139,7 +144,7 @@ Infisical plugins with their dependencies. Startup hooks create the inbound
 `jenkins-agent` node with one executor and exclusive `homelab-automation` label,
 and set the controller's executor count to zero.
 A `homelab-check` Pipeline job reads the configured GitHub repository and runs
-its root `Jenkinsfile`, which verifies the toolchain without changing services.
+[`jenkins/pipelines/toolchain-check.Jenkinsfile`](jenkins/pipelines/toolchain-check.Jenkinsfile), which verifies the toolchain without changing services.
 The job polls Git every five minutes, as in Jenkins2. It needs the GitHub
 credential below to read a private repository.
 
@@ -172,7 +177,16 @@ Do not put that directory inside this repository.
 | homelab-github-readonly.token | GitHub fine-grained read-only PAT; credential ID from configuration. |
 | homelab-pve01-automation-key | Optional existing OpenSSH Ed25519 private key; `pve01-automation-ssh`. |
 | homelab-infisical-client-id and homelab-infisical-client-secret | Read-only Universal Auth pair; credential ID from configuration. |
-| homelab-infisical-writer-client-id and homelab-infisical-writer-client-secret | Optional writer pair; `infisical-homelab-prod-writer`. |
+| homelab-infisical-writer-client-id and homelab-infisical-writer-client-secret | Writer pair; `infisical-homelab-prod-writer`. |
+
+Configure the Infisical project connection in
+[`jenkins/config/install.conf`](jenkins/config/install.conf): credential ID,
+Infisical URL, project ID, environment slug, and project slug. These settings
+are copied to `/etc/homelab/project.properties` in the controller.
+The existing project identities are `jenkins-read` (Viewer) and
+`jenkins-write` (Member); they are not created by the controller installer.
+See [`infisical/README.md`](infisical/README.md) for the current secret paths
+and credential IDs.
 
 ```bash
 bash jenkins/deploy/import-controller-credentials-lxc.sh /root/jenkins-bootstrap-secrets 100
@@ -185,11 +199,22 @@ stored credential IDs; an existing ID alone does not prove a replacement token
 was valid. Confirm the GitHub job succeeds and review any startup errors before
 removing your protected host source files. It deliberately preserves those
 source files if you need to retry. Secret values never appear in helper output.
-The private repository requires Contents read permission.
+The private repository requires Contents read permission. The controller also
+seeds the manual `001 - Proxmox Access Setup` job. Import both Infisical
+identities first; the job uses the read identity to retrieve the Proxmox SSH
+key and host key from `/proxmox/automation`, then uses the writer identity to
+rotate and verify the Proxmox API token there. It does not read secrets under
+`/proxmox/lxc`. See [`infisical/README.md`](infisical/README.md) for its
+Proxmox role scope, required secret formats, and rotation behavior.
 
-These scripts import an existing Proxmox SSH key; they do not create the restricted
-Proxmox runner, API identity or DNS automation from Jenkins2. This package aligns
-Jenkins installation and enrolment, and includes the toolchain verification job.
+These scripts import an existing Proxmox SSH key and seed the Proxmox access
+setup job. The job applies the existing `HomelabLxcOperator` role to
+`homelab-automation@pve`, creates or rotates its API token, and writes the
+result to Infisical. This package also aligns Jenkins installation and
+enrolment and includes the toolchain verification job.
+After the pipeline files are pushed to the configured GitHub branch, restart
+Jenkins or rerun the controller installer to execute the startup hook that
+seeds the new job.
 
 ## Existing containers and recovery
 
