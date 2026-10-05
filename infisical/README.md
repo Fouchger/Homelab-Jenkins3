@@ -65,3 +65,9 @@ The SSH host key secret must be an OpenSSH `known_hosts` line for the Proxmox
 host (including its hostname or IP). The private key must authorize root SSH
 to that host. LXC password folders under `/proxmox/lxc` are unrelated and are
 not read by this pipeline.
+
+The separate manual `002 - Update Servers` job uses the read-only Machine
+Identity to retrieve only `PVE_SSH_HOST_KEY`. Its root SSH credential and
+read-only GitHub credential let the host bootstrap fetch the selected
+repository revision. The bootstrap reuses the controller and agent and
+refreshes the controller's project snapshot.

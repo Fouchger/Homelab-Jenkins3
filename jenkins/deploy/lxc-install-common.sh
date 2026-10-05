@@ -43,8 +43,13 @@ install_in_lxc() {
     "HOMELAB_INFISICAL_PROJECT_ID=$HOMELAB_INFISICAL_PROJECT_ID" \
     "HOMELAB_INFISICAL_ENVIRONMENT=$HOMELAB_INFISICAL_ENVIRONMENT" \
     "HOMELAB_INFISICAL_PROJECT_SLUG=$HOMELAB_INFISICAL_PROJECT_SLUG" \
+    "HOMELAB_DEFER_AGENT_RESTART=${HOMELAB_DEFER_AGENT_RESTART:-no}" \
     bash "$guest_dir/install-${role}-guest.sh"
   if [[ $role == controller ]]; then CONTROLLER_CTID=$container_id; else AGENT_CTID=$container_id; fi
-  bash "$script_dir/enrol-agent-lxc.sh" "$CONTROLLER_CTID" "$AGENT_CTID"
+  if [[ ${HOMELAB_SKIP_AGENT_ENROLMENT:-no} == yes ]]; then
+    printf 'Skipping agent re-enrolment for a repository update; preserving current WebSocket credentials.\n'
+  else
+    bash "$script_dir/enrol-agent-lxc.sh" "$CONTROLLER_CTID" "$AGENT_CTID"
+  fi
   printf '[%s] Jenkins %s installation verified in CTID %s.\n' "$(date -Is)" "$role" "$container_id"
 }

@@ -189,7 +189,13 @@ sed -i "s|__JAVA25__|$java25_path|" /etc/systemd/system/jenkins-agent.service
 chmod 0644 /etc/systemd/system/jenkins-agent.service
 systemctl daemon-reload
 systemctl enable jenkins-agent.service
-systemctl restart jenkins-agent.service
+if [[ ${HOMELAB_DEFER_AGENT_RESTART:-no} == yes ]] && systemctl is-active --quiet jenkins-agent.service; then
+  restart_unit="homelab-jenkins-agent-restart-$(date +%s)"
+  systemd-run --quiet --unit="$restart_unit" --on-active=5m /bin/systemctl restart jenkins-agent.service
+  echo 'The server update runner is this agent; its service restart is scheduled in five minutes.'
+else
+  systemctl restart jenkins-agent.service
+fi
 systemctl is-active --quiet jenkins-agent.service || {
   systemctl --no-pager --full status jenkins-agent.service
   exit 1

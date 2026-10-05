@@ -38,11 +38,19 @@ archive_url="https://api.github.com/repos/$repo_owner/$repo_name/tarball/$repo_r
 curl_config="$temp_dir/curl.conf"
 : > "$curl_config"
 # Optional private-repository access. The token is never a command-line argument.
-if [[ -n ${HOMELAB_GITHUB_TOKEN:-} ]]; then
-  [[ $HOMELAB_GITHUB_TOKEN =~ ^[A-Za-z0-9_]+$ ]] || { printf 'Invalid token format.\n' >&2; exit 2; }
-  printf 'header = "Authorization: Bearer %s"\n' "$HOMELAB_GITHUB_TOKEN" > "$curl_config"
-  unset HOMELAB_GITHUB_TOKEN
+github_token=${HOMELAB_GITHUB_TOKEN:-}
+if [[ -n ${HOMELAB_GITHUB_TOKEN_FILE:-} ]]; then
+  token_file=$HOMELAB_GITHUB_TOKEN_FILE
+  [[ -f $token_file && ! -L $token_file && $(stat -c '%u:%a' "$token_file") == '0:600' ]] || {
+    printf 'GitHub token file must be a root-owned regular file with mode 0600.\n' >&2; exit 2;
+  }
+  IFS= read -r github_token < "$token_file" || true
 fi
+if [[ -n $github_token ]]; then
+  [[ $github_token =~ ^[A-Za-z0-9_]+$ ]] || { printf 'Invalid token format.\n' >&2; exit 2; }
+  printf 'header = "Authorization: Bearer %s"\n' "$github_token" > "$curl_config"
+fi
+unset github_token HOMELAB_GITHUB_TOKEN
 curl --config "$curl_config" --fail --silent --show-error --location \
   --retry 3 --connect-timeout 15 --max-time 180 \
   "$archive_url" -o "$temp_dir/project.tar.gz"

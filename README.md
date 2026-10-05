@@ -147,6 +147,17 @@ A `homelab-check` Pipeline job reads the configured GitHub repository and runs
 [`jenkins/pipelines/toolchain-check.Jenkinsfile`](jenkins/pipelines/toolchain-check.Jenkinsfile), which verifies the toolchain without changing services.
 The job polls Git every five minutes, as in Jenkins2. It needs the GitHub
 credential below to read a private repository.
+The manual `002 - Update Servers` job checks out the configured branch, then
+uses the Proxmox host bootstrap at that exact commit to rerun the controller
+and agent installers and refresh the controller's repository snapshot. Jenkins
+prompts for confirmation after showing the commit and always reuses the verified
+containers; it never chooses the destroy-and-recreate path. Updates can upgrade
+Jenkins LTS and system/toolchain dependencies, so run it when you are ready for
+those changes and service restarts. It preserves the current agent connection
+during installation, then schedules the agent service restart five minutes
+after completion. Verify the agent reconnects and the periodic `homelab-check`
+passes. It uses the GitHub read credential, the Infisical read identity, and
+the `pve01-automation-ssh` credential.
 
 The agent uses a restricted account and a hardened WebSocket systemd service.
 This application installer adds no SSH server, sudo access or Docker socket.
@@ -175,7 +186,7 @@ Do not put that directory inside this repository.
 | Host file name | Credential/import |
 | --- | --- |
 | homelab-github-readonly.token | GitHub fine-grained read-only PAT; credential ID from configuration. |
-| homelab-pve01-automation-key | Optional existing OpenSSH Ed25519 private key; `pve01-automation-ssh`. |
+| homelab-pve01-automation-key | Existing OpenSSH Ed25519 private key; `pve01-automation-ssh` (required by `002 - Update Servers`). |
 | homelab-infisical-client-id and homelab-infisical-client-secret | Read-only Universal Auth pair; credential ID from configuration. |
 | homelab-infisical-writer-client-id and homelab-infisical-writer-client-secret | Writer pair; `infisical-homelab-prod-writer`. |
 

@@ -421,6 +421,44 @@ job.save()
 JENKINS_PVE_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/96-homelab-proxmox-access-pipeline.groovy"
 chmod 0640 "$jenkins_home/init.groovy.d/96-homelab-proxmox-access-pipeline.groovy"
+
+# Seed the manual full-stack update job. It always reuses the two verified LXCs.
+cat >"$jenkins_home/init.groovy.d/97-homelab-server-update-pipeline.groovy" <<'JENKINS_UPDATE_PIPELINE_HOOK'
+import hudson.plugins.git.BranchSpec
+import hudson.plugins.git.GitSCM
+import jenkins.model.Jenkins
+import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition
+import org.jenkinsci.plugins.workflow.job.WorkflowJob
+
+def jenkins = Jenkins.get()
+def projectSettings = new Properties()
+new File('/etc/homelab/project.properties').withInputStream { projectSettings.load(it) }
+def repositoryUrl = "https://github.com/${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
+def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
+def branch = projectSettings.getProperty('githubBranch', 'main')
+def jobName = '002 - Update Servers'
+def job = jenkins.getItem(jobName)
+def scm = new GitSCM(
+    GitSCM.createRepoList(repositoryUrl, credentialId),
+    Collections.singletonList(new BranchSpec("*/${branch}")),
+    null, null, Collections.emptyList()
+)
+def definition = new CpsScmFlowDefinition(scm, 'jenkins/pipelines/server-update/Jenkinsfile')
+definition.setLightweight(true)
+if (job == null) {
+    job = jenkins.createProject(WorkflowJob, jobName)
+    println("Created manual Pipeline '${jobName}' for branch '${branch}'.")
+} else if (!(job instanceof WorkflowJob)) {
+    throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
+} else {
+    println("Updating managed Pipeline '${jobName}' to the current repository pipeline path.")
+}
+job.setDefinition(definition)
+job.setDescription('002 - Retrieves the configured GitHub branch revision and prompts before updating both verified Jenkins LXCs on Proxmox. It always selects reuse; it does not destroy containers.')
+job.save()
+JENKINS_UPDATE_PIPELINE_HOOK
+chown jenkins:jenkins "$jenkins_home/init.groovy.d/97-homelab-server-update-pipeline.groovy"
+chmod 0640 "$jenkins_home/init.groovy.d/97-homelab-server-update-pipeline.groovy"
 install -o jenkins -g jenkins -m 0600 /dev/null "$jenkins_home/secrets/homelab-agent-enrollment.pending"
 
 install -d -m 0755 /etc/systemd/system/jenkins.service.d
