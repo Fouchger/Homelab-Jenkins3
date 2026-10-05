@@ -78,22 +78,130 @@ install_role() {
   local profile_name=$1 role=$2 configured_id=$3
   local profile_file="$project_dir/proxmox_helper_script/lxc/ubuntu/$profile_name.profile.sh"
   # Profiles contain trusted Bash; read them in an isolated scope.
-  local expected_id expected_hostname expected_mac
+  local expected_id expected_hostname expected_mac expected_vlan expected_ipv4_mode expected_ipv4_address expected_tags
   expected_id=$(bash -c 'source "$1"; printf "%s" "$LXC_DEFAULT_CTID"' bash "$profile_file")
   expected_hostname=$(bash -c 'source "$1"; printf "%s" "$LXC_DEFAULT_HOSTNAME"' bash "$profile_file")
   expected_mac=$(bash -c 'source "$1"; printf "%s" "$LXC_DEFAULT_MAC_ADDRESS"' bash "$profile_file")
+  expected_vlan=$(bash -c 'source "$1"; printf "%s" "$LXC_DEFAULT_VLAN"' bash "$profile_file")
+  expected_ipv4_mode=$(bash -c 'source "$1"; printf "%s" "$LXC_DEFAULT_IPV4_MODE"' bash "$profile_file")
+  expected_ipv4_address=$(bash -c 'source "$1"; printf "%s" "$LXC_DEFAULT_IPV4_ADDRESS"' bash "$profile_file")
+  expected_tags=$(bash -c 'source "$1"; printf "%s" "$LXC_DEFAULT_TAGS"' bash "$profile_file")
   [[ $configured_id == "$expected_id" ]] || { printf 'Configured CTID differs from %s profile.\n' "$profile_name" >&2; return 2; }
   if pct status "$expected_id" >/dev/null 2>&1; then
-    # Resume only the expected container. Do not install over an unrelated LXC.
-    local config hostname net
+    # Verify the project identity and network before offering reuse or deletion.
+    local config hostname net tags item key value actual_ipv4
     config=$(pct config "$expected_id")
     hostname=$(printf '%s\n' "$config" | sed -n 's/^hostname: //p')
     net=$(printf '%s\n' "$config" | sed -n 's/^net0: //p')
-    [[ $hostname == "$expected_hostname" && ${net,,} == *"hwaddr=${expected_mac,,}"* ]] || {
-      printf 'CTID %s exists but does not match the expected hostname/MAC; refusing to change it.\n' "$expected_id" >&2
+    tags=$(printf '%s\n' "$config" | sed -n 's/^tags: //p')
+    local actual_mac= actual_vlan= actual_net_ipv4=
+    IFS=',' read -r -a net_items <<< "$net"
+    for item in "${net_items[@]}"; do
+      key=${item%%=*}
+      value=${item#*=}
+      case $key in
+        hwaddr) actual_mac=${value,,} ;;
+        tag) actual_vlan=$value ;;
+        ip) actual_net_ipv4=$value ;;
+      esac
+    done
+    [[ $hostname == "$expected_hostname" && $actual_mac == "${expected_mac,,}" && $actual_vlan == "$expected_vlan" ]] || {
+      printf 'CTID %s does not match the expected hostname, MAC, or VLAN; refusing to change it.\n' "$expected_id" >&2
       return 2
     }
+    if [[ -n $expected_tags ]]; then
+      IFS=';' read -r -a expected_tag_items <<< "$expected_tags"
+      for item in "${expected_tag_items[@]}"; do
+        [[ ";$tags;" == *";$item;"* ]] || {
+          printf 'CTID %s is missing expected tag %s; refusing to change it.\n' "$expected_id" "$item" >&2
+          return 2
+        }
+      done
+    fi
+    if [[ $expected_ipv4_mode == dhcp ]]; then
+      [[ $actual_net_ipv4 == dhcp ]] || {
+        printf 'CTID %s does not use DHCP as expected; refusing to change it.\n' "$expected_id" >&2
+        return 2
+      }
+    else
+      [[ $actual_net_ipv4 == "$expected_ipv4_address" ]] || {
+        printf 'CTID %s IPv4 configuration differs from the profile; refusing to change it.\n' "$expected_id" >&2
+        return 2
+      }
+    fi
     [[ $(pct status "$expected_id") == 'status: running' ]] || pct start "$expected_id"
+    actual_ipv4=
+    for attempt in {1..30}; do
+      actual_ipv4=$(pct exec "$expected_id" -- ip -o -4 addr show scope global 2>/dev/null || true)
+      [[ $actual_ipv4 == *"inet $expected_ipv4_address "* ]] && break
+      sleep 1
+    done
+    [[ $actual_ipv4 == *"inet $expected_ipv4_address "* ]] || {
+      printf 'CTID %s does not have expected IPv4 address %s; refusing to reinstall.\n' "$expected_id" "$expected_ipv4_address" >&2
+      return 2
+    }
+    local action= choice confirm protection_state delete_script delete_status
+    if [[ -r /dev/tty ]]; then
+      while true; do
+        printf '\n%s (CTID %s) already exists and matches this profile. Choose [r]euse or [d]estroy and recreate: ' "$profile_name" "$expected_id" >/dev/tty
+        IFS= read -r choice </dev/tty || return 1
+        case ${choice,,} in
+          r|reuse) action=reuse; break ;;
+          d|destroy) action=destroy; break ;;
+          *) printf 'Enter r to reuse or d to destroy and recreate.\n' >/dev/tty ;;
+        esac
+      done
+    else
+      action=${HOMELAB_EXISTING_LXC_ACTION:-reuse}
+      [[ $action == reuse || $action == destroy ]] || {
+        printf 'HOMELAB_EXISTING_LXC_ACTION must be reuse or destroy.\n' >&2
+        return 2
+      }
+      [[ $action == reuse ]] || {
+        printf 'Destroying an existing LXC requires an interactive Proxmox terminal.\n' >&2
+        return 2
+      }
+      printf 'No interactive terminal; reusing matching %s (CTID %s).\n' "$profile_name" "$expected_id"
+    fi
+    if [[ $action == destroy ]]; then
+      printf 'The guest-delete helper can delete other guests if selected. In its checklist, select only CTID %s.\n' "$expected_id" >/dev/tty
+      printf 'Type DELETE-%s to confirm destroying %s and all data inside it: ' "$expected_id" "$profile_name" >/dev/tty
+      IFS= read -r confirm </dev/tty || return 1
+      [[ $confirm == "DELETE-$expected_id" ]] || {
+        printf 'Deletion cancelled; CTID %s was not changed.\n' "$expected_id" >/dev/tty
+        return 1
+      }
+      command -v whiptail >/dev/null || {
+        printf 'whiptail is required by the Community Scripts guest-delete tool; CTID %s was not changed.\n' "$expected_id" >&2
+        return 1
+      }
+      delete_script="$temp_dir/guest-delete.sh"
+      curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 120 \
+        https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/tools/pve/guest-delete.sh \
+        -o "$delete_script"
+      [[ -s $delete_script ]] || { printf 'Guest-delete download was empty.\n' >&2; return 1; }
+      bash -n "$delete_script"
+      protection_state=$(printf '%s\n' "$config" | sed -n 's/^protection: //p')
+      if [[ $protection_state == 1 || $protection_state == yes ]]; then
+        pct set "$expected_id" --protection 0
+      fi
+      printf '\nStarting Community Scripts guest-delete. Select only LXC CTID %s in its checklist.\n' "$expected_id" >/dev/tty
+      if bash "$delete_script" </dev/tty >/dev/tty 2>&1; then
+        delete_status=0
+      else
+        delete_status=$?
+      fi
+      if pct status "$expected_id" >/dev/null 2>&1; then
+        if [[ $protection_state == 1 || $protection_state == yes ]]; then
+          pct set "$expected_id" --protection 1 || true
+        fi
+        printf 'CTID %s still exists (delete helper exit %s); refusing to continue. Protection was restored if it was enabled.\n' "$expected_id" "$delete_status" >&2
+        return 1
+      fi
+      printf 'CTID %s was deleted. Creating a fresh %s.\n' "$expected_id" "$profile_name"
+      bash "$project_dir/proxmox_helper_script/create-lxc.sh" "$profile_file"
+      return $?
+    fi
     printf 'Resuming installation in existing %s (CTID %s).\n' "$profile_name" "$expected_id"
     bash "$project_dir/jenkins/deploy/install-$role-lxc.sh" "$expected_id"
   else

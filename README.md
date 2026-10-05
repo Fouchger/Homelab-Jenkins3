@@ -57,8 +57,17 @@ After setup, use Jenkins on the controlplane for ongoing jobs, executed on the
 agent. Future Proxmox management jobs still require appropriate API or restricted
 SSH credentials; installing Jenkins alone does not grant Proxmox permissions.
 
-Matching existing LXCs are reused by hostname/MAC and their application installers
-rerun; stopped matching LXCs are started. Unrelated container IDs are rejected.
+For each matching existing controlplane or agent LXC, the bootstrap asks whether
+to reuse it or destroy and recreate it. Reuse reruns its application installer;
+stopped matching LXCs are started. Before offering either choice, it checks the
+profile tags, hostname, MAC, VLAN, and IPv4 address. Unrelated or mismatched
+container IDs are rejected. Without an interactive terminal, a matching LXC is
+reused by default; deletion requires an interactive terminal.
+Destroying requires typing a CTID-specific confirmation, then uses the Community
+Scripts `guest-delete.sh` menu. In that menu, select only the prompted LXC; the
+helper also lists other containers and VMs. Proxmox deletion protection is
+temporarily disabled for that LXC and restored if deletion is cancelled or fails.
+Destroying permanently removes the LXC and its data.
 Reruns may upgrade Jenkins and dependencies and briefly restart services.
 A copy of the downloaded project remains inside the controlplane at
 `/opt/homelab/bootstrap-project`; no repository checkout remains on Proxmox.
