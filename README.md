@@ -1,7 +1,7 @@
 # Homelab Jenkins 3
 
 Create the controlplane and agent LXCs with Proxmox Community Scripts, then
-install the Jenkins2-compatible application stack automatically. Run from the
+install the Jenkins-compatible application stack automatically. Run from the
 Proxmox host as root after extracting the complete project there.
 The host needs Bash, curl, pct, flock and tee; Git is installed inside the
 controller and agent, and is not required by this container launcher on Proxmox.
