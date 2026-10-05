@@ -28,7 +28,20 @@ install_in_lxc() {
     [[ -r $script_dir/$filename ]] || { printf 'Missing installer: %s\n' "$filename" >&2; return 1; }
     pct push "$container_id" "$script_dir/$filename" "$guest_dir/$filename" --perms 0755
   done
-  # Public configuration only; secrets are neither copied nor printed.
-  pct exec "$container_id" -- env     "JENKINS_PORT=${JENKINS_PORT:-8080}"     "JENKINS_VERSION=${JENKINS_VERSION:-}"     "INSTALL_TIMEZONE=${INSTALL_TIMEZONE:-Pacific/Auckland}"     "AGENT_USER=${AGENT_USER:-jenkins-agent}"     "AGENT_HOME=${AGENT_HOME:-/var/lib/jenkins-agent}"     "AGENT_SSH_PUBLIC_KEY=${AGENT_SSH_PUBLIC_KEY:-}"     bash "$guest_dir/install-${role}-guest.sh"
+  # Public settings only; credentials are imported from protected files separately.
+  pct exec "$container_id" -- env \
+    "JENKINS_PORT=${JENKINS_PORT:-8080}" \
+    "JENKINS_VERSION=${JENKINS_VERSION:-}" \
+    "INSTALL_TIMEZONE=${INSTALL_TIMEZONE:-Pacific/Auckland}" \
+    "HOMELAB_JENKINS_URL=$HOMELAB_JENKINS_URL" \
+    "HOMELAB_GITHUB_OWNER=$HOMELAB_GITHUB_OWNER" \
+    "HOMELAB_GITHUB_REPOSITORY=$HOMELAB_GITHUB_REPOSITORY" \
+    "HOMELAB_GITHUB_BRANCH=$HOMELAB_GITHUB_BRANCH" \
+    "HOMELAB_GITHUB_CREDENTIAL_ID=$HOMELAB_GITHUB_CREDENTIAL_ID" \
+    "HOMELAB_INFISICAL_CREDENTIAL_ID=$HOMELAB_INFISICAL_CREDENTIAL_ID" \
+    "HOMELAB_INFISICAL_URL=$HOMELAB_INFISICAL_URL" \
+    bash "$guest_dir/install-${role}-guest.sh"
+  if [[ $role == controller ]]; then CONTROLLER_CTID=$container_id; else AGENT_CTID=$container_id; fi
+  bash "$script_dir/enrol-agent-lxc.sh" "$CONTROLLER_CTID" "$AGENT_CTID"
   printf '[%s] Jenkins %s installation verified in CTID %s.\n' "$(date -Is)" "$role" "$container_id"
 }

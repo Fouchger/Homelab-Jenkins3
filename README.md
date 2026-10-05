@@ -1,137 +1,179 @@
 # Homelab Jenkins 3
 
-Create the controlplane and agent LXCs with the Proxmox Community Scripts,
-then install their applications automatically. Run from the Proxmox host as root.
-The host needs `bash`, `curl`, `pct`, `flock` and `tee`; it does not need Git.
-Extract the complete ZIP on the host so that the relative hook paths exist.
+Create the controlplane and agent LXCs with Proxmox Community Scripts, then
+install the Jenkins2-compatible application stack automatically. Run from the
+Proxmox host as root after extracting the complete project there.
+The host needs Bash, curl, pct, flock and tee; Git is installed inside the
+controller and agent, and is not required by this container launcher on Proxmox.
 
-## Settings
+## Settings and prerequisites
 
-Edit `jenkins/config/install.conf` before deployment. The defaults are Jenkins
-LTS on port 8080, Java 21, Pacific/Auckland, and agent user `jenkins-agent`
-with home/work directory `/var/lib/jenkins-agent`.
-An optional SSH public key can be supplied in `AGENT_SSH_PUBLIC_KEY`.
-Never put passwords or private keys in this file.
+Edit `jenkins/config/install.conf` before deployment. Defaults:
 
-Container resources, IDs, VLANs and MACs remain in the existing profiles.
-Controlplane is CTID 100 on VLAN 20; agent is CTID 101 on VLAN 20.
-Both use DHCP: reserve 192.168.20.5 and 192.168.20.6 respectively on the router
-before creation. Ensure guest outbound DNS/HTTPS and Ubuntu APT access work.
-The Proxmox bridge must carry VLAN 20. Existing containers are not replaced.
-Ubuntu 24.04 and 26.04 are supported by the application installers; an available
-Proxmox template for the chosen profile version is still required.
-Community Scripts may ask host-specific questions during creation.
+| Setting | Default |
+| --- | --- |
+| Controller / agent CTID | 100 / 101 |
+| Controller URL | http://192.168.20.5:8080 |
+| Runtime | Java 25 on both servers |
+| Jenkins release | Current LTS; reruns may upgrade it |
+| Timezone | Pacific/Auckland |
+| Agent name / label | jenkins-agent / homelab-automation |
+| Agent account / work directory | jenkins-agent / /var/lib/jenkins-agent |
+| GitHub repository / branch | Fouchger/Homelab-Jenkins3 / main |
+
+Container resources, MACs and VLANs remain in the profiles. Both Ubuntu
+containers use VLAN 20 and DHCP. Reserve 192.168.20.5 and 192.168.20.6 for the
+profile MACs before creation. The bridge must carry VLAN 20.
+When changing container IDs, also update their corresponding configuration IDs.
+When changing the controller address or port, update `HOMELAB_JENKINS_URL` too.
+The default Ubuntu version is 26.04; 24.04 is also accepted, provided its package
+repositories offer OpenJDK 25. Missing packages cause a failure rather than a
+silent fallback to a different runtime.
+
+The host needs access to the Community Scripts download. Guests need outbound
+DNS/HTTPS to Ubuntu APT, Jenkins, GitHub, HashiCorp, OpenTofu, Cloudsmith, PyPI and
+Ansible Galaxy. The agent connects outbound to the configured controller HTTP(S)
+port over WebSocket; no inbound agent port is needed for Jenkins connectivity.
+Community Scripts may prompt for host-specific provisioning choices.
 
 ## Create and install
 
-From the extracted project directory:
+From the project directory on Proxmox:
 
 ```bash
 bash proxmox_helper_script/create-lxc.sh proxmox_helper_script/lxc/ubuntu/controlplane.profile.sh
 bash proxmox_helper_script/create-lxc.sh proxmox_helper_script/lxc/ubuntu/jenkins-agent.profile.sh
 ```
 
-The convenience command `bash proxmox_helper_script/controlplane.sh` uses the
-same controlplane profile and installs Jenkins too.
-The launcher runs the matching host hook once after successful container
-creation. The hook copies the guest installer into `/opt/homelab/jenkins/install`
-and runs it inside the container with `pct exec`. Installer failures return
-non-zero to the launcher. The hook is deliberately run by the launcher rather
-than the upstream helper, whose hook error handling can conceal failures.
-Call these profile files through this launcher to get this behaviour.
+`bash proxmox_helper_script/controlplane.sh` uses the same controlplane profile.
+Each creation runs its host installation hook once. The hook copies guest
+installers to `/opt/homelab/jenkins/install` and executes them with `pct exec`.
+Failures propagate to the caller. Existing container IDs are rejected rather
+than overwritten; use the retry commands below for existing containers.
+The launcher owns hook execution because upstream hook failures can be masked.
 
-## Installed applications
+After each successful application installation, enrolment is attempted. It is
+explicitly deferred when the other container is missing or not installed yet.
+When both are ready, the host reads the controller's one-time inbound secret,
+transfers it through protected temporary files, configures the agent systemd
+service and removes the handoff files. It never prints the secret.
+A running agent service is checked; verify that the node appears online in
+Jenkins after the initial administrator setup. Live connection has not been
+validated in the development environment.
 
-| Container | Applications and configuration |
+## Applications per server
+
+| Server | Installed stack |
 | --- | --- |
-| Controlplane | Jenkins LTS from its signed official APT repository; Java 21 runtime; fontconfig; CA certificates; curl; GnuPG; timezone data. Jenkins starts at boot and its HTTP endpoint is checked. |
-| Agent | Java 21 JDK; Git; SSH client/server; Python 3, pip and venv; Ansible Core; jq; rsync; unzip/zip; make; ShellCheck; yamllint. Dedicated service user and writable workspace; key authentication only for that user. |
+| Controlplane | Jenkins LTS, Java 25 JRE, fontconfig, Git, jq, curl, CA certificates, GnuPG and timezone data. |
+| Agent | Java 25 headless JRE, Git, SSH client, Python 3/pip/venv, jq, unzip, OpenTofu, Packer and Task. |
+| Agent Ansible | `/opt/ansible` virtual environment with `ansible-core`, `proxmoxer` and `requests`; system-wide executable launchers and collections under `/usr/local/share/ansible/collections`. |
+| Agent collections | `community.proxmox`, `community.routeros`, `community.general`, `kubernetes.core`. |
+| Additional agent utilities | rsync, zip, make, ShellCheck and yamllint. |
 
-Git is installed in the agent for Jenkins repository checkout, not on Proxmox.
-The agent receives neither a Jenkins controller service nor blanket sudo access.
-Additional tools such as Docker, kubectl or Task depend on future pipeline needs
-and are not included in this baseline.
+The controller installs Git, Pipeline, SSH credentials, credentials binding and
+Infisical plugins with their dependencies. Startup hooks create the inbound
+`jenkins-agent` node with one executor and exclusive `homelab-automation` label,
+and set the controller's executor count to zero.
+A `homelab-check` Pipeline job reads the configured GitHub repository and runs
+its root `Jenkinsfile`, which verifies the toolchain without changing services.
+The job polls Git every five minutes, as in Jenkins2. It needs the GitHub
+credential below to read a private repository.
 
-## First Jenkins setup
+The agent uses a restricted account and a hardened WebSocket systemd service.
+This application installer adds no SSH server, sudo access or Docker socket.
+Container helper/profile SSH settings and pre-existing SSH installations remain
+in place. On an upgrade from the previous SSH-based package, retire the old
+SSH node/credential after verifying the new inbound node is online.
 
-Open `http://192.168.20.5:8080` after a successful install. Retrieve the initial
-unlock password privately from the Proxmox console; installers never print it:
+## First administrator and credentials
+
+Open the configured controller URL. Retrieve the unlock password privately:
 
 ```bash
 pct exec 100 -- cat /var/lib/jenkins/secrets/initialAdminPassword
 ```
 
-Complete the Jenkins wizard, install suggested plugins and create your admin
-account. Install the **SSH Build Agents** plugin if it is not already installed.
-Set the built-in node's executors to zero so builds run on the agent.
+Complete Jenkins' first administrator wizard. Required plugins and agent node
+configuration are already supplied by the installer. Confirm the agent is online
+and labelled `homelab-automation`. Credentials cannot be invented by the
+installer: supply your GitHub/Infisical identities once.
 
-For the SSH agent, add a Jenkins SSH username/private-key credential using
-username `jenkins-agent`. Add the matching public key to `AGENT_SSH_PUBLIC_KEY`
-and rerun the agent hook below. In Manage Jenkins > Nodes, create a permanent
-node named `jenkins-agent`, one executor, remote root `/var/lib/jenkins-agent`,
-label `jenkins-agent`, and launch via SSH to `192.168.20.6` with that credential.
-Use a verified host key strategy; compare the agent key fingerprint with:
+You can add credentials through Jenkins or use the protected import helper.
+For the helper, create a root-owned directory with mode 0700 and place only the
+needed files inside it; every file must be root-owned with mode 0600.
+Do not put that directory inside this repository.
+
+| Host file name | Credential/import |
+| --- | --- |
+| homelab-github-readonly.token | GitHub fine-grained read-only PAT; credential ID from configuration. |
+| homelab-pve01-automation-key | Optional existing OpenSSH Ed25519 private key; `pve01-automation-ssh`. |
+| homelab-infisical-client-id and homelab-infisical-client-secret | Read-only Universal Auth pair; credential ID from configuration. |
+| homelab-infisical-writer-client-id and homelab-infisical-writer-client-secret | Optional writer pair; `infisical-homelab-prod-writer`. |
 
 ```bash
-pct exec 101 -- ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+bash jenkins/deploy/import-controller-credentials-lxc.sh /root/jenkins-bootstrap-secrets 100
 ```
 
-Controller access to agent TCP 22 and client access to controller TCP 8080 must
-be permitted by existing network/firewall policy. Application installation is
-automatic; administrator creation and node/credential registration are separate
-one-time Jenkins setup steps. Existing credentials, jobs and authorised keys
-are preserved on installer reruns.
+The helper stages supplied files into protected guest `/run` files and restarts
+Jenkins. Startup hooks store them in Jenkins' encrypted credentials store, remove
+the guest handoff files and test supplied Infisical identities. The helper checks
+stored credential IDs; an existing ID alone does not prove a replacement token
+was valid. Confirm the GitHub job succeeds and review any startup errors before
+removing your protected host source files. It deliberately preserves those
+source files if you need to retry. Secret values never appear in helper output.
+The private repository requires Contents read permission.
 
-## Existing containers and failed-install recovery
+These scripts import an existing Proxmox SSH key; they do not create the restricted
+Proxmox runner, API identity or DNS automation from Jenkins2. This package aligns
+Jenkins installation and enrolment, and includes the toolchain verification job.
 
-Run these on Proxmox to install or retry without recreating either container:
+## Existing containers and recovery
+
+Run on Proxmox against running containers:
 
 ```bash
 bash jenkins/deploy/install-controller-lxc.sh 100
 bash jenkins/deploy/install-agent-lxc.sh 101
+bash jenkins/deploy/enrol-agent-lxc.sh 100 101
 ```
 
-Containers must already be running. A failed installation leaves the container
-available for diagnosis and retry; nothing destroys it automatically.
-Controller reruns preserve its installed Jenkins version unless a version is
-explicitly set in the configuration. Other APT dependencies may update.
-Both hooks restart their service; allow for a brief interruption when rerunning.
-Normal backup and planned upgrade arrangements remain your responsibility.
+The first two also attempt enrolment automatically. Use the third to retry only
+the connection setup. A failed application install leaves its container available
+for diagnosis; success markers are written only after checks pass.
+Enrolment can restart Jenkins to regenerate its handoff secret. Controller
+reruns may upgrade LTS; dependencies, plugins newly installed, pip packages and
+collections use current upstream versions. Existing Jenkins jobs/credentials
+are retained, but the managed agent node configuration is reapplied.
+Plan backups and a brief service interruption before upgrading existing systems.
 
-## Logs and checks
+## Logs, checks and tests
 
-Host logs: `/var/log/homelab/jenkins-controller-100.log` and
-`/var/log/homelab/jenkins-agent-101.log`.
-Guest logs: `/var/log/homelab/jenkins-controller.log` or `jenkins-agent.log`.
-Success markers are written only after checks pass under `/var/lib/homelab/`.
+Host installation logs: `/var/log/homelab/jenkins-controller-100.log` and
+`/var/log/homelab/jenkins-agent-101.log`. Guest logs use the same role names
+without CTID. Runtime logs are in the systemd journal.
 
 ```bash
-pct exec 100 -- systemctl status jenkins --no-pager
 pct exec 100 -- journalctl -u jenkins --no-pager -n 50
-pct exec 101 -- systemctl status ssh --no-pager
-pct exec 101 -- runuser -u jenkins-agent -- ansible --version
-```
-
-The launcher detects failed, empty and syntactically invalid downloads, but
-Community Scripts still use upstream `main`; this update does not pin that
-provisioning dependency. The Jenkins 2026 repository key fingerprint is checked
-before it is trusted. A future signing-key rotation requires a reviewed update.
-
-## References and validation
-
-Installation follows [Jenkins Linux installation guidance](https://www.jenkins.io/doc/book/installing/linux/)
-and [Jenkins agent guidance](https://www.jenkins.io/doc/book/using/using-agents/).
-Repository signing key: [official Jenkins LTS repository](https://pkg.jenkins.io/debian-stable/).
-
-Validation for this package covers Bash syntax and isolated launcher/hook
-integration tests, including failure propagation. No live Proxmox containers or
-Jenkins services were provisioned in the development environment.
-
-To rerun the isolated integration tests on a Linux host as root:
-
-```bash
+pct exec 101 -- systemctl status jenkins-agent --no-pager
+pct exec 101 -- journalctl -u jenkins-agent --no-pager -n 50
+pct exec 101 -- runuser -u jenkins-agent -- task --version
+pct exec 101 -- runuser -u jenkins-agent -- ansible-galaxy collection list
 python3 tests/test_bootstrap.py -v
 ```
 
-The tests replace `pct` and `curl` with mocks; they do not install applications
-or create containers. Host hook logs and lock files use their normal paths.
+Tests mock downloads and Proxmox; no containers, packages or live Jenkins
+services are installed by them. Host hook logs and lock files use normal paths.
+Bash syntax checks also cover the generated agent configuration helper.
+No live Proxmox provisioning, plugin startup or remote service connection has
+been verified here. Community Scripts still use upstream `main`; the launcher
+checks download errors and syntax, but does not pin that provisioning dependency.
+The Jenkins repository's 2026 signing-key fingerprint is verified before trust.
+
+## Installation references
+
+- [Jenkins Java support](https://www.jenkins.io/doc/book/platform-information/support-policy-java/)
+- [Jenkins Linux installation](https://www.jenkins.io/doc/book/installing/linux/)
+- [OpenTofu Debian installation](https://opentofu.org/docs/intro/install/deb/)
+- [Packer installation](https://docs.hashicorp.com/packer/install)
+- [Task installation](https://taskfile.dev/docs/installation)

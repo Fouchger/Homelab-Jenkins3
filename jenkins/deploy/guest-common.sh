@@ -8,6 +8,7 @@ source /etc/os-release
 }
 [[ -d /run/systemd/system ]] || { printf 'A running systemd guest is required.\n' >&2; exit 1; }
 mkdir -p /var/log/homelab /var/lib/homelab
+rm -f -- "/var/lib/homelab/jenkins-${INSTALL_ROLE}-installed"
 exec > >(tee -a "/var/log/homelab/jenkins-${INSTALL_ROLE}.log") 2>&1
 trap 'result=$?; printf "Installation failed (exit %s, line %s). See the installation log.\n" "$result" "$LINENO" >&2; exit "$result"' ERR
 export DEBIAN_FRONTEND=noninteractive
