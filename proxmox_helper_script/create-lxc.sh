@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Generic Proxmox LXC launcher with verified application bootstrap.
 set -Eeuo pipefail
 
 usage() {
@@ -19,7 +20,7 @@ fi
 profile_file="$(cd -- "$(dirname -- "$profile_file")" && pwd)/$(basename -- "$profile_file")"
 
 # Profile files are trusted Bash configuration files. This preserves arrays and
-# computed paths such as LXC_DEFAULT_GUEST_POST_INSTALL_SCRIPT.
+# computed paths such as LXC_DEFAULT_HOST_POST_INSTALL_SCRIPT.
 source "$profile_file"
 
 env_args=()
@@ -82,7 +83,7 @@ if [[ -n ${LXC_DEFAULT_OS:-} ]]; then
   add_env var_protection "${LXC_DEFAULT_PROTECTION:-}"
   add_env var_mknod "$(yes_no_to_bit "${LXC_DEFAULT_MKNOD:-}")"
   add_env var_mount_fs "${LXC_DEFAULT_MOUNT_FS:-}"
-  add_env var_post_install "${LXC_DEFAULT_GUEST_POST_INSTALL_SCRIPT:-}"
+  # Application hooks are run by this launcher so failures propagate reliably.
   add_env var_verbose "${LXC_DEFAULT_VERBOSE:-}"
 fi
 
@@ -98,12 +99,31 @@ if [[ -z ${LXC_DEFAULT_OS:-} ]]; then
   done
 fi
 
-for key in var_post_install; do
-  if [[ -n ${!key:-} && ! -f ${!key} ]]; then
-    printf 'Post-install hook does not exist on this Proxmox host: %s\n' "${!key}" >&2
+# The upstream helper can report successful creation even when its hook fails.
+# Own hook execution here, once, and propagate its exit status to callers.
+hook_path=${LXC_DEFAULT_HOST_POST_INSTALL_SCRIPT:-${var_post_install:-}}
+if [[ -n $hook_path && ! -r $hook_path ]]; then
+  printf 'Post-install hook is missing or unreadable: %s\n' "$hook_path" >&2
+  exit 2
+fi
+if [[ -n $hook_path ]]; then
+  container_id=${LXC_DEFAULT_CTID:-${var_ctid:-}}
+  [[ $EUID -eq 0 ]] || { printf "Run container creation as root on Proxmox.\n" >&2; exit 1; }
+  command -v pct >/dev/null || { printf "Proxmox pct is required.\n" >&2; exit 1; }
+  [[ $container_id =~ ^[1-9][0-9]+$ ]] || {
+    printf 'An explicit CTID is required when using a post-install hook.\n' >&2; exit 2;
+  }
+  if pct status "$container_id" >/dev/null 2>&1; then
+    printf 'CTID %s already exists. Rerun its installation hook instead of creating it again.\n' "$container_id" >&2
     exit 2
   fi
+fi
+# Remove legacy var_post_install forwarding to prevent double execution.
+filtered_env_args=()
+for entry in "${env_args[@]}"; do
+  [[ $entry == var_post_install=* ]] || filtered_env_args+=("$entry")
 done
+env_args=("${filtered_env_args[@]}")
 
 if (( ${#env_args[@]} == 0 )); then
   printf 'No installer settings found in %s\n' "$profile_file" >&2
@@ -120,4 +140,15 @@ if [[ ! "$installer_url" =~ ^https://raw\.githubusercontent\.com/community-scrip
   exit 2
 fi
 printf 'Starting %s installer with profile: %s\n' "${LXC_PROFILE_OS_TITLE:-LXC}" "$profile_file"
-env "${env_args[@]}" bash -c "$(curl -fsSL "$installer_url")"
+temp_dir=$(mktemp -d)
+trap 'rm -rf -- "$temp_dir"' EXIT
+# A failed/empty download must never become a successful empty bash command.
+curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 120   "$installer_url" -o "$temp_dir/installer.sh"
+[[ -s $temp_dir/installer.sh ]] || { printf 'Installer download was empty.\n' >&2; exit 1; }
+bash -n "$temp_dir/installer.sh"
+# Explicit empty value suppresses an inherited hook in the installer environment.
+env "${env_args[@]}" var_post_install= bash "$temp_dir/installer.sh"
+if [[ -n $hook_path ]]; then
+  printf 'Container creation completed; running application installation.\n'
+  CTID="$container_id" bash "$hook_path"
+fi
