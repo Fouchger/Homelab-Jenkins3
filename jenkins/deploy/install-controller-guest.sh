@@ -387,6 +387,42 @@ JENKINS_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/95-homelab-github-pipeline.groovy"
 chmod 0640 "$jenkins_home/init.groovy.d/95-homelab-github-pipeline.groovy"
 
+# Preserve build history while moving the three operator jobs to their current
+# names. Temporary names make swaps safe if an earlier numbering was deployed.
+cat >"$jenkins_home/init.groovy.d/95-z-homelab-pipeline-numbering.groovy" <<'JENKINS_PIPELINE_RENUMBER_HOOK'
+import jenkins.model.Jenkins
+import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition
+import org.jenkinsci.plugins.workflow.job.WorkflowJob
+
+def targets = [
+    'jenkins/pipelines/server-update/Jenkinsfile': '001 - Update Servers',
+    'jenkins/pipelines/infisical-setup/Jenkinsfile': '002 - Infisical Credential Setup',
+    'jenkins/pipelines/proxmox-access/Jenkinsfile': '003 - Proxmox Access Setup'
+]
+def jenkins = Jenkins.get()
+def managed = jenkins.getItems(WorkflowJob).findAll { item ->
+    def definition = item.getDefinition()
+    definition instanceof CpsScmFlowDefinition && targets.containsKey(definition.getScriptPath())
+}
+
+targets.each { scriptPath, targetName ->
+    def matching = managed.findAll { it.getDefinition().getScriptPath() == scriptPath }
+    if (matching.size() > 1) {
+        throw new IllegalStateException("Multiple managed jobs use ${scriptPath}; resolve the duplicates before renumbering.")
+    }
+}
+
+def moves = managed.findAll { item -> item.getName() != targets[item.getDefinition().getScriptPath()] }
+moves.each { item -> item.renameTo("__homelab-renumber-${UUID.randomUUID()}") }
+moves.each { item ->
+    def targetName = targets[item.getDefinition().getScriptPath()]
+    item.renameTo(targetName)
+    println("Renamed managed Pipeline to '${targetName}'.")
+}
+JENKINS_PIPELINE_RENUMBER_HOOK
+chown jenkins:jenkins "$jenkins_home/init.groovy.d/95-z-homelab-pipeline-numbering.groovy"
+chmod 0640 "$jenkins_home/init.groovy.d/95-z-homelab-pipeline-numbering.groovy"
+
 # Seed the manual Proxmox access setup pipeline. It rotates a token only when
 # explicitly started by an operator and reads the public repository anonymously.
 cat >"$jenkins_home/init.groovy.d/96-homelab-proxmox-access-pipeline.groovy" <<'JENKINS_PVE_PIPELINE_HOOK'
@@ -403,15 +439,7 @@ def repositoryUrl = "https://github.com/${projectSettings.getProperty('githubOwn
 def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
 def branch = projectSettings.getProperty('githubBranch', 'main')
 def jobName = '003 - Proxmox Access Setup'
-def previousJobName = '001 - Proxmox Access Setup'
 def job = jenkins.getItem(jobName)
-if (job == null) {
-    job = jenkins.getItem(previousJobName)
-    if (job != null) {
-        job.renameTo(jobName)
-        println("Renamed managed Pipeline '${previousJobName}' to '${jobName}'.")
-    }
-}
 def scm = new GitSCM(
     GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
     Collections.singletonList(new BranchSpec("*/${branch}")),
@@ -451,7 +479,7 @@ new File('/etc/homelab/project.properties').withInputStream { projectSettings.lo
 def repositoryUrl = "https://github.com/${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
 def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
 def branch = projectSettings.getProperty('githubBranch', 'main')
-def jobName = '002 - Update Servers'
+def jobName = '001 - Update Servers'
 def job = jenkins.getItem(jobName)
 def scm = new GitSCM(
     GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
@@ -469,7 +497,7 @@ if (job == null) {
     println("Updating managed Pipeline '${jobName}' to the current repository pipeline path.")
 }
 job.setDefinition(definition)
-job.setDescription('002 - Updates both verified Jenkins LXCs from the configured GitHub branch every day at 2:00 a.m. Pacific/Auckland. Timer runs proceed automatically; manual runs require confirmation. Containers are always reused and never destroyed.')
+job.setDescription('001 - Updates both verified Jenkins LXCs from the configured GitHub branch every day at 2:00 a.m. Pacific/Auckland. Timer runs proceed automatically; manual runs require confirmation. Containers are always reused and never destroyed.')
 job.removeProperty(ParametersDefinitionProperty)
 job.addProperty(new ParametersDefinitionProperty(
     new BooleanParameterDefinition('AUTOMATED_UPDATE', false, 'Set by the daily timer; manual runs require confirmation.')
@@ -498,7 +526,7 @@ new File('/etc/homelab/project.properties').withInputStream { projectSettings.lo
 def repositoryUrl = "https://github.com/${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
 def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
 def branch = projectSettings.getProperty('githubBranch', 'main')
-def jobName = '001 - Infisical Credential Setup'
+def jobName = '002 - Infisical Credential Setup'
 def job = jenkins.getItem(jobName)
 def scm = new GitSCM(
     GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
@@ -514,7 +542,7 @@ if (job == null) {
     throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
 }
 job.setDefinition(definition)
-job.setDescription('001 - One-time setup for the existing Infisical jenkins-read and jenkins-write Machine Identities. Add their Universal Auth credentials in Jenkins, then resume this job to verify both logins. Secret values are not collected by the Pipeline.')
+job.setDescription('002 - One-time setup for the existing Infisical jenkins-read and jenkins-write Machine Identities. Add their Universal Auth credentials in Jenkins, then resume this job to verify both logins. Secret values are not collected by the Pipeline.')
 job.save()
 JENKINS_INFISICAL_SETUP_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/98-homelab-infisical-credential-setup-pipeline.groovy"

@@ -46,9 +46,11 @@ configurable value because it is not visible in the provided project URL.
 
 ## Proxmox API access setup
 
-The controller seeds three operator jobs in setup order:
+The controller seeds three operator jobs:
 
-1. `001 - Infisical Credential Setup` pauses while you add the existing read
+1. `001 - Update Servers` updates both Jenkins LXCs daily and uses the read-only
+   identity to retrieve the trusted Proxmox SSH host key.
+2. `002 - Infisical Credential Setup` pauses while you add the existing read
    and writer Machine Identity credentials in Jenkins, then verifies both
    Universal Auth logins. Add both the Infisical Universal Auth plugin
    credentials (`infisical-homelab-prod` and
@@ -57,9 +59,10 @@ The controller seeds three operator jobs in setup order:
    `infisical-homelab-prod-writer-api`). Use each identity's Client ID and
    Client Secret for both types. The job never collects secrets as build input
    or writes Jenkins global credentials.
-2. `002 - Update Servers` updates both Jenkins LXCs daily and uses the read-only
-   identity to retrieve the trusted Proxmox SSH host key.
 3. `003 - Proxmox Access Setup` creates or rotates the Proxmox API token.
+
+Run job 002 once before job 001 if its Infisical credentials have not yet been
+added.
 
 Import both Machine Identity credential pairs before running job 003. It reads
 `PVE_SSH_PRIVATE_KEY`, `PVE_SSH_HOST_KEY`, and the current API token values from
@@ -80,7 +83,7 @@ host (including its hostname or IP). The private key must authorize root SSH
 to that host. LXC password folders under `/proxmox/lxc` are unrelated and are
 not read by this pipeline.
 
-The `002 - Update Servers` job uses the read-only Machine Identity to retrieve
+The `001 - Update Servers` job uses the read-only Machine Identity to retrieve
 only `PVE_SSH_HOST_KEY`. Its `pve01-automation-ssh` credential runs the host
 bootstrap, which downloads this publicly readable repository without GitHub
 credentials, reuses the controller and agent, and refreshes the controller's

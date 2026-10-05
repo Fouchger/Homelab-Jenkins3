@@ -147,7 +147,7 @@ A `homelab-check` Pipeline job reads the configured GitHub repository and runs
 [`jenkins/pipelines/toolchain-check.Jenkinsfile`](jenkins/pipelines/toolchain-check.Jenkinsfile), which verifies the toolchain without changing services.
 The job polls Git every five minutes, as in Jenkins2. It needs the GitHub
 credential below to read a private repository.
-The `002 - Update Servers` job checks out the configured branch, then uses the
+The `001 - Update Servers` job checks out the configured branch, then uses the
 Proxmox host bootstrap at that exact commit to rerun the controller and agent
 installers and refresh the controller's repository snapshot. It runs daily at
 2:00 a.m. Pacific/Auckland. Timer runs proceed unattended; manually started runs
@@ -187,7 +187,7 @@ Do not put that directory inside this repository.
 | Host file name | Credential/import |
 | --- | --- |
 | homelab-github-readonly.token | Optional GitHub fine-grained read-only PAT, only for a private repository; credential ID from configuration. |
-| homelab-pve01-automation-key | Existing OpenSSH Ed25519 private key; `pve01-automation-ssh` (required by `002 - Update Servers`). |
+| homelab-pve01-automation-key | Existing OpenSSH Ed25519 private key; `pve01-automation-ssh` (required by `001 - Update Servers`). |
 | homelab-infisical-client-id and homelab-infisical-client-secret | Read-only Universal Auth pair; credential ID from configuration. |
 | homelab-infisical-writer-client-id and homelab-infisical-writer-client-secret | Writer pair; `infisical-homelab-prod-writer`. |
 
@@ -212,11 +212,12 @@ was valid. Confirm the GitHub job succeeds and review any startup errors before
 removing your protected host source files. It deliberately preserves those
 source files if you need to retry. Secret values never appear in helper output.
 The public repository does not need GitHub credentials. The controller seeds
-three operator jobs in order: `001 - Infisical Credential Setup`, which pauses
-while you add the read/write Machine Identity credentials in Jenkins and then
-verifies their logins; `002 - Update Servers`, which updates the controller and
-agent; and `003 - Proxmox Access Setup`, which rotates the Proxmox API token.
-For job 001, add the four credentials below under **Manage Jenkins → Credentials
+three operator jobs: `001 - Update Servers`, which updates the controller and
+agent; `002 - Infisical Credential Setup`, which pauses while you add the
+read/write Machine Identity credentials in Jenkins and then verifies their
+logins; and `003 - Proxmox Access Setup`, which rotates the Proxmox API token.
+Because job 001 needs the read identity, run job 002 first if those credentials
+have not yet been added. For job 002, add the four credentials below under **Manage Jenkins → Credentials
 → System → Global credentials**. The API credentials use **Username with
 password**; for the other pair select the **Infisical Universal Auth** type.
 Use each Infisical Client ID and Client Secret:
