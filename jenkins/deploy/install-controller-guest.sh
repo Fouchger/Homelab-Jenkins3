@@ -61,7 +61,7 @@ cat >"$settings_dir/project.properties" <<PROJECT_SETTINGS
 githubOwner=${HOMELAB_GITHUB_OWNER:-Fouchger}
 githubRepository=${HOMELAB_GITHUB_REPOSITORY:-Homelab-Jenkins3}
 githubBranch=${HOMELAB_GITHUB_BRANCH:-main}
-githubCredentialId=${HOMELAB_GITHUB_CREDENTIAL_ID:-github-homelab-jenkins-readonly}
+githubCredentialId=${HOMELAB_GITHUB_CREDENTIAL_ID-github-homelab-jenkins-readonly}
 infisicalReadCredentialId=${HOMELAB_INFISICAL_CREDENTIAL_ID:-infisical-homelab-prod}
 infisicalUrl=${HOMELAB_INFISICAL_URL:-https://app.infisical.com}
 infisicalProjectId=${HOMELAB_INFISICAL_PROJECT_ID:-}
@@ -205,8 +205,8 @@ try {
 JENKINS_PVE_SSH_CREDENTIAL_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/93-homelab-pve-ssh-credential.groovy"
 chmod 0640 "$jenkins_home/init.groovy.d/93-homelab-pve-ssh-credential.groovy"
-# Import the private GitHub token from a short-lived file supplied by the
-# Proxmox bootstrap. Jenkins encrypts it in its own credentials store.
+# Import an optional private-repository GitHub token from a short-lived file
+# supplied by the Proxmox bootstrap. Public repositories need no token.
 cat >"$jenkins_home/init.groovy.d/94-homelab-github-credential.groovy" <<'JENKINS_CREDENTIAL_HOOK'
 import com.cloudbees.plugins.credentials.CredentialsScope
 import com.cloudbees.plugins.credentials.SystemCredentialsProvider
@@ -227,6 +227,10 @@ try {
     def projectSettings = new Properties()
     new File('/etc/homelab/project.properties').withInputStream { projectSettings.load(it) }
     def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
+    if (!credentialId) {
+        println('No GitHub credential configured; public repository access will be anonymous.')
+        return
+    }
     def provider = SystemCredentialsProvider.getInstance()
     def credential = new UsernamePasswordCredentialsImpl(
         CredentialsScope.GLOBAL,
@@ -339,7 +343,7 @@ chown jenkins:jenkins "$jenkins_home/init.groovy.d/94-homelab-infisical-credenti
 chmod 0640 "$jenkins_home/init.groovy.d/94-homelab-infisical-credential.groovy"
 rm -f -- "$jenkins_home/secrets/homelab-infisical-read.status" "$jenkins_home/secrets/homelab-infisical-writer.status"
 
-# Seed the private GitHub Pipeline item on a new controller. The preceding
+# Seed the GitHub Pipeline item on a new controller. The preceding
 # startup hook imports the bootstrap-supplied credential; no token is in this repo.
 cat >"$jenkins_home/init.groovy.d/95-homelab-github-pipeline.groovy" <<'JENKINS_PIPELINE_HOOK'
 import hudson.plugins.git.BranchSpec
@@ -358,7 +362,7 @@ def branch = projectSettings.getProperty('githubBranch', 'main')
 def jobName = 'homelab-check'
 def job = jenkins.getItem(jobName)
 def scm = new GitSCM(
-    GitSCM.createRepoList(repositoryUrl, credentialId),
+    GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
     Collections.singletonList(new BranchSpec("*/${branch}")),
     null,
     null,
@@ -368,7 +372,7 @@ def definition = new CpsScmFlowDefinition(scm, 'jenkins/pipelines/toolchain-chec
 definition.setLightweight(true)
 if (job == null) {
     job = jenkins.createProject(WorkflowJob, jobName)
-    job.setDescription('Read-only homelab worker checks from the private GitHub repository.')
+    job.setDescription('Read-only homelab worker checks from the configured GitHub repository.')
     job.addTrigger(new SCMTrigger('H/5 * * * *'))
     println("Created GitHub-backed Pipeline '${jobName}' for branch '${branch}'.")
 } else if (!(job instanceof WorkflowJob)) {
@@ -401,7 +405,7 @@ def branch = projectSettings.getProperty('githubBranch', 'main')
 def jobName = '001 - Proxmox Access Setup'
 def job = jenkins.getItem(jobName)
 def scm = new GitSCM(
-    GitSCM.createRepoList(repositoryUrl, credentialId),
+    GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
     Collections.singletonList(new BranchSpec("*/${branch}")),
     null, null, Collections.emptyList()
 )
@@ -442,7 +446,7 @@ def branch = projectSettings.getProperty('githubBranch', 'main')
 def jobName = '002 - Update Servers'
 def job = jenkins.getItem(jobName)
 def scm = new GitSCM(
-    GitSCM.createRepoList(repositoryUrl, credentialId),
+    GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
     Collections.singletonList(new BranchSpec("*/${branch}")),
     null, null, Collections.emptyList()
 )

@@ -101,15 +101,12 @@ def main():
     owner = required("GITHUB_OWNER")
     repository = required("GITHUB_REPOSITORY")
     commit = required("UPDATE_COMMIT")
-    github_token = required("GITHUB_TOKEN")
     if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
         raise RuntimeError("PROXMOX_HOST must be a hostname or IPv4 address")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", owner) or not re.fullmatch(r"[A-Za-z0-9_.-]+", repository):
         raise RuntimeError("Invalid GitHub repository owner or name")
     if not re.fullmatch(r"[0-9a-fA-F]{40,64}", commit):
         raise RuntimeError("UPDATE_COMMIT must be the checked-out Git commit SHA")
-    if not re.fullmatch(r"[A-Za-z0-9_]+", github_token):
-        raise RuntimeError("GitHub credential token has an unexpected format")
 
     known_hosts = fetch_proxmox_host_key()
     key_file = required("PROXMOX_SSH_KEY_FILE")
@@ -127,20 +124,11 @@ def main():
         if not re.fullmatch(r"/tmp/homelab-jenkins-update\.[A-Za-z0-9]{6}", remote_dir):
             raise RuntimeError("Proxmox returned an unexpected temporary directory")
 
-        token_path = f"{remote_dir}/github-token"
-        run_ssh(host, key_file, known_hosts_file, f"umask 077; cat > {token_path}", input_text=github_token + "\n")
         script = f"""set -Eeuo pipefail
 update_dir='{remote_dir}'
 cleanup_update_dir() {{ rm -rf -- "$update_dir"; }}
 trap cleanup_update_dir EXIT
-token_file="$update_dir/github-token"
-[[ -f $token_file && ! -L $token_file && $(stat -c '%u:%a' "$token_file") == '0:600' ]]
-token=$(<"$token_file")
-[[ $token =~ ^[A-Za-z0-9_]+$ ]]
-printf 'header = "Authorization: Bearer %s"\\n' "$token" > "$update_dir/curl.conf"
-chmod 0600 "$update_dir/curl.conf"
-unset token
-curl --config "$update_dir/curl.conf" --fail --silent --show-error --location \\
+curl --fail --silent --show-error --location \\
   --retry 3 --connect-timeout 15 --max-time 120 \\
   'https://raw.githubusercontent.com/{owner}/{repository}/{commit}/proxmox_helper_script/controlplane.sh' \\
   -o "$update_dir/controlplane.sh"
@@ -151,7 +139,6 @@ printf 'Running repository update for commit {commit}; both LXCs are explicitly 
 HOMELAB_BOOTSTRAP_OWNER='{owner}' \\
 HOMELAB_BOOTSTRAP_REPOSITORY='{repository}' \\
 HOMELAB_BOOTSTRAP_REF='{commit}' \\
-HOMELAB_GITHUB_TOKEN_FILE="$token_file" \\
 HOMELAB_CONTROLPLANE_ACTION=reuse \\
 HOMELAB_AGENT_ACTION=reuse \\
 HOMELAB_DEFER_AGENT_RESTART=yes \\

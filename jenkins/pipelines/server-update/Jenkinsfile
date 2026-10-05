@@ -47,7 +47,6 @@ pipeline {
         stage('Update controller and agent') {
             steps {
                 withCredentials([
-                    usernamePassword(credentialsId: 'github-homelab-jenkins-readonly', usernameVariable: 'GITHUB_CREDENTIAL_USER', passwordVariable: 'GITHUB_TOKEN'),
                     usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
                     sshUserPrivateKey(credentialsId: 'pve01-automation-ssh', keyFileVariable: 'PROXMOX_SSH_KEY_FILE', usernameVariable: 'PROXMOX_SSH_USER')
                 ]) {

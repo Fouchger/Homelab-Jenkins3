@@ -156,8 +156,8 @@ containers; the pipeline never chooses the destroy-and-recreate path. Updates
 can upgrade Jenkins LTS and system/toolchain dependencies and restart services.
 The agent install preserves the current connection, then schedules its service
 restart five minutes after completion. Verify the agent reconnects and the
-periodic `homelab-check` passes. The job uses the GitHub read credential, the
-Infisical read identity, and the `pve01-automation-ssh` credential.
+periodic `homelab-check` passes. Public GitHub access needs no GitHub credential.
+The job uses the Infisical read identity and `pve01-automation-ssh` credential.
 
 The agent uses a restricted account and a hardened WebSocket systemd service.
 This application installer adds no SSH server, sudo access or Docker socket.
@@ -176,7 +176,8 @@ pct exec 100 -- cat /var/lib/jenkins/secrets/initialAdminPassword
 Complete Jenkins' first administrator wizard. Required plugins and agent node
 configuration are already supplied by the installer. Confirm the agent is online
 and labelled `homelab-automation`. Credentials cannot be invented by the
-installer: supply your GitHub/Infisical identities once.
+installer: supply your Infisical identities once. A GitHub read token is only
+needed if you make the repository private.
 
 You can add credentials through Jenkins or use the protected import helper.
 For the helper, create a root-owned directory with mode 0700 and place only the
@@ -185,7 +186,7 @@ Do not put that directory inside this repository.
 
 | Host file name | Credential/import |
 | --- | --- |
-| homelab-github-readonly.token | GitHub fine-grained read-only PAT; credential ID from configuration. |
+| homelab-github-readonly.token | Optional GitHub fine-grained read-only PAT, only for a private repository; credential ID from configuration. |
 | homelab-pve01-automation-key | Existing OpenSSH Ed25519 private key; `pve01-automation-ssh` (required by `002 - Update Servers`). |
 | homelab-infisical-client-id and homelab-infisical-client-secret | Read-only Universal Auth pair; credential ID from configuration. |
 | homelab-infisical-writer-client-id and homelab-infisical-writer-client-secret | Writer pair; `infisical-homelab-prod-writer`. |
