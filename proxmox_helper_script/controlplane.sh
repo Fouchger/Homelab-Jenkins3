@@ -28,6 +28,7 @@ cleanup() {
     printf 'See /var/log/homelab/jenkins-bootstrap.log and the role installation logs.\n' >&2
   else
     printf 'Temporary project folder removed from Proxmox.\n'
+    printf 'To retrieve the Jenkins initial admin unlock key, run:\n  pct exec %s -- cat /var/lib/jenkins/secrets/initialAdminPassword\n' "$CONTROLLER_CTID"
   fi
   exit "$result"
 }
