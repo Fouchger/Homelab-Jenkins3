@@ -50,11 +50,13 @@ The controller seeds three operator jobs in setup order:
 
 1. `001 - Infisical Credential Setup` pauses while you add the existing read
    and writer Machine Identity credentials in Jenkins, then verifies both
-   Universal Auth logins. Create Username with password credentials with IDs
-   `infisical-homelab-prod-read-api` and
-   `infisical-homelab-prod-writer-api`; use each identity's Client ID as the
-   username and Client Secret as the password. The job never collects secrets
-   as build input or writes Jenkins global credentials.
+   Universal Auth logins. Add both the Infisical Universal Auth plugin
+   credentials (`infisical-homelab-prod` and
+   `infisical-homelab-prod-writer`) and the Username with password API
+   credentials (`infisical-homelab-prod-read-api` and
+   `infisical-homelab-prod-writer-api`). Use each identity's Client ID and
+   Client Secret for both types. The job never collects secrets as build input
+   or writes Jenkins global credentials.
 2. `002 - Update Servers` updates both Jenkins LXCs daily and uses the read-only
    identity to retrieve the trusted Proxmox SSH host key.
 3. `003 - Proxmox Access Setup` creates or rotates the Proxmox API token.

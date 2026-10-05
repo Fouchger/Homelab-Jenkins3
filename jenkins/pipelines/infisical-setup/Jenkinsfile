@@ -16,10 +16,12 @@ pipeline {
         stage('Add the Machine Identity credentials in Jenkins') {
             steps {
                 input(
-                    message: '''In a separate Jenkins tab, add these two Global credentials as "Username with password":
+                message: '''In a separate Jenkins tab, add these four Global credentials:
 
-1. ID: infisical-homelab-prod-read-api; username: Client ID for Infisical jenkins-read; password: its Universal Auth Client Secret.
-2. ID: infisical-homelab-prod-writer-api; username: Client ID for Infisical jenkins-write; password: its Universal Auth Client Secret.
+1. ID: infisical-homelab-prod; type: Infisical Universal Auth; use the jenkins-read Client ID and Client Secret.
+2. ID: infisical-homelab-prod-writer; type: Infisical Universal Auth; use the jenkins-write Client ID and Client Secret.
+3. ID: infisical-homelab-prod-read-api; type: Username with password; username is the jenkins-read Client ID and password is its Client Secret.
+4. ID: infisical-homelab-prod-writer-api; type: Username with password; username is the jenkins-write Client ID and password is its Client Secret.
 
 Do not enter either secret into this build. Once both credentials are saved, continue here to verify their Infisical logins.''',
                     ok: 'Credentials saved; verify them'

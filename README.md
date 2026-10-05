@@ -216,12 +216,15 @@ three operator jobs in order: `001 - Infisical Credential Setup`, which pauses
 while you add the read/write Machine Identity credentials in Jenkins and then
 verifies their logins; `002 - Update Servers`, which updates the controller and
 agent; and `003 - Proxmox Access Setup`, which rotates the Proxmox API token.
-For job 001, create two **Username with password** credentials under **Manage
-Jenkins → Credentials → System → Global credentials**. Use the Infisical Client
-ID as username and Client Secret as password:
+For job 001, add the four credentials below under **Manage Jenkins → Credentials
+→ System → Global credentials**. The API credentials use **Username with
+password**; for the other pair select the **Infisical Universal Auth** type.
+Use each Infisical Client ID and Client Secret:
 
 | Credential ID | Machine Identity |
 | --- | --- |
+| `infisical-homelab-prod` | `jenkins-read` (Infisical Universal Auth) |
+| `infisical-homelab-prod-writer` | `jenkins-write` (Infisical Universal Auth) |
 | `infisical-homelab-prod-read-api` | `jenkins-read` |
 | `infisical-homelab-prod-writer-api` | `jenkins-write` |
 
