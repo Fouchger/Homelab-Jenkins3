@@ -75,7 +75,7 @@ install -d -o jenkins -g jenkins -m 0750 "$plugin_dir"
 # Install the Git, Pipeline, SSH credential, binding, Infisical, and extended
 # timer trigger plugins before Jenkins starts so seeded jobs are ready.
 plugins_present=yes
-for plugin_name in git workflow-job workflow-cps workflow-scm-step ssh-credentials credentials-binding infisical extended-timer-trigger; do
+for plugin_name in git workflow-job workflow-cps workflow-scm-step ssh-credentials credentials-binding infisical extended-timer-trigger mask-passwords; do
   if [[ ! -s "$plugin_dir/$plugin_name.jpi" && ! -s "$plugin_dir/$plugin_name.hpi" ]]; then
     plugins_present=no
     break
@@ -93,7 +93,7 @@ if [[ "$plugins_present" == no ]]; then
   java -jar "$plugin_manager_jar" \
     --war /usr/share/java/jenkins.war \
     --plugin-download-directory "$plugin_stage/plugins" \
-    --plugins git workflow-aggregator ssh-credentials credentials-binding infisical extended-timer-trigger
+    --plugins git workflow-aggregator ssh-credentials credentials-binding infisical extended-timer-trigger mask-passwords
   find "$plugin_stage/plugins" -maxdepth 1 -type f \( -name '*.jpi' -o -name '*.hpi' \) \
     -exec install -o jenkins -g jenkins -m 0644 {} "$plugin_dir/" \;
   rm -rf -- "$plugin_stage"
@@ -510,12 +510,44 @@ JENKINS_UPDATE_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/97-homelab-server-update-pipeline.groovy"
 chmod 0640 "$jenkins_home/init.groovy.d/97-homelab-server-update-pipeline.groovy"
 
-# Seed a safe first-time setup job for the existing Infisical Machine Identities.
-# The operator adds the two credential pairs in Jenkins, then resumes this job
-# to verify authentication. Secrets are never requested as Pipeline input.
+# Seed a first-time setup job for the existing Infisical Machine Identities.
+# Runtime parameters use non-stored password values; a narrow set of Jenkins
+# credential-store signatures is approved for writing the four fixed IDs.
+# Approve only the credential-store signatures needed by the SCM-based
+# Infisical setup Pipeline to replace its four fixed credential entries.
+cat >"$jenkins_home/init.groovy.d/97-homelab-infisical-credential-approvals.groovy" <<'JENKINS_INFISICAL_APPROVALS_HOOK'
+import org.jenkinsci.plugins.scriptsecurity.scripts.ScriptApproval
+
+def approvals = [
+    'staticMethod com.cloudbees.plugins.credentials.SystemCredentialsProvider getInstance',
+    'method com.cloudbees.plugins.credentials.SystemCredentialsProvider getDomainCredentialsMap',
+    'method com.cloudbees.plugins.credentials.SystemCredentialsProvider setDomainCredentialsMap java.util.Map',
+    'method com.cloudbees.plugins.credentials.SystemCredentialsProvider save',
+    'new java.util.LinkedHashMap java.util.Map',
+    'new java.util.ArrayList java.util.Collection',
+    'method java.util.Map get java.lang.Object',
+    'method java.util.Map put java.lang.Object java.lang.Object',
+    'method java.util.List add java.lang.Object',
+    'staticMethod org.codehaus.groovy.runtime.DefaultGroovyMethods removeAll java.util.Collection groovy.lang.Closure',
+    'staticMethod org.codehaus.groovy.runtime.DefaultGroovyMethods each java.lang.Iterable groovy.lang.Closure',
+    'method com.cloudbees.plugins.credentials.common.IdCredentials getId',
+    'staticMethod com.cloudbees.plugins.credentials.domains.Domain global',
+    'staticField com.cloudbees.plugins.credentials.CredentialsScope GLOBAL',
+    'new io.jenkins.plugins.infisicaljenkins.credentials.InfisicalUniversalAuthCredential com.cloudbees.plugins.credentials.CredentialsScope java.lang.String java.lang.String java.lang.String java.lang.String',
+    'new com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl com.cloudbees.plugins.credentials.CredentialsScope java.lang.String java.lang.String java.lang.String java.lang.String'
+]
+def scriptApproval = ScriptApproval.get()
+approvals.each { signature -> scriptApproval.approveSignature(signature) }
+JENKINS_INFISICAL_APPROVALS_HOOK
+chown jenkins:jenkins "$jenkins_home/init.groovy.d/97-homelab-infisical-credential-approvals.groovy"
+chmod 0640 "$jenkins_home/init.groovy.d/97-homelab-infisical-credential-approvals.groovy"
+
 cat >"$jenkins_home/init.groovy.d/98-homelab-infisical-credential-setup-pipeline.groovy" <<'JENKINS_INFISICAL_SETUP_HOOK'
 import hudson.plugins.git.BranchSpec
 import hudson.plugins.git.GitSCM
+import hudson.model.ParametersDefinitionProperty
+import hudson.model.StringParameterDefinition
+import com.michelin.cio.hudson.plugins.passwordparam.PasswordParameterDefinition
 import jenkins.model.Jenkins
 import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition
 import org.jenkinsci.plugins.workflow.job.WorkflowJob
@@ -542,7 +574,14 @@ if (job == null) {
     throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
 }
 job.setDefinition(definition)
-job.setDescription('002 - One-time setup for the existing Infisical jenkins-read and jenkins-write Machine Identities. Add their Universal Auth credentials in Jenkins, then resume this job to verify both logins. Secret values are not collected by the Pipeline.')
+job.addProperty(new ParametersDefinitionProperty([
+    new StringParameterDefinition('INFISICAL_URL', 'https://app.infisical.com', 'Infisical server URL. HTTPS is required.'),
+    new StringParameterDefinition('INFISICAL_READ_CLIENT_ID', '', 'Client ID for the existing jenkins-read Machine Identity.'),
+    new PasswordParameterDefinition('INFISICAL_READ_CLIENT_SECRET', 'Client Secret for jenkins-read; supplied only at runtime.'),
+    new StringParameterDefinition('INFISICAL_WRITE_CLIENT_ID', '', 'Client ID for the existing jenkins-write Machine Identity.'),
+    new PasswordParameterDefinition('INFISICAL_WRITE_CLIENT_SECRET', 'Client Secret for jenkins-write; supplied only at runtime.')
+]))
+job.setDescription('002 - Enter the existing Infisical jenkins-read and jenkins-write Machine Identity Client IDs and Client Secrets as build parameters. The job verifies both logins and creates or rotates their four fixed Jenkins credentials. Secret values use non-stored password parameters and are not printed.')
 job.save()
 JENKINS_INFISICAL_SETUP_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/98-homelab-infisical-credential-setup-pipeline.groovy"

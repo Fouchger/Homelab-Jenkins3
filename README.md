@@ -213,25 +213,29 @@ removing your protected host source files. It deliberately preserves those
 source files if you need to retry. Secret values never appear in helper output.
 The public repository does not need GitHub credentials. The controller seeds
 three operator jobs: `001 - Update Servers`, which updates the controller and
-agent; `002 - Infisical Credential Setup`, which pauses while you add the
-read/write Machine Identity credentials in Jenkins and then verifies their
-logins; and `003 - Proxmox Access Setup`, which rotates the Proxmox API token.
-Because job 001 needs the read identity, run job 002 first if those credentials
-have not yet been added. For job 002, add the four credentials below under **Manage Jenkins → Credentials
-→ System → Global credentials**. The API credentials use **Username with
-password**; for the other pair select the **Infisical Universal Auth** type.
-Use each Infisical Client ID and Client Secret:
+agent; `002 - Infisical Credential Setup`, which accepts the existing read and
+write Machine Identity Client IDs and Client Secrets as build parameters,
+creates or rotates the four fixed Jenkins credentials, then verifies both
+logins;
+and `003 - Proxmox Access Setup`, which rotates the Proxmox API token. Because
+job 001 needs the read identity, run job 002 before job 001 when setting up or
+rotating credentials. For job 002, enter the `jenkins-read` and `jenkins-write`
+Client IDs and Client Secrets on the **Build with Parameters** page. Secret
+inputs use Mask Passwords' non-stored password parameter and are not printed.
+Jenkins stores the resulting credentials encrypted in its global credentials
+store:
 
-| Credential ID | Machine Identity |
+| Credential ID | Machine Identity and credential type |
 | --- | --- |
 | `infisical-homelab-prod` | `jenkins-read` (Infisical Universal Auth) |
 | `infisical-homelab-prod-writer` | `jenkins-write` (Infisical Universal Auth) |
-| `infisical-homelab-prod-read-api` | `jenkins-read` |
-| `infisical-homelab-prod-writer-api` | `jenkins-write` |
+| `infisical-homelab-prod-read-api` | `jenkins-read` (Username with password) |
+| `infisical-homelab-prod-writer-api` | `jenkins-write` (Username with password) |
 
-Resume the paused build to verify both logins. The pipeline does not collect
-secrets as build input or create global Jenkins credentials. Job 003 uses the
-read identity to retrieve the Proxmox SSH key and host key from
+The setup pipeline pre-approves only the Jenkins credential-store API calls
+needed to replace these four fixed IDs. It does not accept credential IDs or
+types from build parameters. Job 003 uses the read identity to retrieve the
+Proxmox SSH key and host key from
 `/proxmox/automation`, then uses the writer identity to rotate and verify the
 Proxmox API token there. It does not read secrets under `/proxmox/lxc`. See
 [`infisical/README.md`](infisical/README.md) for secret formats and rotation

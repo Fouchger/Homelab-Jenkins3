@@ -7,7 +7,7 @@ Proxmox host-side LXC creation/profile scripts remain in `../../proxmox_helper_s
 | File | Purpose |
 | --- | --- |
 | `toolchain-check.Jenkinsfile` | Periodic read-only check of the Jenkins automation agent toolchain. |
-| `infisical-setup/Jenkinsfile` | Job `002 - Infisical Credential Setup`: pauses while the operator adds existing Infisical credentials in Jenkins, then verifies both identities. |
+| `infisical-setup/Jenkinsfile` | Job `002 - Infisical Credential Setup`: accepts the existing read and write Machine Identity values as parameters, verifies the saved logins, and creates or rotates the four fixed Jenkins credentials. |
 | `infisical-setup/verify-machine-identities.py` | Authenticates both Universal Auth identities without printing their secrets. |
 | `proxmox-access/Jenkinsfile` | Job `003 - Proxmox Access Setup`: manually rotates the Proxmox API token and writes it to Infisical. |
 | `proxmox-access/provision-proxmox-access.py` | Infisical API and SSH helper called by the Proxmox access pipeline. |

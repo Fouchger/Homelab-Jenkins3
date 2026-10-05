@@ -9,38 +9,91 @@ pipeline {
     }
 
     parameters {
-        string(name: 'INFISICAL_URL', defaultValue: 'https://app.infisical.com', description: 'Infisical server URL.')
+        string(name: 'INFISICAL_URL', defaultValue: 'https://app.infisical.com', description: 'Infisical server URL. HTTPS is required.')
+        string(name: 'INFISICAL_READ_CLIENT_ID', defaultValue: '', description: 'Client ID for the existing jenkins-read Machine Identity.')
+        nonStoredPassword(name: 'INFISICAL_READ_CLIENT_SECRET', description: 'Client Secret for jenkins-read. This password parameter is not stored in the build record.')
+        string(name: 'INFISICAL_WRITE_CLIENT_ID', defaultValue: '', description: 'Client ID for the existing jenkins-write Machine Identity.')
+        nonStoredPassword(name: 'INFISICAL_WRITE_CLIENT_SECRET', description: 'Client Secret for jenkins-write. This password parameter is not stored in the build record.')
     }
 
     stages {
-        stage('Add the Machine Identity credentials in Jenkins') {
+        stage('Validate and create credentials') {
             steps {
-                input(
-                message: '''In a separate Jenkins tab, add these four Global credentials:
-
-1. ID: infisical-homelab-prod; type: Infisical Universal Auth; use the jenkins-read Client ID and Client Secret.
-2. ID: infisical-homelab-prod-writer; type: Infisical Universal Auth; use the jenkins-write Client ID and Client Secret.
-3. ID: infisical-homelab-prod-read-api; type: Username with password; username is the jenkins-read Client ID and password is its Client Secret.
-4. ID: infisical-homelab-prod-writer-api; type: Username with password; username is the jenkins-write Client ID and password is its Client Secret.
-
-Do not enter either secret into this build. Once both credentials are saved, continue here to verify their Infisical logins.''',
-                    ok: 'Credentials saved; verify them'
-                )
+                script {
+                    if (!(params.INFISICAL_URL ==~ /^https:\/\/[^\s]+$/)) {
+                        error('INFISICAL_URL must be an HTTPS URL.')
+                    }
+                    def uuidPattern = /^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/
+                    if (!(params.INFISICAL_READ_CLIENT_ID ==~ uuidPattern) || !(params.INFISICAL_WRITE_CLIENT_ID ==~ uuidPattern)) {
+                        error('Both Infisical Client IDs must be UUIDs.')
+                    }
+                    if (!params.INFISICAL_READ_CLIENT_SECRET || params.INFISICAL_READ_CLIENT_SECRET.length() < 16 ||
+                        !params.INFISICAL_WRITE_CLIENT_SECRET || params.INFISICAL_WRITE_CLIENT_SECRET.length() < 16) {
+                        error('Both Infisical Client Secrets must be supplied and contain at least 16 characters.')
+                    }
+                    saveInfisicalCredentials(
+                        params.INFISICAL_READ_CLIENT_ID,
+                        params.INFISICAL_READ_CLIENT_SECRET,
+                        params.INFISICAL_WRITE_CLIENT_ID,
+                        params.INFISICAL_WRITE_CLIENT_SECRET
+                    )
+                }
+                echo 'Created or rotated the four fixed Infisical credentials; verifying both logins.'
             }
         }
 
-        stage('Verify read and write identities') {
+        stage('Verify saved credentials') {
             steps {
                 withCredentials([
                     usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
                     usernamePassword(credentialsId: 'infisical-homelab-prod-writer-api', usernameVariable: 'INFISICAL_WRITE_CLIENT_ID', passwordVariable: 'INFISICAL_WRITE_CLIENT_SECRET')
                 ]) {
-                    sh(label: 'Authenticate both Infisical Machine Identities', script: '''#!/bin/sh
+                    withEnv(["INFISICAL_URL=${params.INFISICAL_URL}"]) {
+                        sh(label: 'Authenticate both Infisical Machine Identities', script: '''#!/bin/sh
 set +x
 python3 jenkins/pipelines/infisical-setup/verify-machine-identities.py
 ''')
+                    }
                 }
             }
         }
     }
+}
+
+@com.cloudbees.groovy.cps.NonCPS
+def saveInfisicalCredentials(String readClientId, String readClientSecret, String writeClientId, String writeClientSecret) {
+    def identities = [
+        [name: 'read-only', id: readClientId, secret: readClientSecret,
+         universalId: 'infisical-homelab-prod', apiId: 'infisical-homelab-prod-read-api'],
+        [name: 'read/write', id: writeClientId, secret: writeClientSecret,
+         universalId: 'infisical-homelab-prod-writer', apiId: 'infisical-homelab-prod-writer-api']
+    ]
+    def provider = com.cloudbees.plugins.credentials.SystemCredentialsProvider.getInstance()
+    def domainCredentials = new LinkedHashMap(provider.getDomainCredentialsMap())
+    def globalCredentials = new ArrayList(domainCredentials.get(com.cloudbees.plugins.credentials.domains.Domain.global()) ?: [])
+
+    identities.each { identity ->
+        def universalCredential = new io.jenkins.plugins.infisicaljenkins.credentials.InfisicalUniversalAuthCredential(
+            com.cloudbees.plugins.credentials.CredentialsScope.GLOBAL,
+            identity.universalId,
+            'Infisical Universal Auth for Homelab Jenkins',
+            identity.id,
+            identity.secret
+        )
+        def apiCredential = new com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl(
+            com.cloudbees.plugins.credentials.CredentialsScope.GLOBAL,
+            identity.apiId,
+            'Infisical Universal Auth for API calls from Jenkins pipelines',
+            identity.id,
+            identity.secret
+        )
+        [universalCredential, apiCredential].each { replacement ->
+            globalCredentials.removeAll { existing -> existing.id == replacement.id }
+            globalCredentials.add(replacement)
+        }
+    }
+
+    domainCredentials.put(com.cloudbees.plugins.credentials.domains.Domain.global(), globalCredentials)
+    provider.setDomainCredentialsMap(domainCredentials)
+    provider.save()
 }
