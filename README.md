@@ -62,12 +62,19 @@ to reuse it or destroy and recreate it. Reuse reruns its application installer;
 stopped matching LXCs are started. Before offering either choice, it checks the
 profile tags, hostname, MAC, VLAN, and IPv4 address. Unrelated or mismatched
 container IDs are rejected. Without an interactive terminal, a matching LXC is
-reused by default; deletion requires an interactive terminal.
-Destroying requires typing a CTID-specific confirmation, then uses the Community
-Scripts `guest-delete.sh` menu. In that menu, select only the prompted LXC; the
-helper also lists other containers and VMs. Proxmox deletion protection is
-temporarily disabled for that LXC and restored if deletion is cancelled or fails.
-Destroying permanently removes the LXC and its data.
+reused by default unless an action variable explicitly requests destruction.
+For non-interactive runs, set `HOMELAB_CONTROLPLANE_ACTION` and
+`HOMELAB_AGENT_ACTION` to `reuse` or `destroy` before launching the bootstrap.
+`HOMELAB_EXISTING_LXC_ACTION` can set one action for both. Destruction targets
+only the profile-matched CTID: protection is temporarily disabled, then Proxmox
+stops and destroys that exact LXC. Protection is restored if deletion fails.
+This uses the targeted `pct` commands because the Community Scripts
+`guest-delete.sh` tool has an interactive checklist and does not accept a CTID
+argument. Destroying permanently removes the LXC and its data.
+New LXCs are created by passing all profile settings to the Community Script in
+generated mode, which skips its setup menus. To destroy the existing controlplane
+and reuse an existing agent without prompts, prefix the one-line bootstrap with
+`HOMELAB_CONTROLPLANE_ACTION=destroy HOMELAB_AGENT_ACTION=reuse`.
 Reruns may upgrade Jenkins and dependencies and briefly restart services.
 A copy of the downloaded project remains inside the controlplane at
 `/opt/homelab/bootstrap-project`; no repository checkout remains on Proxmox.

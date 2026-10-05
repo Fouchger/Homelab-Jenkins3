@@ -140,8 +140,19 @@ install_role() {
       printf 'CTID %s does not have expected IPv4 address %s; refusing to reinstall.\n' "$expected_id" "$expected_ipv4_address" >&2
       return 2
     }
-    local action= choice confirm protection_state delete_script delete_status
-    if [[ -r /dev/tty ]]; then
+    local action= choice action_override protection_state delete_status
+    if [[ $role == controller ]]; then
+      action_override=${HOMELAB_CONTROLPLANE_ACTION:-${HOMELAB_EXISTING_LXC_ACTION:-}}
+    else
+      action_override=${HOMELAB_AGENT_ACTION:-${HOMELAB_EXISTING_LXC_ACTION:-}}
+    fi
+    if [[ -n $action_override ]]; then
+      action=${action_override,,}
+      [[ $action == reuse || $action == destroy ]] || {
+        printf '%s action must be reuse or destroy.\n' "$profile_name" >&2
+        return 2
+      }
+    elif [[ -r /dev/tty ]]; then
       while true; do
         printf '\n%s (CTID %s) already exists and matches this profile. Choose [r]euse or [d]estroy and recreate: ' "$profile_name" "$expected_id" >/dev/tty
         IFS= read -r choice </dev/tty || return 1
@@ -152,41 +163,25 @@ install_role() {
         esac
       done
     else
-      action=${HOMELAB_EXISTING_LXC_ACTION:-reuse}
-      [[ $action == reuse || $action == destroy ]] || {
-        printf 'HOMELAB_EXISTING_LXC_ACTION must be reuse or destroy.\n' >&2
-        return 2
-      }
-      [[ $action == reuse ]] || {
-        printf 'Destroying an existing LXC requires an interactive Proxmox terminal.\n' >&2
-        return 2
-      }
+      action=reuse
       printf 'No interactive terminal; reusing matching %s (CTID %s).\n' "$profile_name" "$expected_id"
     fi
     if [[ $action == destroy ]]; then
-      printf 'The guest-delete helper can delete other guests if selected. In its checklist, select only CTID %s.\n' "$expected_id" >/dev/tty
-      printf 'Type DELETE-%s to confirm destroying %s and all data inside it: ' "$expected_id" "$profile_name" >/dev/tty
-      IFS= read -r confirm </dev/tty || return 1
-      [[ $confirm == "DELETE-$expected_id" ]] || {
-        printf 'Deletion cancelled; CTID %s was not changed.\n' "$expected_id" >/dev/tty
-        return 1
-      }
-      command -v whiptail >/dev/null || {
-        printf 'whiptail is required by the Community Scripts guest-delete tool; CTID %s was not changed.\n' "$expected_id" >&2
-        return 1
-      }
-      delete_script="$temp_dir/guest-delete.sh"
-      curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 120 \
-        https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/tools/pve/guest-delete.sh \
-        -o "$delete_script"
-      [[ -s $delete_script ]] || { printf 'Guest-delete download was empty.\n' >&2; return 1; }
-      bash -n "$delete_script"
+      printf 'Destroying only the verified LXC CTID %s (%s).\n' "$expected_id" "$profile_name"
       protection_state=$(printf '%s\n' "$config" | sed -n 's/^protection: //p')
       if [[ $protection_state == 1 || $protection_state == yes ]]; then
         pct set "$expected_id" --protection 0
       fi
-      printf '\nStarting Community Scripts guest-delete. Select only LXC CTID %s in its checklist.\n' "$expected_id" >/dev/tty
-      if bash "$delete_script" </dev/tty >/dev/tty 2>&1; then
+      if [[ $(pct status "$expected_id") == 'status: running' ]]; then
+        if ! pct stop "$expected_id"; then
+          if [[ $protection_state == 1 || $protection_state == yes ]]; then
+            pct set "$expected_id" --protection 1 || true
+          fi
+          printf 'Could not stop CTID %s; protection was restored if it was enabled.\n' "$expected_id" >&2
+          return 1
+        fi
+      fi
+      if pct destroy "$expected_id" -f; then
         delete_status=0
       else
         delete_status=$?
@@ -195,7 +190,7 @@ install_role() {
         if [[ $protection_state == 1 || $protection_state == yes ]]; then
           pct set "$expected_id" --protection 1 || true
         fi
-        printf 'CTID %s still exists (delete helper exit %s); refusing to continue. Protection was restored if it was enabled.\n' "$expected_id" "$delete_status" >&2
+        printf 'CTID %s still exists (delete exit %s); refusing to continue. Protection was restored if it was enabled.\n' "$expected_id" "$delete_status" >&2
         return 1
       fi
       printf 'CTID %s was deleted. Creating a fresh %s.\n' "$expected_id" "$profile_name"

@@ -147,7 +147,7 @@ curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --ma
 [[ -s $temp_dir/installer.sh ]] || { printf 'Installer download was empty.\n' >&2; exit 1; }
 bash -n "$temp_dir/installer.sh"
 # Explicit empty value suppresses an inherited hook in the installer environment.
-env "${env_args[@]}" var_post_install= bash "$temp_dir/installer.sh"
+env "${env_args[@]}" var_post_install= MODE=generated mode=generated bash "$temp_dir/installer.sh"
 if [[ -n $hook_path ]]; then
   printf 'Container creation completed; running application installation.\n'
   CTID="$container_id" bash "$hook_path"
