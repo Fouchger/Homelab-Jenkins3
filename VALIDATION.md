@@ -1,11 +1,5 @@
 # Jenkins installation alignment and validation
 
-Baseline: the uploaded Homelab-Jenkins2-main(1).zip, archive commit
-`3c2a095b074c824c27c11a307564c59254c88410`.
-
-The guest installer bodies and Jenkins startup hooks were adapted from its
-controller/agent installers. Jenkins3 retains its smaller profile-based launcher.
-
 ## Alignment
 
 - Java 25 on controller and agent; Jenkins minimum for Java 25 checked.
@@ -18,7 +12,7 @@ controller/agent installers. Jenkins3 retains its smaller profile-based launcher
 
 ## Additional behaviour
 
-Jenkins3 adds role-specific logs, timezone settings, download failure handling,
+Jenkins adds role-specific logs, timezone settings, download failure handling,
 explicit host hook execution, installation markers and extra agent utilities.
 Ansible entry points use executable launcher scripts rather than symlinks.
 Configuration defaults point to Homelab-Jenkins3. The verification job is included;
