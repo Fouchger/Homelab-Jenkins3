@@ -211,13 +211,27 @@ stored credential IDs; an existing ID alone does not prove a replacement token
 was valid. Confirm the GitHub job succeeds and review any startup errors before
 removing your protected host source files. It deliberately preserves those
 source files if you need to retry. Secret values never appear in helper output.
-The private repository requires Contents read permission. The controller also
-seeds the manual `001 - Proxmox Access Setup` job. Import both Infisical
-identities first; the job uses the read identity to retrieve the Proxmox SSH
-key and host key from `/proxmox/automation`, then uses the writer identity to
-rotate and verify the Proxmox API token there. It does not read secrets under
-`/proxmox/lxc`. See [`infisical/README.md`](infisical/README.md) for its
-Proxmox role scope, required secret formats, and rotation behavior.
+The public repository does not need GitHub credentials. The controller seeds
+three operator jobs in order: `001 - Infisical Credential Setup`, which pauses
+while you add the read/write Machine Identity credentials in Jenkins and then
+verifies their logins; `002 - Update Servers`, which updates the controller and
+agent; and `003 - Proxmox Access Setup`, which rotates the Proxmox API token.
+For job 001, create two **Username with password** credentials under **Manage
+Jenkins → Credentials → System → Global credentials**. Use the Infisical Client
+ID as username and Client Secret as password:
+
+| Credential ID | Machine Identity |
+| --- | --- |
+| `infisical-homelab-prod-read-api` | `jenkins-read` |
+| `infisical-homelab-prod-writer-api` | `jenkins-write` |
+
+Resume the paused build to verify both logins. The pipeline does not collect
+secrets as build input or create global Jenkins credentials. Job 003 uses the
+read identity to retrieve the Proxmox SSH key and host key from
+`/proxmox/automation`, then uses the writer identity to rotate and verify the
+Proxmox API token there. It does not read secrets under `/proxmox/lxc`. See
+[`infisical/README.md`](infisical/README.md) for secret formats and rotation
+behavior.
 
 These scripts import an existing Proxmox SSH key and seed the Proxmox access
 setup job. The job applies the existing `HomelabLxcOperator` role to

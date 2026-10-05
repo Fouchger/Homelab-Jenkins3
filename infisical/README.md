@@ -46,8 +46,20 @@ configurable value because it is not visible in the provided project URL.
 
 ## Proxmox API access setup
 
-The controller seeds a manual Jenkins job named `001 - Proxmox Access Setup`.
-Import both Machine Identity credential pairs before running it. The job reads
+The controller seeds three operator jobs in setup order:
+
+1. `001 - Infisical Credential Setup` pauses while you add the existing read
+   and writer Machine Identity credentials in Jenkins, then verifies both
+   Universal Auth logins. Create Username with password credentials with IDs
+   `infisical-homelab-prod-read-api` and
+   `infisical-homelab-prod-writer-api`; use each identity's Client ID as the
+   username and Client Secret as the password. The job never collects secrets
+   as build input or writes Jenkins global credentials.
+2. `002 - Update Servers` updates both Jenkins LXCs daily and uses the read-only
+   identity to retrieve the trusted Proxmox SSH host key.
+3. `003 - Proxmox Access Setup` creates or rotates the Proxmox API token.
+
+Import both Machine Identity credential pairs before running job 003. It reads
 `PVE_SSH_PRIVATE_KEY`, `PVE_SSH_HOST_KEY`, and the current API token values from
 `/proxmox/automation`. The supplied screenshots show the existing account
 `homelab-automation@pve` and custom role `HomelabLxcOperator`; these are the
@@ -66,8 +78,8 @@ host (including its hostname or IP). The private key must authorize root SSH
 to that host. LXC password folders under `/proxmox/lxc` are unrelated and are
 not read by this pipeline.
 
-The separate manual `002 - Update Servers` job uses the read-only Machine
-Identity to retrieve only `PVE_SSH_HOST_KEY`. Its root SSH credential and
-read-only GitHub credential let the host bootstrap fetch the selected
-repository revision. The bootstrap reuses the controller and agent and
-refreshes the controller's project snapshot.
+The `002 - Update Servers` job uses the read-only Machine Identity to retrieve
+only `PVE_SSH_HOST_KEY`. Its `pve01-automation-ssh` credential runs the host
+bootstrap, which downloads this publicly readable repository without GitHub
+credentials, reuses the controller and agent, and refreshes the controller's
+project snapshot.

@@ -388,7 +388,7 @@ chown jenkins:jenkins "$jenkins_home/init.groovy.d/95-homelab-github-pipeline.gr
 chmod 0640 "$jenkins_home/init.groovy.d/95-homelab-github-pipeline.groovy"
 
 # Seed the manual Proxmox access setup pipeline. It rotates a token only when
-# explicitly started by an operator and uses the existing GitHub SCM credential.
+# explicitly started by an operator and reads the public repository anonymously.
 cat >"$jenkins_home/init.groovy.d/96-homelab-proxmox-access-pipeline.groovy" <<'JENKINS_PVE_PIPELINE_HOOK'
 import hudson.plugins.git.BranchSpec
 import hudson.plugins.git.GitSCM
@@ -402,8 +402,16 @@ new File('/etc/homelab/project.properties').withInputStream { projectSettings.lo
 def repositoryUrl = "https://github.com/${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
 def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
 def branch = projectSettings.getProperty('githubBranch', 'main')
-def jobName = '001 - Proxmox Access Setup'
+def jobName = '003 - Proxmox Access Setup'
+def previousJobName = '001 - Proxmox Access Setup'
 def job = jenkins.getItem(jobName)
+if (job == null) {
+    job = jenkins.getItem(previousJobName)
+    if (job != null) {
+        job.renameTo(jobName)
+        println("Renamed managed Pipeline '${previousJobName}' to '${jobName}'.")
+    }
+}
 def scm = new GitSCM(
     GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
     Collections.singletonList(new BranchSpec("*/${branch}")),
@@ -420,13 +428,13 @@ if (job == null) {
     println("Updating managed Pipeline '${jobName}' to use the repository's Jenkins pipeline folder.")
 }
 job.setDefinition(definition)
-job.setDescription('001 - Applies the existing HomelabLxcOperator role to the Proxmox automation account and selected guest/storage paths, creates or rotates its API token, updates /proxmox/automation in Infisical, verifies the saved values, then removes the prior token when it belongs to this account. Start manually when needed.')
+job.setDescription('003 - Applies the existing HomelabLxcOperator role to the Proxmox automation account and selected guest/storage paths, creates or rotates its API token, updates /proxmox/automation in Infisical, verifies the saved values, then removes the prior token when it belongs to this account. Start manually when needed.')
 job.save()
 JENKINS_PVE_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/96-homelab-proxmox-access-pipeline.groovy"
 chmod 0640 "$jenkins_home/init.groovy.d/96-homelab-proxmox-access-pipeline.groovy"
 
-# Seed the manual full-stack update job. It always reuses the two verified LXCs.
+# Seed the scheduled full-stack update job. It always reuses the two verified LXCs.
 cat >"$jenkins_home/init.groovy.d/97-homelab-server-update-pipeline.groovy" <<'JENKINS_UPDATE_PIPELINE_HOOK'
 import hudson.model.BooleanParameterDefinition
 import hudson.model.ParametersDefinitionProperty
@@ -473,6 +481,44 @@ job.save()
 JENKINS_UPDATE_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/97-homelab-server-update-pipeline.groovy"
 chmod 0640 "$jenkins_home/init.groovy.d/97-homelab-server-update-pipeline.groovy"
+
+# Seed a safe first-time setup job for the existing Infisical Machine Identities.
+# The operator adds the two credential pairs in Jenkins, then resumes this job
+# to verify authentication. Secrets are never requested as Pipeline input.
+cat >"$jenkins_home/init.groovy.d/98-homelab-infisical-credential-setup-pipeline.groovy" <<'JENKINS_INFISICAL_SETUP_HOOK'
+import hudson.plugins.git.BranchSpec
+import hudson.plugins.git.GitSCM
+import jenkins.model.Jenkins
+import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition
+import org.jenkinsci.plugins.workflow.job.WorkflowJob
+
+def jenkins = Jenkins.get()
+def projectSettings = new Properties()
+new File('/etc/homelab/project.properties').withInputStream { projectSettings.load(it) }
+def repositoryUrl = "https://github.com/${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
+def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
+def branch = projectSettings.getProperty('githubBranch', 'main')
+def jobName = '001 - Infisical Credential Setup'
+def job = jenkins.getItem(jobName)
+def scm = new GitSCM(
+    GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
+    Collections.singletonList(new BranchSpec("*/${branch}")),
+    null, null, Collections.emptyList()
+)
+def definition = new CpsScmFlowDefinition(scm, 'jenkins/pipelines/infisical-setup/Jenkinsfile')
+definition.setLightweight(true)
+if (job == null) {
+    job = jenkins.createProject(WorkflowJob, jobName)
+    println("Created Infisical credential setup Pipeline '${jobName}'.")
+} else if (!(job instanceof WorkflowJob)) {
+    throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
+}
+job.setDefinition(definition)
+job.setDescription('001 - One-time setup for the existing Infisical jenkins-read and jenkins-write Machine Identities. Add their Universal Auth credentials in Jenkins, then resume this job to verify both logins. Secret values are not collected by the Pipeline.')
+job.save()
+JENKINS_INFISICAL_SETUP_HOOK
+chown jenkins:jenkins "$jenkins_home/init.groovy.d/98-homelab-infisical-credential-setup-pipeline.groovy"
+chmod 0640 "$jenkins_home/init.groovy.d/98-homelab-infisical-credential-setup-pipeline.groovy"
 install -o jenkins -g jenkins -m 0600 /dev/null "$jenkins_home/secrets/homelab-agent-enrollment.pending"
 
 install -d -m 0755 /etc/systemd/system/jenkins.service.d

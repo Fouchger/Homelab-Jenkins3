@@ -1,0 +1,44 @@
+pipeline {
+    agent { label 'homelab-automation' }
+
+    options {
+        disableConcurrentBuilds()
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+
+    parameters {
+        string(name: 'INFISICAL_URL', defaultValue: 'https://app.infisical.com', description: 'Infisical server URL.')
+    }
+
+    stages {
+        stage('Add the Machine Identity credentials in Jenkins') {
+            steps {
+                input(
+                    message: '''In a separate Jenkins tab, add these two Global credentials as "Username with password":
+
+1. ID: infisical-homelab-prod-read-api; username: Client ID for Infisical jenkins-read; password: its Universal Auth Client Secret.
+2. ID: infisical-homelab-prod-writer-api; username: Client ID for Infisical jenkins-write; password: its Universal Auth Client Secret.
+
+Do not enter either secret into this build. Once both credentials are saved, continue here to verify their Infisical logins.''',
+                    ok: 'Credentials saved; verify them'
+                )
+            }
+        }
+
+        stage('Verify read and write identities') {
+            steps {
+                withCredentials([
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-writer-api', usernameVariable: 'INFISICAL_WRITE_CLIENT_ID', passwordVariable: 'INFISICAL_WRITE_CLIENT_SECRET')
+                ]) {
+                    sh(label: 'Authenticate both Infisical Machine Identities', script: '''#!/bin/sh
+set +x
+python3 jenkins/pipelines/infisical-setup/verify-machine-identities.py
+''')
+                }
+            }
+        }
+    }
+}
