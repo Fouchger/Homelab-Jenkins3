@@ -8,7 +8,14 @@ pipeline {
         buildDiscarder(logRotator(numToKeepStr: '20'))
     }
 
+    triggers {
+        extendedCron('''TZ=Pacific/Auckland
+0 2 * * *
+%AUTOMATED_UPDATE=true''')
+    }
+
     parameters {
+        booleanParam(name: 'AUTOMATED_UPDATE', defaultValue: false, description: 'Set by the daily timer. Leave disabled for manual runs so they require confirmation.')
         string(name: 'PROXMOX_HOST', defaultValue: '192.168.20.10', description: 'Proxmox host reachable from the Jenkins automation agent.')
         string(name: 'GITHUB_OWNER', defaultValue: 'Fouchger', description: 'Repository owner used by the Proxmox bootstrap download.')
         string(name: 'GITHUB_REPOSITORY', defaultValue: 'Homelab-Jenkins3', description: 'Repository name used by the Proxmox bootstrap download.')
@@ -29,6 +36,9 @@ pipeline {
         }
 
         stage('Confirm update') {
+            when {
+                expression { !params.AUTOMATED_UPDATE }
+            }
             steps {
                 input(message: "Update both matching Jenkins LXCs from commit ${env.UPDATE_COMMIT}?", ok: 'Update both servers')
             }

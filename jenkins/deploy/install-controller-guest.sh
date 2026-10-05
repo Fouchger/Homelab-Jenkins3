@@ -72,10 +72,10 @@ chmod 0644 "$settings_dir/project.properties"
 plugin_dir="$jenkins_home/plugins"
 install -d -o jenkins -g jenkins -m 0750 "$plugin_dir"
 
-# Install the Git, Pipeline, SSH credential, binding, and Infisical plugins
-# before Jenkins starts so seeded jobs and secret integrations are available.
+# Install the Git, Pipeline, SSH credential, binding, Infisical, and extended
+# timer trigger plugins before Jenkins starts so seeded jobs are ready.
 plugins_present=yes
-for plugin_name in git workflow-job workflow-cps workflow-scm-step ssh-credentials credentials-binding infisical; do
+for plugin_name in git workflow-job workflow-cps workflow-scm-step ssh-credentials credentials-binding infisical extended-timer-trigger; do
   if [[ ! -s "$plugin_dir/$plugin_name.jpi" && ! -s "$plugin_dir/$plugin_name.hpi" ]]; then
     plugins_present=no
     break
@@ -93,7 +93,7 @@ if [[ "$plugins_present" == no ]]; then
   java -jar "$plugin_manager_jar" \
     --war /usr/share/java/jenkins.war \
     --plugin-download-directory "$plugin_stage/plugins" \
-    --plugins git workflow-aggregator ssh-credentials credentials-binding infisical
+    --plugins git workflow-aggregator ssh-credentials credentials-binding infisical extended-timer-trigger
   find "$plugin_stage/plugins" -maxdepth 1 -type f \( -name '*.jpi' -o -name '*.hpi' \) \
     -exec install -o jenkins -g jenkins -m 0644 {} "$plugin_dir/" \;
   rm -rf -- "$plugin_stage"
@@ -424,8 +424,11 @@ chmod 0640 "$jenkins_home/init.groovy.d/96-homelab-proxmox-access-pipeline.groov
 
 # Seed the manual full-stack update job. It always reuses the two verified LXCs.
 cat >"$jenkins_home/init.groovy.d/97-homelab-server-update-pipeline.groovy" <<'JENKINS_UPDATE_PIPELINE_HOOK'
+import hudson.model.BooleanParameterDefinition
+import hudson.model.ParametersDefinitionProperty
 import hudson.plugins.git.BranchSpec
 import hudson.plugins.git.GitSCM
+import io.jenkins.plugins.extended_timer_trigger.ExtendedTimerTrigger
 import jenkins.model.Jenkins
 import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition
 import org.jenkinsci.plugins.workflow.job.WorkflowJob
@@ -454,7 +457,14 @@ if (job == null) {
     println("Updating managed Pipeline '${jobName}' to the current repository pipeline path.")
 }
 job.setDefinition(definition)
-job.setDescription('002 - Retrieves the configured GitHub branch revision and prompts before updating both verified Jenkins LXCs on Proxmox. It always selects reuse; it does not destroy containers.')
+job.setDescription('002 - Updates both verified Jenkins LXCs from the configured GitHub branch every day at 2:00 a.m. Pacific/Auckland. Timer runs proceed automatically; manual runs require confirmation. Containers are always reused and never destroyed.')
+job.removeProperty(ParametersDefinitionProperty)
+job.addProperty(new ParametersDefinitionProperty(
+    new BooleanParameterDefinition('AUTOMATED_UPDATE', false, 'Set by the daily timer; manual runs require confirmation.')
+))
+job.addTrigger(new ExtendedTimerTrigger('''TZ=Pacific/Auckland
+0 2 * * *
+%AUTOMATED_UPDATE=true'''))
 job.save()
 JENKINS_UPDATE_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/97-homelab-server-update-pipeline.groovy"

@@ -139,25 +139,25 @@ validated in the development environment.
 | Agent collections | `community.proxmox`, `community.routeros`, `community.general`, `kubernetes.core`. |
 | Additional agent utilities | rsync, zip, make, ShellCheck and yamllint. |
 
-The controller installs Git, Pipeline, SSH credentials, credentials binding and
-Infisical plugins with their dependencies. Startup hooks create the inbound
-`jenkins-agent` node with one executor and exclusive `homelab-automation` label,
-and set the controller's executor count to zero.
+The controller installs Git, Pipeline, SSH credentials, credentials binding,
+Infisical and Extended Timer Trigger plugins with their dependencies. Startup
+hooks create the inbound `jenkins-agent` node with one executor and exclusive
+`homelab-automation` label, and set the controller's executor count to zero.
 A `homelab-check` Pipeline job reads the configured GitHub repository and runs
 [`jenkins/pipelines/toolchain-check.Jenkinsfile`](jenkins/pipelines/toolchain-check.Jenkinsfile), which verifies the toolchain without changing services.
 The job polls Git every five minutes, as in Jenkins2. It needs the GitHub
 credential below to read a private repository.
-The manual `002 - Update Servers` job checks out the configured branch, then
-uses the Proxmox host bootstrap at that exact commit to rerun the controller
-and agent installers and refresh the controller's repository snapshot. Jenkins
-prompts for confirmation after showing the commit and always reuses the verified
-containers; it never chooses the destroy-and-recreate path. Updates can upgrade
-Jenkins LTS and system/toolchain dependencies, so run it when you are ready for
-those changes and service restarts. It preserves the current agent connection
-during installation, then schedules the agent service restart five minutes
-after completion. Verify the agent reconnects and the periodic `homelab-check`
-passes. It uses the GitHub read credential, the Infisical read identity, and
-the `pve01-automation-ssh` credential.
+The `002 - Update Servers` job checks out the configured branch, then uses the
+Proxmox host bootstrap at that exact commit to rerun the controller and agent
+installers and refresh the controller's repository snapshot. It runs daily at
+2:00 a.m. Pacific/Auckland. Timer runs proceed unattended; manually started runs
+show the commit and prompt for confirmation. Both paths always reuse the verified
+containers; the pipeline never chooses the destroy-and-recreate path. Updates
+can upgrade Jenkins LTS and system/toolchain dependencies and restart services.
+The agent install preserves the current connection, then schedules its service
+restart five minutes after completion. Verify the agent reconnects and the
+periodic `homelab-check` passes. The job uses the GitHub read credential, the
+Infisical read identity, and the `pve01-automation-ssh` credential.
 
 The agent uses a restricted account and a hardened WebSocket systemd service.
 This application installer adds no SSH server, sudo access or Docker socket.
