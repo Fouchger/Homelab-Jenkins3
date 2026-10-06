@@ -511,9 +511,9 @@ chmod 0640 "$jenkins_home/init.groovy.d/97-homelab-server-update-pipeline.groovy
 
 # Seed a first-time setup job for the existing Infisical Machine Identities.
 # Runtime parameters use non-stored password values; a narrow set of Jenkins
-# credential-store signatures is approved for writing the four fixed IDs.
+# credential-store signatures are approved for writing the configured IDs.
 # Approve only the credential-store signatures needed by the SCM-based
-# Infisical setup Pipeline to replace its four fixed credential entries.
+# Infisical setup Pipeline to replace its credentials and connection settings.
 cat >"$jenkins_home/init.groovy.d/97-homelab-infisical-credential-approvals.groovy" <<'JENKINS_INFISICAL_APPROVALS_HOOK'
 import org.jenkinsci.plugins.scriptsecurity.scripts.ScriptApproval
 
@@ -522,6 +522,7 @@ def approvals = [
     'method com.cloudbees.plugins.credentials.SystemCredentialsProvider getDomainCredentialsMap',
     'method com.cloudbees.plugins.credentials.SystemCredentialsProvider setDomainCredentialsMap java.util.Map',
     'method com.cloudbees.plugins.credentials.SystemCredentialsProvider save',
+    'method hudson.model.Saveable save',
     'new java.util.LinkedHashMap java.util.Map',
     'new java.util.ArrayList java.util.Collection',
     'method java.util.Map get java.lang.Object',
