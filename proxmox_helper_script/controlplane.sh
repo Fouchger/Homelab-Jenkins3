@@ -197,10 +197,10 @@ create_lxc_with_password() {
   command -v whiptail >/dev/null || { printf 'whiptail is required to collect the LXC root password.\n' >&2; return 1; }
   password_file="$temp_dir/root-password.$container_id"
   while true; do
-    password=$(prompt_whiptail password 'LXC root password' "Choose a root password for $profile_name (CTID $container_id), at least 12 characters; do not use a colon:") || return 1
+    password=$(prompt_whiptail password 'LXC root password' "Choose a root password for $profile_name (CTID $container_id), at least 6 characters; do not use a colon:") || return 1
     confirm=$(prompt_whiptail password 'Confirm LXC root password' "Confirm the root password for $profile_name (CTID $container_id):") || return 1
-    if (( ${#password} < 12 )) || [[ $password == *:* ]]; then
-      whiptail --title 'Invalid LXC root password' --msgbox 'Use at least 12 characters and do not include a colon.' 9 70 1>/dev/tty 2>&1 </dev/tty
+    if (( ${#password} < 6 )) || [[ $password == *:* ]]; then
+      whiptail --title 'Invalid LXC root password' --msgbox 'Use at least 6 characters and do not include a colon.' 9 70 1>/dev/tty 2>&1 </dev/tty
     elif [[ $password != "$confirm" ]]; then
       whiptail --title 'Password mismatch' --msgbox 'The passwords did not match. Try again.' 9 70 1>/dev/tty 2>&1 </dev/tty
     else

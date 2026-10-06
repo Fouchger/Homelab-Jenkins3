@@ -79,7 +79,7 @@ argument. Destroying permanently removes the LXC and its data.
 New LXCs are created by passing all profile settings to the Community Script in
 generated mode, which skips its setup menus. Immediately before each new
 controlplane or agent is created, the bootstrap asks you to choose and confirm
-that LXC's root password (at least 12 characters; no colon). The input is hidden,
+that LXC's root password (at least 6 characters; no colon). The input is hidden,
 applied to the guest before its application installer runs, and removed from the
 host's temporary files. When Infisical setup is active, the bootstrap also saves
 the password as `LXC_ROOT_PASSWORD` under `/proxmox/lxc/controlplane` or

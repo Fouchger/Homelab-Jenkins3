@@ -150,7 +150,7 @@ if [[ -z ${HOMELAB_LXC_ROOT_PASSWORD_FILE:-} ]]; then
   }
   HOMELAB_LXC_ROOT_PASSWORD_FILE="$temp_dir/root-password-input"
   while true; do
-    printf '\nChoose a root password for %s (CTID %s), at least 12 characters; do not use a colon: ' "${LXC_PROFILE_TITLE:-LXC}" "$container_id" >/dev/tty
+    printf '\nChoose a root password for %s (CTID %s), at least 6 characters; do not use a colon: ' "${LXC_PROFILE_TITLE:-LXC}" "$container_id" >/dev/tty
     IFS= read -r -s root_password </dev/tty || exit 1
     printf '\nConfirm the root password: ' >/dev/tty
     IFS= read -r -s confirm_password </dev/tty || exit 1
@@ -180,9 +180,9 @@ if [[ -n ${HOMELAB_LXC_ROOT_PASSWORD_FILE:-} ]]; then
     exit 2
   }
   IFS= read -r root_password < "$password_file" || true
-  [[ ${#root_password} -ge 12 && $root_password != *:* && $root_password != *$'\n'* ]] || {
+  [[ ${#root_password} -ge 6 && $root_password != *:* && $root_password != *$'\n'* ]] || {
     unset root_password
-    printf 'Root password must be at least 12 characters and must not contain a colon.\n' >&2
+    printf 'Root password must be at least 6 characters and must not contain a colon.\n' >&2
     exit 2
   }
   password_payload="$temp_dir/root-password"
