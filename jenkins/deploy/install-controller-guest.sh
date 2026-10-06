@@ -64,7 +64,6 @@ githubBranch=${HOMELAB_GITHUB_BRANCH:-main}
 githubCredentialId=${HOMELAB_GITHUB_CREDENTIAL_ID-github-homelab-jenkins-readonly}
 infisicalReadCredentialId=${HOMELAB_INFISICAL_CREDENTIAL_ID:-infisical-homelab-prod}
 infisicalUrl=${HOMELAB_INFISICAL_URL:-https://app.infisical.com}
-infisicalProjectId=${HOMELAB_INFISICAL_PROJECT_ID:-}
 infisicalEnvironment=${HOMELAB_INFISICAL_ENVIRONMENT:-prod}
 infisicalProjectSlug=${HOMELAB_INFISICAL_PROJECT_SLUG:-}
 PROJECT_SETTINGS
@@ -534,7 +533,9 @@ def approvals = [
     'staticMethod com.cloudbees.plugins.credentials.domains.Domain global',
     'staticField com.cloudbees.plugins.credentials.CredentialsScope GLOBAL',
     'new io.jenkins.plugins.infisicaljenkins.credentials.InfisicalUniversalAuthCredential com.cloudbees.plugins.credentials.CredentialsScope java.lang.String java.lang.String java.lang.String java.lang.String',
-    'new com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl com.cloudbees.plugins.credentials.CredentialsScope java.lang.String java.lang.String java.lang.String java.lang.String'
+    'new com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl com.cloudbees.plugins.credentials.CredentialsScope java.lang.String java.lang.String java.lang.String java.lang.String',
+    'new org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl com.cloudbees.plugins.credentials.CredentialsScope java.lang.String java.lang.String hudson.util.Secret',
+    'staticMethod hudson.util.Secret fromString java.lang.String'
 ]
 def scriptApproval = ScriptApproval.get()
 approvals.each { signature -> scriptApproval.approveSignature(signature) }
@@ -575,13 +576,17 @@ if (job == null) {
 }
 job.setDefinition(definition)
 job.addProperty(new ParametersDefinitionProperty([
-    new StringParameterDefinition('INFISICAL_URL', 'https://app.infisical.com', 'Infisical server URL. HTTPS is required.'),
+    new StringParameterDefinition('HOMELAB_INFISICAL_CREDENTIAL_ID', 'infisical-homelab-prod', 'Jenkins credential ID for the read-only Infisical Universal Auth credential.'),
+    new StringParameterDefinition('HOMELAB_INFISICAL_URL', 'https://app.infisical.com', 'Infisical server URL. HTTPS is required.'),
+    new PasswordParameterDefinition('HOMELAB_INFISICAL_PROJECT_ID', 'Infisical project UUID, saved in Jenkins credentials for the other pipelines.'),
+    new StringParameterDefinition('HOMELAB_INFISICAL_ENVIRONMENT', 'prod', 'Infisical environment slug.'),
+    new StringParameterDefinition('HOMELAB_INFISICAL_PROJECT_SLUG', '', 'Optional Infisical project slug.'),
     new StringParameterDefinition('INFISICAL_READ_CLIENT_ID', '', 'Client ID for the existing jenkins-read Machine Identity.'),
     new PasswordParameterDefinition('INFISICAL_READ_CLIENT_SECRET', 'Client Secret for jenkins-read; supplied only at runtime.'),
     new StringParameterDefinition('INFISICAL_WRITE_CLIENT_ID', '', 'Client ID for the existing jenkins-write Machine Identity.'),
     new PasswordParameterDefinition('INFISICAL_WRITE_CLIENT_SECRET', 'Client Secret for jenkins-write; supplied only at runtime.')
 ]))
-job.setDescription('002 - Enter the existing Infisical jenkins-read and jenkins-write Machine Identity Client IDs and Client Secrets as build parameters. The job verifies both logins and creates or rotates their four fixed Jenkins credentials. Secret values use non-stored password parameters and are not printed.')
+job.setDescription('002 - Enter all five HOMELAB_INFISICAL_* connection settings and both existing Machine Identity credential pairs as build parameters. The job saves the settings and creates or rotates the Machine Identity credentials in Jenkins, then verifies both logins. The project UUID and Client Secrets use non-stored password parameters and are not printed.')
 job.save()
 JENKINS_INFISICAL_SETUP_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/98-homelab-infisical-credential-setup-pipeline.groovy"

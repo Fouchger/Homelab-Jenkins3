@@ -19,9 +19,6 @@ pipeline {
         string(name: 'PROXMOX_HOST', defaultValue: '192.168.20.10', description: 'Proxmox host reachable from the Jenkins automation agent.')
         string(name: 'GITHUB_OWNER', defaultValue: 'Fouchger', description: 'Repository owner used by the Proxmox bootstrap download.')
         string(name: 'GITHUB_REPOSITORY', defaultValue: 'Homelab-Jenkins3', description: 'Repository name used by the Proxmox bootstrap download.')
-        string(name: 'INFISICAL_URL', defaultValue: 'https://app.infisical.com', description: 'Infisical server URL.')
-        string(name: 'INFISICAL_PROJECT_ID', defaultValue: '535a4605-d859-4fad-b244-656c74a747b4', description: 'Infisical Homelab-Jenkins project UUID.')
-        string(name: 'INFISICAL_ENVIRONMENT', defaultValue: 'prod', description: 'Infisical environment slug.')
     }
 
     stages {
@@ -48,6 +45,10 @@ pipeline {
             steps {
                 withCredentials([
                     usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                    string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
+                    string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
+                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT'),
+                    string(credentialsId: 'homelab-infisical-project-slug', variable: 'INFISICAL_PROJECT_SLUG'),
                     sshUserPrivateKey(credentialsId: 'pve01-automation-ssh', keyFileVariable: 'PROXMOX_SSH_KEY_FILE', usernameVariable: 'PROXMOX_SSH_USER')
                 ]) {
                     sh(label: 'Update both matching Jenkins LXCs from this repository revision', script: '''#!/bin/sh
