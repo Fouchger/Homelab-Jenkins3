@@ -79,6 +79,8 @@ host (including its hostname or IP). The private key must authorize root SSH to
 that host. LXC password folders under `/proxmox/lxc` are unrelated and are not
 read by this pipeline.
 
-Job 001's `pve01-automation-ssh` credential runs the host bootstrap, which
-downloads this publicly readable repository without GitHub credentials, reuses
-the controller and agent, and refreshes the controller's project snapshot.
+Job 001 uses the read identity to retrieve `PVE_SSH_PRIVATE_KEY` and
+`PVE_SSH_HOST_KEY` from `/proxmox/automation`. It holds the SSH key in a
+temporary mode 0600 file for the run, downloads this publicly readable
+repository without GitHub credentials, reuses the controller and agent, then
+removes the temporary key file.

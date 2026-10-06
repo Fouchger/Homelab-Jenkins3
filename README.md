@@ -157,7 +157,8 @@ can upgrade Jenkins LTS and system/toolchain dependencies and restart services.
 The agent install preserves the current connection, then schedules its service
 restart five minutes after completion. Verify the agent reconnects and the
 periodic `homelab-check` passes. Public GitHub access needs no GitHub credential.
-The job uses the Infisical read identity and `pve01-automation-ssh` credential.
+The job uses the Infisical read identity to retrieve the Proxmox SSH private key
+and trusted host key from `/proxmox/automation` for the duration of the run.
 
 The agent uses a restricted account and a hardened WebSocket systemd service.
 This application installer adds no SSH server, sudo access or Docker socket.
@@ -187,7 +188,7 @@ Do not put that directory inside this repository.
 | Host file name | Credential/import |
 | --- | --- |
 | homelab-github-readonly.token | Optional GitHub fine-grained read-only PAT, only for a private repository; credential ID from configuration. |
-| homelab-pve01-automation-key | Existing OpenSSH Ed25519 private key; `pve01-automation-ssh` (required by `002 - Update Servers`). |
+| homelab-pve01-automation-key | Optional existing OpenSSH Ed25519 private key import; the operator pipelines read `PVE_SSH_PRIVATE_KEY` from Infisical instead. |
 | homelab-infisical-client-id and homelab-infisical-client-secret | Read-only Universal Auth pair; credential ID from configuration. |
 | homelab-infisical-writer-client-id and homelab-infisical-writer-client-secret | Writer pair; `infisical-homelab-prod-writer`. |
 

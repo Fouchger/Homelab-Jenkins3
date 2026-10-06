@@ -10,7 +10,7 @@ Proxmox host-side LXC creation/profile scripts remain in `../../proxmox_helper_s
 | `infisical-setup/Jenkinsfile` | Job `001 - Infisical Credential Setup`: accepts all five `HOMELAB_INFISICAL_*` settings and the existing read/write Machine Identity values, saves the connection settings and credentials in Jenkins, and verifies both logins. |
 | `infisical-setup/verify-machine-identities.py` | Authenticates both Universal Auth identities without printing their secrets. |
 | `server-update/Jenkinsfile` | Job `002 - Update Servers`: updates the controller and agent LXCs daily at 2:00 a.m. Pacific/Auckland. |
-| `server-update/update-servers.py` | Retrieves the trusted Proxmox host key from Infisical and runs the host bootstrap over SSH. |
+| `server-update/update-servers.py` | Retrieves the Proxmox SSH key and trusted host key from Infisical, then runs the host bootstrap over SSH. |
 | `proxmox-access/Jenkinsfile` | Job `003 - Proxmox Access Setup`: manually rotates the Proxmox API token and writes it to Infisical. |
 | `proxmox-access/provision-proxmox-access.py` | Infisical API and SSH helper called by the Proxmox access pipeline. |
 

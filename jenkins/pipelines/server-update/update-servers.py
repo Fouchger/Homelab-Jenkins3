@@ -36,7 +36,7 @@ def http_json(url, method="GET", headers=None, form=None):
         raise RuntimeError(f"Infisical request failed: {type(exc).__name__}") from None
 
 
-def fetch_proxmox_host_key():
+def fetch_proxmox_credentials():
     base_url = required("INFISICAL_URL").rstrip("/")
     if not base_url.startswith("https://"):
         raise RuntimeError("INFISICAL_URL must use HTTPS")
@@ -56,14 +56,19 @@ def fetch_proxmox_host_key():
         "environment": required("INFISICAL_ENVIRONMENT"),
         "secretPath": "/proxmox/automation",
     })
-    result = http_json(
-        f"{base_url}/api/v4/secrets/PVE_SSH_HOST_KEY?{query}",
-        headers={"Authorization": f"Bearer {access_token}"},
-    )
-    value = result.get("secret", {}).get("secretValue") if isinstance(result, dict) else None
-    if not isinstance(value, str) or not value.strip():
-        raise RuntimeError("Infisical secret /proxmox/automation/PVE_SSH_HOST_KEY is missing or empty")
-    return value.strip() + "\n"
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    def read_secret(name):
+        result = http_json(f"{base_url}/api/v4/secrets/{name}?{query}", headers=headers)
+        value = result.get("secret", {}).get("secretValue") if isinstance(result, dict) else None
+        if not isinstance(value, str) or not value.strip():
+            raise RuntimeError(f"Infisical secret /proxmox/automation/{name} is missing or empty")
+        return value.strip() + "\n"
+
+    private_key = read_secret("PVE_SSH_PRIVATE_KEY")
+    if "-----BEGIN " not in private_key or "PRIVATE KEY-----" not in private_key:
+        raise RuntimeError("Infisical secret /proxmox/automation/PVE_SSH_PRIVATE_KEY is not a private key")
+    return private_key, read_secret("PVE_SSH_HOST_KEY")
 
 
 def run_ssh(host, key_file, known_hosts_file, remote_command, input_text=None, capture=False, timeout=120):
@@ -95,8 +100,6 @@ def run_ssh(host, key_file, known_hosts_file, remote_command, input_text=None, c
 
 
 def main():
-    if required("PROXMOX_SSH_USER") != "root":
-        raise RuntimeError("The pve01-automation-ssh credential must connect as root for pct operations")
     host = required("PROXMOX_HOST")
     owner = required("GITHUB_OWNER")
     repository = required("GITHUB_REPOSITORY")
@@ -108,8 +111,11 @@ def main():
     if not re.fullmatch(r"[0-9a-fA-F]{40,64}", commit):
         raise RuntimeError("UPDATE_COMMIT must be the checked-out Git commit SHA")
 
-    known_hosts = fetch_proxmox_host_key()
-    key_file = required("PROXMOX_SSH_KEY_FILE")
+    private_key, known_hosts = fetch_proxmox_credentials()
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="pve-ssh-key-", delete=False) as key_handle:
+        key_handle.write(private_key)
+        key_file = key_handle.name
+    os.chmod(key_file, 0o600)
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="pve-known-hosts-", delete=False) as host_file:
         host_file.write(known_hosts)
         known_hosts_file = host_file.name
@@ -155,6 +161,10 @@ HOMELAB_SKIP_AGENT_ENROLMENT=yes \\
                 print("WARNING: remote temporary update directory cleanup failed; remove it on Proxmox.", file=sys.stderr)
         try:
             os.unlink(known_hosts_file)
+        except FileNotFoundError:
+            pass
+        try:
+            os.unlink(key_file)
         except FileNotFoundError:
             pass
 
