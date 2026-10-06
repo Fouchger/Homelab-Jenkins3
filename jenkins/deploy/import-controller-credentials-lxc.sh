@@ -53,18 +53,17 @@ for filename in "${files[@]}"; do
   pct push "$controller_id" "$credential_dir/$filename" "/run/$filename" --perms 0600
   pct exec "$controller_id" -- chown jenkins:jenkins "/run/$filename"
 done
+# Jenkins init hooks run as the jenkins user. They can read these protected
+# files but cannot unlink entries from root-owned /run. A completed systemd
+# restart means all init hooks have finished, so remove the files as root on
+# the Proxmox host instead of waiting for the hooks to delete them.
+printf 'Restarting Jenkins to import the supplied credentials.\n'
 pct exec "$controller_id" -- systemctl restart jenkins
-complete=no
-for ((attempt=1; attempt<=120; attempt++)); do
-  remaining=0
-  for filename in "${transferred[@]}"; do
-    if pct exec "$controller_id" -- test -e "/run/$filename"; then remaining=$((remaining+1)); fi
-  done
-  if (( remaining == 0 )); then complete=yes; break; fi
-  sleep 1
+printf 'Jenkins restart completed; removing temporary credential files from the container.\n'
+for filename in "${transferred[@]}"; do
+  pct exec "$controller_id" -- rm -f -- "/run/$filename"
 done
-[[ $complete == yes ]] || { printf 'Credential hooks did not finish; inspect Jenkins logs.\n' >&2; exit 1; }
-# Hooks remove temporary files even on failure: separately verify stored IDs.
+# The files are now removed; verify that the Jenkins hooks stored their IDs.
 for filename in "${transferred[@]}"; do
   case $filename in
     homelab-github-readonly.token) credential_id=$HOMELAB_GITHUB_CREDENTIAL_ID;;
