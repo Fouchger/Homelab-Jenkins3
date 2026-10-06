@@ -22,3 +22,8 @@ immediately before each new container and configures Infisical plus the
 dedicated Proxmox SSH key through `whiptail` before a new controlplane is
 created. See the root README for details. The selected Community Script may
 still prompt for host-specific choices.
+
+On Proxmox, `/root/.ssh/authorized_keys` is commonly a symlink to the
+cluster-managed `/etc/pve/priv/authorized_keys`. The bootstrap follows only
+that exact Proxmox target so it can add and rotate its key without replacing
+the link or altering unrelated SSH keys.

@@ -4,6 +4,7 @@
 import json
 import os
 import re
+import stat
 import sys
 import urllib.error
 import urllib.parse
@@ -89,7 +90,18 @@ def update_authorized_keys(public_key, prune=False):
     os.chmod(ssh_dir, 0o700)
     authorized_keys = ssh_dir / "authorized_keys"
     if authorized_keys.is_symlink():
-        raise SetupError("/root/.ssh/authorized_keys must not be a symbolic link")
+        # Proxmox links root's authorized_keys to the cluster-managed file.
+        # Follow only that exact, expected target; never replace the symlink.
+        expected_target = Path("/etc/pve/priv/authorized_keys")
+        try:
+            resolved_target = authorized_keys.resolve(strict=True)
+        except (OSError, RuntimeError):
+            raise SetupError("Proxmox root authorized_keys link cannot be resolved") from None
+        if resolved_target != expected_target:
+            raise SetupError("Proxmox root authorized_keys link has an unexpected target")
+        authorized_keys = resolved_target
+    if authorized_keys.exists() and not stat.S_ISREG(authorized_keys.stat().st_mode):
+        raise SetupError("Proxmox authorized_keys target must be a regular file")
     existing_lines = authorized_keys.read_text(encoding="utf-8").splitlines() if authorized_keys.exists() else []
     retained = []
     key_exists = False
@@ -107,7 +119,7 @@ def update_authorized_keys(public_key, prune=False):
         retained.append(line)
     if not key_exists:
         retained.append(public_key)
-    temp_path = authorized_keys.with_suffix(".tmp")
+    temp_path = authorized_keys.with_name(authorized_keys.name + ".homelab-tmp")
     if temp_path.is_symlink():
         raise SetupError("Temporary authorized_keys path must not be a symbolic link")
     temp_path.write_text("\n".join(retained) + "\n", encoding="utf-8")
