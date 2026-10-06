@@ -155,8 +155,8 @@ if [[ -z ${HOMELAB_LXC_ROOT_PASSWORD_FILE:-} ]]; then
     printf '\nConfirm the root password: ' >/dev/tty
     IFS= read -r -s confirm_password </dev/tty || exit 1
     printf '\n' >/dev/tty
-    if (( ${#root_password} < 12 )) || [[ $root_password == *:* ]]; then
-      printf 'Use at least 12 characters and do not include a colon.\n' >/dev/tty
+    if (( ${#root_password} < 6 )) || [[ $root_password == *:* ]]; then
+      printf 'Use at least 6 characters and do not include a colon.\n' >/dev/tty
     elif [[ $root_password != "$confirm_password" ]]; then
       printf 'The passwords did not match. Try again.\n' >/dev/tty
     else
