@@ -12,7 +12,7 @@ HOMELAB_INFISICAL_ENVIRONMENT="prod"
 HOMELAB_INFISICAL_PROJECT_SLUG=""
 ```
 
-Run `002 - Infisical Credential Setup` and provide all five settings shown
+Run `001 - Infisical Credential Setup` and provide all five settings shown
 above, plus the existing `jenkins-read` and `jenkins-write` Machine Identity
 Client IDs and Client Secrets. The pipeline uses the credential ID for the
 read-only Universal Auth credential and saves the URL, project UUID,
@@ -49,15 +49,19 @@ in the provided project URL.
 
 The controller seeds three operator jobs:
 
-1. `001 - Update Servers` updates both Jenkins LXCs daily and uses the saved
-   Infisical connection settings to retrieve the trusted Proxmox SSH host key.
-2. `002 - Infisical Credential Setup` accepts all five settings and both
+1. `001 - Infisical Credential Setup` accepts all five settings and both
    Machine Identity credential pairs, saves them into Jenkins, and verifies
    both Universal Auth logins.
+2. `002 - Update Servers` updates both Jenkins LXCs daily and uses the saved
+   Infisical connection settings to retrieve the trusted Proxmox SSH host key.
 3. `003 - Proxmox Access Setup` creates or rotates the Proxmox API token using
    the saved Infisical connection settings and Machine Identity credentials.
 
-Run job 002 before jobs 001 and 003 when setting up or rotating these values.
+For a fresh setup, run job 001, then 002, then 003. When rotating Infisical
+credentials, rerun job 001 before the jobs that use them.
+On an existing controller, run its current `001 - Update Servers` job once
+after deploying the change; the Jenkins startup hook renumbers the managed jobs
+and preserves their build history.
 Job 003 reads `PVE_SSH_PRIVATE_KEY`, `PVE_SSH_HOST_KEY`, and the current API
 token values from `/proxmox/automation`. The Proxmox account and role are
 pipeline settings. It applies that role to `/vms` and each selected storage

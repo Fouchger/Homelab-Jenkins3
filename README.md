@@ -147,7 +147,7 @@ A `homelab-check` Pipeline job reads the configured GitHub repository and runs
 [`jenkins/pipelines/toolchain-check.Jenkinsfile`](jenkins/pipelines/toolchain-check.Jenkinsfile), which verifies the toolchain without changing services.
 The job polls Git every five minutes, as in Jenkins2. It needs the GitHub
 credential below to read a private repository.
-The `001 - Update Servers` job checks out the configured branch, then uses the
+The `002 - Update Servers` job checks out the configured branch, then uses the
 Proxmox host bootstrap at that exact commit to rerun the controller and agent
 installers and refresh the controller's repository snapshot. It runs daily at
 2:00 a.m. Pacific/Auckland. Timer runs proceed unattended; manually started runs
@@ -187,7 +187,7 @@ Do not put that directory inside this repository.
 | Host file name | Credential/import |
 | --- | --- |
 | homelab-github-readonly.token | Optional GitHub fine-grained read-only PAT, only for a private repository; credential ID from configuration. |
-| homelab-pve01-automation-key | Existing OpenSSH Ed25519 private key; `pve01-automation-ssh` (required by `001 - Update Servers`). |
+| homelab-pve01-automation-key | Existing OpenSSH Ed25519 private key; `pve01-automation-ssh` (required by `002 - Update Servers`). |
 | homelab-infisical-client-id and homelab-infisical-client-secret | Read-only Universal Auth pair; credential ID from configuration. |
 | homelab-infisical-writer-client-id and homelab-infisical-writer-client-secret | Writer pair; `infisical-homelab-prod-writer`. |
 
@@ -214,15 +214,18 @@ was valid. Confirm the GitHub job succeeds and review any startup errors before
 removing your protected host source files. It deliberately preserves those
 source files if you need to retry. Secret values never appear in helper output.
 The public repository does not need GitHub credentials. The controller seeds
-three operator jobs: `001 - Update Servers`, which updates the controller and
-agent; `002 - Infisical Credential Setup`, which accepts all five
+three operator jobs: `001 - Infisical Credential Setup`, which accepts all five
 `HOMELAB_INFISICAL_*` settings and the existing read and write Machine Identity
 Client IDs and Client Secrets as build parameters, saves the settings and
 creates or rotates the Machine Identity credentials in Jenkins, then verifies
-both logins;
-and `003 - Proxmox Access Setup`, which rotates the Proxmox API token. Because
-job 001 needs the read identity, run job 002 before job 001 when setting up or
-rotating credentials. For job 002, enter the `jenkins-read` and `jenkins-write`
+both logins; `002 - Update Servers`, which updates the controller and agent;
+and `003 - Proxmox Access Setup`, which rotates the Proxmox API token. For a
+fresh setup, run 001, then 002, then 003. To apply this renumbering to an
+existing Jenkins controller, run its current `001 - Update Servers` job once
+after deploying the change; the startup hook renames the managed jobs and
+preserves their build history. When rotating Infisical credentials, rerun 001
+before the jobs that use them. For job 001, enter the `jenkins-read` and
+`jenkins-write`
 Client IDs and Client Secrets on the **Build with Parameters** page. The project
 UUID and secret inputs use Mask Passwords' non-stored password parameter and
 are not printed. Jenkins stores the resulting credentials encrypted in its

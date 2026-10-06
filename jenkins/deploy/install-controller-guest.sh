@@ -394,8 +394,8 @@ import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition
 import org.jenkinsci.plugins.workflow.job.WorkflowJob
 
 def targets = [
-    'jenkins/pipelines/server-update/Jenkinsfile': '001 - Update Servers',
-    'jenkins/pipelines/infisical-setup/Jenkinsfile': '002 - Infisical Credential Setup',
+    'jenkins/pipelines/infisical-setup/Jenkinsfile': '001 - Infisical Credential Setup',
+    'jenkins/pipelines/server-update/Jenkinsfile': '002 - Update Servers',
     'jenkins/pipelines/proxmox-access/Jenkinsfile': '003 - Proxmox Access Setup'
 ]
 def jenkins = Jenkins.get()
@@ -478,7 +478,7 @@ new File('/etc/homelab/project.properties').withInputStream { projectSettings.lo
 def repositoryUrl = "https://github.com/${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
 def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
 def branch = projectSettings.getProperty('githubBranch', 'main')
-def jobName = '001 - Update Servers'
+def jobName = '002 - Update Servers'
 def job = jenkins.getItem(jobName)
 def scm = new GitSCM(
     GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
@@ -496,7 +496,7 @@ if (job == null) {
     println("Updating managed Pipeline '${jobName}' to the current repository pipeline path.")
 }
 job.setDefinition(definition)
-job.setDescription('001 - Updates both verified Jenkins LXCs from the configured GitHub branch every day at 2:00 a.m. Pacific/Auckland. Timer runs proceed automatically; manual runs require confirmation. Containers are always reused and never destroyed.')
+job.setDescription('002 - Updates both verified Jenkins LXCs from the configured GitHub branch every day at 2:00 a.m. Pacific/Auckland. Timer runs proceed automatically; manual runs require confirmation. Containers are always reused and never destroyed.')
 job.removeProperty(ParametersDefinitionProperty)
 job.addProperty(new ParametersDefinitionProperty(
     new BooleanParameterDefinition('AUTOMATED_UPDATE', false, 'Set by the daily timer; manual runs require confirmation.')
@@ -559,7 +559,7 @@ new File('/etc/homelab/project.properties').withInputStream { projectSettings.lo
 def repositoryUrl = "https://github.com/${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
 def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
 def branch = projectSettings.getProperty('githubBranch', 'main')
-def jobName = '002 - Infisical Credential Setup'
+def jobName = '001 - Infisical Credential Setup'
 def job = jenkins.getItem(jobName)
 def scm = new GitSCM(
     GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
@@ -586,7 +586,7 @@ job.addProperty(new ParametersDefinitionProperty([
     new StringParameterDefinition('INFISICAL_WRITE_CLIENT_ID', '', 'Client ID for the existing jenkins-write Machine Identity.'),
     new PasswordParameterDefinition('INFISICAL_WRITE_CLIENT_SECRET', 'Client Secret for jenkins-write; supplied only at runtime.')
 ]))
-job.setDescription('002 - Enter all five HOMELAB_INFISICAL_* connection settings and both existing Machine Identity credential pairs as build parameters. The job saves the settings and creates or rotates the Machine Identity credentials in Jenkins, then verifies both logins. The project UUID and Client Secrets use non-stored password parameters and are not printed.')
+job.setDescription('001 - Enter all five HOMELAB_INFISICAL_* connection settings and both existing Machine Identity credential pairs as build parameters. The job saves the settings and creates or rotates the Machine Identity credentials in Jenkins, then verifies both logins. The project UUID and Client Secrets use non-stored password parameters and are not printed.')
 job.save()
 JENKINS_INFISICAL_SETUP_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/98-homelab-infisical-credential-setup-pipeline.groovy"
