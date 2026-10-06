@@ -17,5 +17,8 @@ because they can contain arrays and computed paths.
 Use `LXC_DEFAULT_HOST_POST_INSTALL_SCRIPT` for a hook that exists on the
 Proxmox host. The launcher runs it with `CTID` after container creation and
 propagates failures. The Ubuntu profiles automatically install their Jenkins
-applications; see the root README for settings and one-time Jenkins setup.
-The selected Community Script may still prompt for host-specific choices.
+applications. The `controlplane.sh` bootstrap prompts for root passwords
+immediately before each new container and configures Infisical plus the
+dedicated Proxmox SSH key through `whiptail` before a new controlplane is
+created. See the root README for details. The selected Community Script may
+still prompt for host-specific choices.

@@ -263,6 +263,8 @@ import com.cloudbees.plugins.credentials.domains.Domain
 import io.jenkins.plugins.infisicaljenkins.configuration.InfisicalConfiguration
 import io.jenkins.plugins.infisicaljenkins.credentials.InfisicalUniversalAuthCredential
 import com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl
+import org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl
+import hudson.util.Secret
 
 def projectSettings = new Properties()
 new File('/etc/homelab/project.properties').withInputStream { projectSettings.load(it) }
@@ -314,6 +316,43 @@ identities.each { identity ->
     } finally {
         clientIdFile.delete()
         secretFile.delete()
+    }
+}
+
+def infisicalSettings = [
+    [id: 'homelab-infisical-project-id', path: '/run/homelab-infisical-project-id'],
+    [id: 'homelab-infisical-url', path: '/run/homelab-infisical-url'],
+    [id: 'homelab-infisical-environment', path: '/run/homelab-infisical-environment'],
+    [id: 'homelab-infisical-project-slug', path: '/run/homelab-infisical-project-slug'],
+    [id: 'homelab-proxmox-host', path: '/run/homelab-proxmox-host']
+]
+infisicalSettings.each { setting ->
+    def settingFile = new File(setting.path)
+    if (!settingFile.isFile()) {
+        return
+    }
+    try {
+        def value = settingFile.getText('UTF-8').trim()
+        if (setting.id == 'homelab-infisical-project-id' && !(value ==~ /^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/)) {
+            throw new IllegalArgumentException('Infisical project ID must be a UUID.')
+        }
+        if (setting.id == 'homelab-infisical-url' && !value.startsWith('https://')) {
+            throw new IllegalArgumentException('Infisical URL must use HTTPS.')
+        }
+        def provider = SystemCredentialsProvider.getInstance()
+        def domainCredentials = new LinkedHashMap(provider.getDomainCredentialsMap())
+        def globalCredentials = new ArrayList(domainCredentials.get(Domain.global()) ?: [])
+        globalCredentials.removeAll { it.id == setting.id }
+        globalCredentials.add(new StringCredentialsImpl(
+            CredentialsScope.GLOBAL, setting.id,
+            "Homelab Infisical setting: ${setting.id}", Secret.fromString(value)
+        ))
+        domainCredentials.put(Domain.global(), globalCredentials)
+        provider.setDomainCredentialsMap(domainCredentials)
+        provider.save()
+        println("Configured Jenkins Infisical setting '${setting.id}'.")
+    } finally {
+        settingFile.delete()
     }
 }
 
@@ -386,7 +425,7 @@ JENKINS_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/95-homelab-github-pipeline.groovy"
 chmod 0640 "$jenkins_home/init.groovy.d/95-homelab-github-pipeline.groovy"
 
-# Preserve build history while moving the three operator jobs to their current
+# Preserve build history while moving the two operator jobs to their current
 # names. Temporary names make swaps safe if an earlier numbering was deployed.
 cat >"$jenkins_home/init.groovy.d/95-z-homelab-pipeline-numbering.groovy" <<'JENKINS_PIPELINE_RENUMBER_HOOK'
 import jenkins.model.Jenkins
@@ -394,11 +433,16 @@ import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition
 import org.jenkinsci.plugins.workflow.job.WorkflowJob
 
 def targets = [
-    'jenkins/pipelines/infisical-setup/Jenkinsfile': '001 - Infisical Credential Setup',
-    'jenkins/pipelines/server-update/Jenkinsfile': '002 - Update Servers',
-    'jenkins/pipelines/proxmox-access/Jenkinsfile': '003 - Proxmox Access Setup'
+    'jenkins/pipelines/server-update/Jenkinsfile': '001 - Update Servers',
+    'jenkins/pipelines/proxmox-access/Jenkinsfile': '002 - Proxmox Access Setup'
 ]
 def jenkins = Jenkins.get()
+def obsoleteSetup = jenkins.getItem('001 - Infisical Credential Setup')
+if (obsoleteSetup instanceof WorkflowJob) {
+    obsoleteSetup.setDisabled(true)
+    obsoleteSetup.setDescription('Retired: Infisical setup now runs during Proxmox controlplane creation. This job is kept disabled to preserve build history.')
+    obsoleteSetup.renameTo('Infisical Credential Setup (retired)')
+}
 def managed = jenkins.getItems(WorkflowJob).findAll { item ->
     def definition = item.getDefinition()
     definition instanceof CpsScmFlowDefinition && targets.containsKey(definition.getScriptPath())
@@ -437,7 +481,7 @@ new File('/etc/homelab/project.properties').withInputStream { projectSettings.lo
 def repositoryUrl = "https://github.com/${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
 def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
 def branch = projectSettings.getProperty('githubBranch', 'main')
-def jobName = '003 - Proxmox Access Setup'
+def jobName = '002 - Proxmox Access Setup'
 def job = jenkins.getItem(jobName)
 def scm = new GitSCM(
     GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
@@ -455,7 +499,7 @@ if (job == null) {
     println("Updating managed Pipeline '${jobName}' to use the repository's Jenkins pipeline folder.")
 }
 job.setDefinition(definition)
-job.setDescription('003 - Applies the existing HomelabLxcOperator role to the Proxmox automation account and selected guest/storage paths, creates or rotates its API token, updates /proxmox/automation in Infisical, verifies the saved values, then removes the prior token when it belongs to this account. Start manually when needed.')
+job.setDescription('002 - Applies the existing HomelabLxcOperator role to the Proxmox automation account and selected guest/storage paths, creates or rotates its API token, updates /proxmox/automation in Infisical, verifies the saved values, then removes the prior token when it belongs to this account. Start manually when needed.')
 job.save()
 JENKINS_PVE_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/96-homelab-proxmox-access-pipeline.groovy"
@@ -478,7 +522,7 @@ new File('/etc/homelab/project.properties').withInputStream { projectSettings.lo
 def repositoryUrl = "https://github.com/${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
 def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
 def branch = projectSettings.getProperty('githubBranch', 'main')
-def jobName = '002 - Update Servers'
+def jobName = '001 - Update Servers'
 def job = jenkins.getItem(jobName)
 def scm = new GitSCM(
     GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
@@ -496,7 +540,7 @@ if (job == null) {
     println("Updating managed Pipeline '${jobName}' to the current repository pipeline path.")
 }
 job.setDefinition(definition)
-job.setDescription('002 - Updates both verified Jenkins LXCs from the configured GitHub branch every day at 2:00 a.m. Pacific/Auckland. Timer runs proceed automatically; manual runs require confirmation. Containers are always reused and never destroyed.')
+job.setDescription('001 - Updates both verified Jenkins LXCs from the configured GitHub branch every day at 2:00 a.m. Pacific/Auckland. Timer runs proceed automatically; manual runs require confirmation. Containers are always reused and never destroyed.')
 job.removeProperty(ParametersDefinitionProperty)
 job.addProperty(new ParametersDefinitionProperty(
     new BooleanParameterDefinition('AUTOMATED_UPDATE', false, 'Set by the daily timer; manual runs require confirmation.')
@@ -509,89 +553,8 @@ JENKINS_UPDATE_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/97-homelab-server-update-pipeline.groovy"
 chmod 0640 "$jenkins_home/init.groovy.d/97-homelab-server-update-pipeline.groovy"
 
-# Seed a first-time setup job for the existing Infisical Machine Identities.
-# Runtime parameters use non-stored password values; a narrow set of Jenkins
-# credential-store signatures are approved for writing the configured IDs.
-# Approve only the credential-store signatures needed by the SCM-based
-# Infisical setup Pipeline to replace its credentials and connection settings.
-cat >"$jenkins_home/init.groovy.d/97-homelab-infisical-credential-approvals.groovy" <<'JENKINS_INFISICAL_APPROVALS_HOOK'
-import org.jenkinsci.plugins.scriptsecurity.scripts.ScriptApproval
-
-def approvals = [
-    'staticMethod com.cloudbees.plugins.credentials.SystemCredentialsProvider getInstance',
-    'method com.cloudbees.plugins.credentials.SystemCredentialsProvider getDomainCredentialsMap',
-    'method com.cloudbees.plugins.credentials.SystemCredentialsProvider setDomainCredentialsMap java.util.Map',
-    'method com.cloudbees.plugins.credentials.SystemCredentialsProvider save',
-    'method hudson.model.Saveable save',
-    'new java.util.LinkedHashMap java.util.Map',
-    'new java.util.ArrayList java.util.Collection',
-    'method java.util.Map get java.lang.Object',
-    'method java.util.Map put java.lang.Object java.lang.Object',
-    'method java.util.List add java.lang.Object',
-    'staticMethod org.codehaus.groovy.runtime.DefaultGroovyMethods removeAll java.util.Collection groovy.lang.Closure',
-    'staticMethod org.codehaus.groovy.runtime.DefaultGroovyMethods each java.lang.Iterable groovy.lang.Closure',
-    'method com.cloudbees.plugins.credentials.common.IdCredentials getId',
-    'staticMethod com.cloudbees.plugins.credentials.domains.Domain global',
-    'staticField com.cloudbees.plugins.credentials.CredentialsScope GLOBAL',
-    'new io.jenkins.plugins.infisicaljenkins.credentials.InfisicalUniversalAuthCredential com.cloudbees.plugins.credentials.CredentialsScope java.lang.String java.lang.String java.lang.String java.lang.String',
-    'new com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl com.cloudbees.plugins.credentials.CredentialsScope java.lang.String java.lang.String java.lang.String java.lang.String',
-    'new org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl com.cloudbees.plugins.credentials.CredentialsScope java.lang.String java.lang.String hudson.util.Secret',
-    'staticMethod hudson.util.Secret fromString java.lang.String'
-]
-def scriptApproval = ScriptApproval.get()
-approvals.each { signature -> scriptApproval.approveSignature(signature) }
-JENKINS_INFISICAL_APPROVALS_HOOK
-chown jenkins:jenkins "$jenkins_home/init.groovy.d/97-homelab-infisical-credential-approvals.groovy"
-chmod 0640 "$jenkins_home/init.groovy.d/97-homelab-infisical-credential-approvals.groovy"
-
-cat >"$jenkins_home/init.groovy.d/98-homelab-infisical-credential-setup-pipeline.groovy" <<'JENKINS_INFISICAL_SETUP_HOOK'
-import hudson.plugins.git.BranchSpec
-import hudson.plugins.git.GitSCM
-import hudson.model.ParametersDefinitionProperty
-import hudson.model.StringParameterDefinition
-import com.michelin.cio.hudson.plugins.passwordparam.PasswordParameterDefinition
-import jenkins.model.Jenkins
-import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition
-import org.jenkinsci.plugins.workflow.job.WorkflowJob
-
-def jenkins = Jenkins.get()
-def projectSettings = new Properties()
-new File('/etc/homelab/project.properties').withInputStream { projectSettings.load(it) }
-def repositoryUrl = "https://github.com/${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
-def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
-def branch = projectSettings.getProperty('githubBranch', 'main')
-def jobName = '001 - Infisical Credential Setup'
-def job = jenkins.getItem(jobName)
-def scm = new GitSCM(
-    GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
-    Collections.singletonList(new BranchSpec("*/${branch}")),
-    null, null, Collections.emptyList()
-)
-def definition = new CpsScmFlowDefinition(scm, 'jenkins/pipelines/infisical-setup/Jenkinsfile')
-definition.setLightweight(true)
-if (job == null) {
-    job = jenkins.createProject(WorkflowJob, jobName)
-    println("Created Infisical credential setup Pipeline '${jobName}'.")
-} else if (!(job instanceof WorkflowJob)) {
-    throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
-}
-job.setDefinition(definition)
-job.addProperty(new ParametersDefinitionProperty([
-    new StringParameterDefinition('HOMELAB_INFISICAL_CREDENTIAL_ID', 'infisical-homelab-prod', 'Jenkins credential ID for the read-only Infisical Universal Auth credential.'),
-    new StringParameterDefinition('HOMELAB_INFISICAL_URL', 'https://app.infisical.com', 'Infisical server URL. HTTPS is required.'),
-    new PasswordParameterDefinition('HOMELAB_INFISICAL_PROJECT_ID', 'Infisical project UUID, saved in Jenkins credentials for the other pipelines.'),
-    new StringParameterDefinition('HOMELAB_INFISICAL_ENVIRONMENT', 'prod', 'Infisical environment slug.'),
-    new StringParameterDefinition('HOMELAB_INFISICAL_PROJECT_SLUG', '', 'Optional Infisical project slug.'),
-    new StringParameterDefinition('INFISICAL_READ_CLIENT_ID', '', 'Client ID for the existing jenkins-read Machine Identity.'),
-    new PasswordParameterDefinition('INFISICAL_READ_CLIENT_SECRET', 'Client Secret for jenkins-read; supplied only at runtime.'),
-    new StringParameterDefinition('INFISICAL_WRITE_CLIENT_ID', '', 'Client ID for the existing jenkins-write Machine Identity.'),
-    new PasswordParameterDefinition('INFISICAL_WRITE_CLIENT_SECRET', 'Client Secret for jenkins-write; supplied only at runtime.')
-]))
-job.setDescription('001 - Enter all five HOMELAB_INFISICAL_* connection settings and both existing Machine Identity credential pairs as build parameters. The job saves the settings and creates or rotates the Machine Identity credentials in Jenkins, then verifies both logins. The project UUID and Client Secrets use non-stored password parameters and are not printed.')
-job.save()
-JENKINS_INFISICAL_SETUP_HOOK
-chown jenkins:jenkins "$jenkins_home/init.groovy.d/98-homelab-infisical-credential-setup-pipeline.groovy"
-chmod 0640 "$jenkins_home/init.groovy.d/98-homelab-infisical-credential-setup-pipeline.groovy"
+rm -f -- "$jenkins_home/init.groovy.d/97-homelab-infisical-credential-approvals.groovy" \
+  "$jenkins_home/init.groovy.d/98-homelab-infisical-credential-setup-pipeline.groovy"
 install -o jenkins -g jenkins -m 0600 /dev/null "$jenkins_home/secrets/homelab-agent-enrollment.pending"
 
 install -d -m 0755 /etc/systemd/system/jenkins.service.d

@@ -70,9 +70,11 @@ mkdir "$temp_dir/project"
 tar -xzf "$temp_dir/project.tar.gz" --no-same-owner --strip-components=1 -C "$temp_dir/project"
 project_dir="$temp_dir/project"
 for file in proxmox_helper_script/create-lxc.sh \
+  proxmox_helper_script/configure-infisical.py \
   proxmox_helper_script/lxc/ubuntu/controlplane.profile.sh \
   proxmox_helper_script/lxc/ubuntu/jenkins-agent.profile.sh \
-  jenkins/config/install.conf jenkins/deploy/enrol-agent-lxc.sh; do
+  jenkins/config/install.conf jenkins/deploy/enrol-agent-lxc.sh \
+  jenkins/deploy/import-controller-credentials-lxc.sh; do
   [[ -r $project_dir/$file ]] || { printf 'Repository is missing required file: %s\n' "$file" >&2; exit 1; }
 done
 # Optional trusted host configuration replaces the repository defaults for this run.
@@ -82,6 +84,151 @@ if [[ -n ${HOMELAB_INSTALL_CONFIG:-} ]]; then
 fi
 source "$project_dir/jenkins/config/install.conf"
 [[ $CONTROLLER_CTID =~ ^[1-9][0-9]+$ && $AGENT_CTID =~ ^[1-9][0-9]+$ && $CONTROLLER_CTID != "$AGENT_CTID" ]] || exit 2
+
+infisical_setup_dir=
+has_interactive_terminal() {
+  [[ -t 0 ]] && return 0
+  ( : </dev/tty ) >/dev/null 2>&1
+}
+
+prompt_whiptail() {
+  local kind=$1 title=$2 prompt=$3 default=${4:-} answer
+  if [[ $kind == password ]]; then
+    answer=$(whiptail --title "$title" --passwordbox "$prompt" 10 78 --output-fd 3 3>&1 1>/dev/tty 2>&1 </dev/tty) || return 1
+  else
+    answer=$(whiptail --title "$title" --inputbox "$prompt" 10 78 "$default" --output-fd 3 3>&1 1>/dev/tty 2>&1 </dev/tty) || return 1
+  fi
+  printf '%s' "$answer"
+}
+
+write_setup_value() {
+  local filename=$1 value=$2
+  printf '%s\n' "$value" > "$infisical_setup_dir/$filename"
+  chmod 0600 "$infisical_setup_dir/$filename"
+}
+
+prepare_infisical_setup() {
+  local credential_id infisical_url project_id environment project_slug read_id read_secret write_id write_secret proxmox_host host_key_line host_fingerprint trust_message runtime_config
+  [[ -n $infisical_setup_dir ]] && return 0
+  has_interactive_terminal || { printf 'An interactive terminal is required to configure Infisical during controlplane setup.\n' >&2; return 1; }
+  if ! command -v whiptail >/dev/null; then
+    command -v apt-get >/dev/null || { printf 'whiptail is required for Infisical setup, but apt-get is unavailable.\n' >&2; return 1; }
+    apt-get install -y whiptail
+  fi
+  command -v python3 >/dev/null || { printf 'python3 is required for Infisical setup.\n' >&2; return 1; }
+  command -v ssh-keygen >/dev/null || { printf 'ssh-keygen is required for Proxmox SSH setup.\n' >&2; return 1; }
+  [[ -r /etc/ssh/ssh_host_ed25519_key.pub ]] || { printf 'Cannot read this Proxmox host’s Ed25519 SSH host key.\n' >&2; return 1; }
+  infisical_setup_dir="$temp_dir/infisical-setup"
+  mkdir -m 0700 "$infisical_setup_dir"
+  credential_id=$(prompt_whiptail input 'Infisical setup' 'Jenkins credential ID for the read-only identity:' "${HOMELAB_INFISICAL_CREDENTIAL_ID:-infisical-homelab-prod}") || return 1
+  infisical_url=$(prompt_whiptail input 'Infisical setup' 'Infisical HTTPS URL:' "${HOMELAB_INFISICAL_URL:-https://app.infisical.com}") || return 1
+  project_id=$(prompt_whiptail input 'Infisical setup' 'Infisical project UUID:' '') || return 1
+  environment=$(prompt_whiptail input 'Infisical setup' 'Infisical environment slug:' "${HOMELAB_INFISICAL_ENVIRONMENT:-prod}") || return 1
+  project_slug=$(prompt_whiptail input 'Infisical setup' 'Infisical project slug (leave blank if unknown):' "${HOMELAB_INFISICAL_PROJECT_SLUG:-}") || return 1
+  read_id=$(prompt_whiptail input 'Infisical setup' 'Client ID for the existing jenkins-read identity:' '') || return 1
+  read_secret=$(prompt_whiptail password 'Infisical setup' 'Client Secret for jenkins-read:' '') || return 1
+  write_id=$(prompt_whiptail input 'Infisical setup' 'Client ID for the existing jenkins-write identity:' '') || return 1
+  write_secret=$(prompt_whiptail password 'Infisical setup' 'Client Secret for jenkins-write:' '') || return 1
+  proxmox_host=$(prompt_whiptail input 'Proxmox SSH setup' 'Address Jenkins will use to reach this Proxmox host:' "${HOMELAB_PROXMOX_HOST:-192.168.20.10}") || return 1
+
+  write_setup_value infisical-url "$infisical_url"
+  write_setup_value credential-id "$credential_id"
+  write_setup_value project-id "$project_id"
+  write_setup_value environment "$environment"
+  write_setup_value project-slug "$project_slug"
+  write_setup_value read-client-id "$read_id"
+  write_setup_value read-client-secret "$read_secret"
+  write_setup_value write-client-id "$write_id"
+  write_setup_value write-client-secret "$write_secret"
+  write_setup_value proxmox-host "$proxmox_host"
+  unset read_secret write_secret
+
+  ssh-keygen -q -t ed25519 -N '' -C "homelab-jenkins-update-$(date +%s)-$$" -f "$infisical_setup_dir/pve-private-key"
+  chmod 0600 "$infisical_setup_dir/pve-private-key" "$infisical_setup_dir/pve-private-key.pub"
+  host_key_line=$(awk 'NF >= 2 && $1 == "ssh-ed25519" {print $1 " " $2; exit}' /etc/ssh/ssh_host_ed25519_key.pub)
+  [[ -n $host_key_line ]] || { printf 'The local Proxmox Ed25519 host key is invalid.\n' >&2; return 1; }
+  printf '%s %s\n' "$proxmox_host" "$host_key_line" > "$infisical_setup_dir/pve-known-hosts"
+  cp -- "$infisical_setup_dir/pve-private-key" "$infisical_setup_dir/homelab-pve01-automation-key"
+  cp -- "$infisical_setup_dir/pve-private-key.pub" "$infisical_setup_dir/pve-public-key"
+  chmod 0600 "$infisical_setup_dir/pve-known-hosts" "$infisical_setup_dir/homelab-pve01-automation-key" "$infisical_setup_dir/pve-public-key"
+  host_fingerprint=$(ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub)
+  printf -v trust_message 'Jenkins will trust the Ed25519 host key read directly from this Proxmox server for %s.\n\n%s\n\nThe key will be saved in Infisical for strict SSH host verification.' "$proxmox_host" "$host_fingerprint"
+  if ! whiptail --title 'Trust Proxmox SSH host key' --yesno "$trust_message" 14 78 1>/dev/tty 2>&1 </dev/tty; then
+    printf 'Infisical setup cancelled before container creation.\n' >&2
+    return 1
+  fi
+  python3 "$project_dir/proxmox_helper_script/configure-infisical.py" "$infisical_setup_dir" "$proxmox_host"
+
+  cp -- "$infisical_setup_dir/read-client-id" "$infisical_setup_dir/homelab-infisical-client-id"
+  cp -- "$infisical_setup_dir/read-client-secret" "$infisical_setup_dir/homelab-infisical-client-secret"
+  cp -- "$infisical_setup_dir/write-client-id" "$infisical_setup_dir/homelab-infisical-writer-client-id"
+  cp -- "$infisical_setup_dir/write-client-secret" "$infisical_setup_dir/homelab-infisical-writer-client-secret"
+  cp -- "$infisical_setup_dir/project-id" "$infisical_setup_dir/homelab-infisical-project-id"
+  cp -- "$infisical_setup_dir/infisical-url" "$infisical_setup_dir/homelab-infisical-url"
+  cp -- "$infisical_setup_dir/environment" "$infisical_setup_dir/homelab-infisical-environment"
+  cp -- "$infisical_setup_dir/project-slug" "$infisical_setup_dir/homelab-infisical-project-slug"
+  cp -- "$infisical_setup_dir/proxmox-host" "$infisical_setup_dir/homelab-proxmox-host"
+  chmod 0600 "$infisical_setup_dir"/homelab-infisical-*
+  chmod 0600 "$infisical_setup_dir/homelab-proxmox-host"
+  runtime_config="$infisical_setup_dir/install.conf"
+  {
+    printf 'source %q\n' "$project_dir/jenkins/config/install.conf"
+    printf 'HOMELAB_INFISICAL_CREDENTIAL_ID=%q\n' "$credential_id"
+    printf 'HOMELAB_INFISICAL_URL=%q\n' "$infisical_url"
+    printf 'HOMELAB_INFISICAL_PROJECT_ID=%q\n' "$project_id"
+    printf 'HOMELAB_INFISICAL_ENVIRONMENT=%q\n' "$environment"
+    printf 'HOMELAB_INFISICAL_PROJECT_SLUG=%q\n' "$project_slug"
+  } > "$runtime_config"
+  chmod 0600 "$runtime_config"
+  HOMELAB_INSTALL_CONFIG=$runtime_config
+  source "$runtime_config"
+  export HOMELAB_INSTALL_CONFIG
+  HOMELAB_PROXMOX_HOST=$proxmox_host
+  export HOMELAB_PROXMOX_HOST
+  unset credential_id infisical_url project_id environment project_slug read_id write_id proxmox_host
+}
+
+create_lxc_with_password() {
+  local profile_file=$1 profile_name=$2 container_id=$3 password confirm password_file infisical_password_file
+  has_interactive_terminal || {
+    printf 'An interactive terminal is required to set the root password for %s (CTID %s). Refusing to create it without a password.\n' "$profile_name" "$container_id" >&2
+    return 2
+  }
+  command -v whiptail >/dev/null || { printf 'whiptail is required to collect the LXC root password.\n' >&2; return 1; }
+  password_file="$temp_dir/root-password.$container_id"
+  while true; do
+    password=$(prompt_whiptail password 'LXC root password' "Choose a root password for $profile_name (CTID $container_id), at least 12 characters; do not use a colon:") || return 1
+    confirm=$(prompt_whiptail password 'Confirm LXC root password' "Confirm the root password for $profile_name (CTID $container_id):") || return 1
+    if (( ${#password} < 12 )) || [[ $password == *:* ]]; then
+      whiptail --title 'Invalid LXC root password' --msgbox 'Use at least 12 characters and do not include a colon.' 9 70 1>/dev/tty 2>&1 </dev/tty
+    elif [[ $password != "$confirm" ]]; then
+      whiptail --title 'Password mismatch' --msgbox 'The passwords did not match. Try again.' 9 70 1>/dev/tty 2>&1 </dev/tty
+    else
+      break
+    fi
+  done
+  (umask 077; printf '%s\n' "$password" > "$password_file")
+  unset password confirm
+  if [[ -n $infisical_setup_dir ]]; then
+    infisical_password_file="$infisical_setup_dir/root-password-$profile_name"
+    cp -- "$password_file" "$infisical_password_file"
+    chmod 0600 "$infisical_password_file"
+    if ! python3 "$project_dir/proxmox_helper_script/configure-infisical.py" --save-lxc-password "$infisical_setup_dir" "$profile_name"; then
+      rm -f -- "$password_file" "$infisical_password_file"
+      return 1
+    fi
+    rm -f -- "$infisical_password_file"
+  else
+    printf 'No Infisical setup was requested this run; the root password will only be applied to the guest.\n'
+  fi
+  if HOMELAB_LXC_ROOT_PASSWORD_FILE="$password_file" bash "$project_dir/proxmox_helper_script/create-lxc.sh" "$profile_file"; then
+    rm -f -- "$password_file"
+  else
+    local status=$?
+    rm -f -- "$password_file"
+    return "$status"
+  fi
+}
 
 install_role() {
   local profile_name=$1 role=$2 configured_id=$3
@@ -161,7 +308,7 @@ install_role() {
         printf '%s action must be reuse or destroy.\n' "$profile_name" >&2
         return 2
       }
-    elif [[ -r /dev/tty ]]; then
+    elif has_interactive_terminal; then
       while true; do
         printf '\n%s (CTID %s) already exists and matches this profile. Choose [r]euse or [d]estroy and recreate: ' "$profile_name" "$expected_id" >/dev/tty
         IFS= read -r choice </dev/tty || return 1
@@ -176,6 +323,12 @@ install_role() {
       printf 'No interactive terminal; reusing matching %s (CTID %s).\n' "$profile_name" "$expected_id"
     fi
     if [[ $action == destroy ]]; then
+      if [[ $role == controller ]]; then
+        prepare_infisical_setup || return $?
+      elif [[ -z $infisical_setup_dir ]]; then
+        printf 'Infisical setup is needed to save the new agent root password.\n'
+        prepare_infisical_setup || return $?
+      fi
       printf 'Destroying only the verified LXC CTID %s (%s).\n' "$expected_id" "$profile_name"
       protection_state=$(printf '%s\n' "$config" | sed -n 's/^protection: //p')
       if [[ $protection_state == 1 || $protection_state == yes ]]; then
@@ -203,18 +356,47 @@ install_role() {
         return 1
       fi
       printf 'CTID %s was deleted. Creating a fresh %s.\n' "$expected_id" "$profile_name"
-      bash "$project_dir/proxmox_helper_script/create-lxc.sh" "$profile_file"
+      create_lxc_with_password "$profile_file" "$profile_name" "$expected_id"
       return $?
+    fi
+    if [[ $role == controller ]] && has_interactive_terminal; then
+      command -v whiptail >/dev/null || {
+        printf 'whiptail is required to choose the Infisical setup action.\n' >&2
+        return 1
+      }
+      local setup_choice
+      setup_choice=$(whiptail --title 'Infisical setup' --menu 'Configure or rotate Infisical and Proxmox SSH credentials now?' 12 78 2 \
+        configure 'Configure Infisical and generate a new Proxmox SSH key' \
+        skip 'Keep the current Infisical and Proxmox SSH credentials' \
+        --default-item skip --output-fd 3 3>&1 1>/dev/tty 2>&1 </dev/tty) || return 1
+      if [[ $setup_choice == configure ]]; then
+        prepare_infisical_setup || return $?
+      fi
     fi
     printf 'Resuming installation in existing %s (CTID %s).\n' "$profile_name" "$expected_id"
     bash "$project_dir/jenkins/deploy/install-$role-lxc.sh" "$expected_id"
   else
     printf 'Creating %s (CTID %s).\n' "$profile_name" "$expected_id"
-    bash "$project_dir/proxmox_helper_script/create-lxc.sh" "$profile_file"
+    if [[ $role == controller ]]; then
+      prepare_infisical_setup || return $?
+    elif [[ -z $infisical_setup_dir ]]; then
+      printf 'Infisical setup is needed to save the new agent root password.\n'
+      prepare_infisical_setup || return $?
+    fi
+    create_lxc_with_password "$profile_file" "$profile_name" "$expected_id"
   fi
 }
 install_role controlplane controller "$CONTROLLER_CTID"
+infisical_setup_imported=no
+import_infisical_setup() {
+  [[ -n $infisical_setup_dir && $infisical_setup_imported == no ]] || return 0
+  bash "$project_dir/jenkins/deploy/import-controller-credentials-lxc.sh" "$infisical_setup_dir" "$CONTROLLER_CTID"
+  python3 "$project_dir/proxmox_helper_script/configure-infisical.py" --prune-authorized-keys "$infisical_setup_dir"
+  infisical_setup_imported=yes
+}
+import_infisical_setup
 install_role jenkins-agent agent "$AGENT_CTID"
+import_infisical_setup
 
 # Keep a repository snapshot on the controlplane after the host temporary copy goes.
 # Installed services and their persistent configuration already live in the LXCs.

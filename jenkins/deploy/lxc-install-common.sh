@@ -10,7 +10,7 @@ install_in_lxc() {
   [[ $(pct status "$container_id") == 'status: running' ]] || {
     printf 'Container %s must be running.\n' "$container_id" >&2; return 1;
   }
-  source "$script_dir/../config/install.conf"
+  source "${HOMELAB_INSTALL_CONFIG:-$script_dir/../config/install.conf}"
   mkdir -p /var/log/homelab /run/lock
   # Prevent overlapping bootstrap runs for the same container.
   exec 9>"/run/lock/homelab-jenkins-${container_id}.lock"

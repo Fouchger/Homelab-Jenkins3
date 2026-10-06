@@ -77,8 +77,16 @@ This uses the targeted `pct` commands because the Community Scripts
 `guest-delete.sh` tool has an interactive checklist and does not accept a CTID
 argument. Destroying permanently removes the LXC and its data.
 New LXCs are created by passing all profile settings to the Community Script in
-generated mode, which skips its setup menus. To destroy the existing controlplane
-and reuse an existing agent without prompts, prefix the one-line bootstrap with
+generated mode, which skips its setup menus. Immediately before each new
+controlplane or agent is created, the bootstrap asks you to choose and confirm
+that LXC's root password (at least 12 characters; no colon). The input is hidden,
+applied to the guest before its application installer runs, and removed from the
+host's temporary files. When Infisical setup is active, the bootstrap also saves
+the password as `LXC_ROOT_PASSWORD` under `/proxmox/lxc/controlplane` or
+`/proxmox/lxc/jenkins-agent`. Reusing an existing LXC does not change its password or
+ask for one. Creation stops if no interactive terminal is available. To destroy
+the existing controlplane and reuse an existing agent without prompts, prefix
+the one-line bootstrap with
 `HOMELAB_CONTROLPLANE_ACTION=destroy HOMELAB_AGENT_ACTION=reuse`.
 Reruns may upgrade Jenkins and dependencies and briefly restart services.
 A copy of the downloaded project remains inside the controlplane at
@@ -147,7 +155,7 @@ A `homelab-check` Pipeline job reads the configured GitHub repository and runs
 [`jenkins/pipelines/toolchain-check.Jenkinsfile`](jenkins/pipelines/toolchain-check.Jenkinsfile), which verifies the toolchain without changing services.
 The job polls Git every five minutes, as in Jenkins2. It needs the GitHub
 credential below to read a private repository.
-The `002 - Update Servers` job checks out the configured branch, then uses the
+The `001 - Update Servers` job checks out the configured branch, then uses the
 Proxmox host bootstrap at that exact commit to rerun the controller and agent
 installers and refresh the controller's repository snapshot. It runs daily at
 2:00 a.m. Pacific/Auckland. Timer runs proceed unattended; manually started runs
@@ -176,61 +184,16 @@ pct exec 100 -- cat /var/lib/jenkins/secrets/initialAdminPassword
 
 Complete Jenkins' first administrator wizard. Required plugins and agent node
 configuration are already supplied by the installer. Confirm the agent is online
-and labelled `homelab-automation`. Credentials cannot be invented by the
-installer: supply your Infisical identities once. A GitHub read token is only
-needed if you make the repository private.
-
-You can add credentials through Jenkins or use the protected import helper.
-For the helper, create a root-owned directory with mode 0700 and place only the
-needed files inside it; every file must be root-owned with mode 0600.
-Do not put that directory inside this repository.
-
-| Host file name | Credential/import |
-| --- | --- |
-| homelab-github-readonly.token | Optional GitHub fine-grained read-only PAT, only for a private repository; credential ID from configuration. |
-| homelab-pve01-automation-key | Optional existing OpenSSH Ed25519 private key import; the operator pipelines read `PVE_SSH_PRIVATE_KEY` from Infisical instead. |
-| homelab-infisical-client-id and homelab-infisical-client-secret | Read-only Universal Auth pair; credential ID from configuration. |
-| homelab-infisical-writer-client-id and homelab-infisical-writer-client-secret | Writer pair; `infisical-homelab-prod-writer`. |
-
-The values in [`jenkins/config/install.conf`](jenkins/config/install.conf) are
-bootstrap defaults. Job 002 collects all five `HOMELAB_INFISICAL_*` settings.
-It creates the read-only Universal Auth credential using the configured
-credential ID and stores the URL, project UUID, environment, and project slug
-as Jenkins credentials for jobs 001 and 003. The project UUID is not kept in
-the public repo.
-The existing project identities are `jenkins-read` (Viewer) and
-`jenkins-write` (Member); they are not created by the controller installer.
-See [`infisical/README.md`](infisical/README.md) for the current secret paths
-and credential IDs.
-
-```bash
-bash jenkins/deploy/import-controller-credentials-lxc.sh /root/jenkins-bootstrap-secrets 100
-```
-
-The helper stages supplied files into protected guest `/run` files and restarts
-Jenkins. Startup hooks store them in Jenkins' encrypted credentials store, remove
-the guest handoff files and test supplied Infisical identities. The helper checks
-stored credential IDs; an existing ID alone does not prove a replacement token
-was valid. Confirm the GitHub job succeeds and review any startup errors before
-removing your protected host source files. It deliberately preserves those
-source files if you need to retry. Secret values never appear in helper output.
-The public repository does not need GitHub credentials. The controller seeds
-three operator jobs: `001 - Infisical Credential Setup`, which accepts all five
-`HOMELAB_INFISICAL_*` settings and the existing read and write Machine Identity
-Client IDs and Client Secrets as build parameters, saves the settings and
-creates or rotates the Machine Identity credentials in Jenkins, then verifies
-both logins; `002 - Update Servers`, which updates the controller and agent;
-and `003 - Proxmox Access Setup`, which rotates the Proxmox API token. For a
-fresh setup, run 001, then 002, then 003. To apply this renumbering to an
-existing Jenkins controller, run its current `001 - Update Servers` job once
-after deploying the change; the startup hook renames the managed jobs and
-preserves their build history. When rotating Infisical credentials, rerun 001
-before the jobs that use them. For job 001, enter the `jenkins-read` and
-`jenkins-write`
-Client IDs and Client Secrets on the **Build with Parameters** page. The project
-UUID and secret inputs use Mask Passwords' non-stored password parameter and
-are not printed. Jenkins stores the resulting credentials encrypted in its
-global credentials store:
+and labelled `homelab-automation`. The public repository needs no GitHub
+credential. During first-time controlplane creation, `whiptail` collects the
+Infisical URL, project UUID, environment, optional project slug, Jenkins read
+credential ID, Proxmox address, and the existing `jenkins-read` and
+`jenkins-write` Machine Identity Client IDs and Client Secrets. Password
+dialogs hide the two secrets. The bootstrap verifies both
+identities, generates a dedicated Ed25519 key, saves its private key and the
+locally read Proxmox SSH host key to `/proxmox/automation`, and installs the
+public key in root's `authorized_keys`. It then imports these credentials into
+Jenkins' encrypted credential store:
 
 | Credential ID | Machine Identity and credential type |
 | --- | --- |
@@ -238,17 +201,31 @@ global credentials store:
 | `infisical-homelab-prod-writer` | `jenkins-write` (Infisical Universal Auth) |
 | `infisical-homelab-prod-read-api` | `jenkins-read` (Username with password) |
 | `infisical-homelab-prod-writer-api` | `jenkins-write` (Username with password) |
-| `homelab-infisical-url`, `homelab-infisical-project-id`, `homelab-infisical-environment`, `homelab-infisical-project-slug` | Infisical connection settings (Secret text) |
+| `homelab-infisical-url`, `homelab-infisical-project-id`, `homelab-infisical-environment`, `homelab-infisical-project-slug`, `homelab-proxmox-host` | Infisical and Proxmox settings (Secret text) |
 
-The setup pipeline uses the supplied read credential ID for the Universal Auth
-credential and fixed IDs for the pipeline API credentials. Job 003 uses the read
-identity to retrieve the Proxmox SSH key and host key from
+When an existing controlplane is reused interactively, a menu lets you rotate
+this setup or keep the current credentials. Automated reuse skips the menu. A
+new or recreated controlplane requires setup before creation. Setup secrets are
+held in root-only temporary files on Proxmox, then removed after Jenkins imports
+them. The generated public key is installed on Proxmox; the private key stays in
+Infisical and Jenkins' encrypted store.
+
+The controller seeds two operator jobs: `001 - Update Servers`, which updates
+both LXCs daily, and `002 - Proxmox Access Setup`, which rotates the Proxmox API
+token. For an existing installation that does not yet have the Proxmox SSH key
+in Infisical, run the one-command bootstrap from the Proxmox shell, choose
+**reuse** for both matching LXCs, then choose **configure** in the Infisical
+menu. This performs the one-time credential setup locally and renames the
+managed Jenkins jobs; the retired setup job is disabled with its build history
+preserved. The read credential ID comes from configuration; writer and API
+credential IDs remain fixed. Job 002
+uses the read identity to retrieve the Proxmox SSH key and host key from
 `/proxmox/automation`, then uses the writer identity to rotate and verify the
 Proxmox API token there. It does not read secrets under `/proxmox/lxc`. See
 [`infisical/README.md`](infisical/README.md) for secret formats and rotation
 behavior.
 
-These scripts import an existing Proxmox SSH key and seed the Proxmox access
+These scripts seed the Proxmox access
 setup job. The job applies the existing `HomelabLxcOperator` role to
 `homelab-automation@pve`, creates or rotates its API token, and writes the
 result to Infisical. This package also aligns Jenkins installation and

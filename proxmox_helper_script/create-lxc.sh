@@ -142,12 +142,64 @@ fi
 printf 'Starting %s installer with profile: %s\n' "${LXC_PROFILE_OS_TITLE:-LXC}" "$profile_file"
 temp_dir=$(mktemp -d)
 trap 'rm -rf -- "$temp_dir"' EXIT
+if [[ -z ${HOMELAB_LXC_ROOT_PASSWORD_FILE:-} ]]; then
+  container_id=${LXC_DEFAULT_CTID:-${var_ctid:-}}
+  { [[ -t 0 ]] || ( : </dev/tty ) >/dev/null 2>&1; } || {
+    printf 'An interactive terminal is required to set the root password for %s (CTID %s). Refusing to create it without a password.\n' "${LXC_PROFILE_TITLE:-LXC}" "$container_id" >&2
+    exit 2
+  }
+  HOMELAB_LXC_ROOT_PASSWORD_FILE="$temp_dir/root-password-input"
+  while true; do
+    printf '\nChoose a root password for %s (CTID %s), at least 12 characters; do not use a colon: ' "${LXC_PROFILE_TITLE:-LXC}" "$container_id" >/dev/tty
+    IFS= read -r -s root_password </dev/tty || exit 1
+    printf '\nConfirm the root password: ' >/dev/tty
+    IFS= read -r -s confirm_password </dev/tty || exit 1
+    printf '\n' >/dev/tty
+    if (( ${#root_password} < 12 )) || [[ $root_password == *:* ]]; then
+      printf 'Use at least 12 characters and do not include a colon.\n' >/dev/tty
+    elif [[ $root_password != "$confirm_password" ]]; then
+      printf 'The passwords did not match. Try again.\n' >/dev/tty
+    else
+      break
+    fi
+  done
+  (umask 077; printf '%s\n' "$root_password" > "$HOMELAB_LXC_ROOT_PASSWORD_FILE")
+  unset root_password confirm_password
+fi
 # A failed/empty download must never become a successful empty bash command.
 curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 120   "$installer_url" -o "$temp_dir/installer.sh"
 [[ -s $temp_dir/installer.sh ]] || { printf 'Installer download was empty.\n' >&2; exit 1; }
 bash -n "$temp_dir/installer.sh"
 # Explicit empty value suppresses an inherited hook in the installer environment.
 env "${env_args[@]}" var_post_install= MODE=generated mode=generated bash "$temp_dir/installer.sh"
+if [[ -n ${HOMELAB_LXC_ROOT_PASSWORD_FILE:-} ]]; then
+  container_id=${LXC_DEFAULT_CTID:-${var_ctid:-}}
+  password_file=$HOMELAB_LXC_ROOT_PASSWORD_FILE
+  [[ -f $password_file && ! -L $password_file && -r $password_file ]] || {
+    printf 'Root password input file is missing or unsafe.\n' >&2
+    exit 2
+  }
+  IFS= read -r root_password < "$password_file" || true
+  [[ ${#root_password} -ge 12 && $root_password != *:* && $root_password != *$'\n'* ]] || {
+    unset root_password
+    printf 'Root password must be at least 12 characters and must not contain a colon.\n' >&2
+    exit 2
+  }
+  password_payload="$temp_dir/root-password"
+  (umask 077; printf 'root:%s\n' "$root_password" > "$password_payload")
+  unset root_password
+  printf 'Setting the root password for CTID %s.\n' "$container_id"
+  if ! pct push "$container_id" "$password_payload" /run/homelab-root-password --perms 600; then
+    pct exec "$container_id" -- rm -f /run/homelab-root-password >/dev/null 2>&1 || true
+    exit 1
+  fi
+  if ! pct exec "$container_id" -- sh -c 'trap "rm -f /run/homelab-root-password" EXIT; chpasswd < /run/homelab-root-password'; then
+    pct exec "$container_id" -- rm -f /run/homelab-root-password >/dev/null 2>&1 || true
+    exit 1
+  fi
+  rm -f -- "$password_payload" "$password_file"
+  unset HOMELAB_LXC_ROOT_PASSWORD_FILE
+fi
 if [[ -n $hook_path ]]; then
   printf 'Container creation completed; running application installation.\n'
   CTID="$container_id" bash "$hook_path"

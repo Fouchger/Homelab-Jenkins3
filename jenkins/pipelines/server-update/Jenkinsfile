@@ -16,7 +16,6 @@ pipeline {
 
     parameters {
         booleanParam(name: 'AUTOMATED_UPDATE', defaultValue: false, description: 'Set by the daily timer. Leave disabled for manual runs so they require confirmation.')
-        string(name: 'PROXMOX_HOST', defaultValue: '192.168.20.10', description: 'Proxmox host reachable from the Jenkins automation agent.')
         string(name: 'GITHUB_OWNER', defaultValue: 'Fouchger', description: 'Repository owner used by the Proxmox bootstrap download.')
         string(name: 'GITHUB_REPOSITORY', defaultValue: 'Homelab-Jenkins3', description: 'Repository name used by the Proxmox bootstrap download.')
     }
@@ -45,6 +44,7 @@ pipeline {
             steps {
                 withCredentials([
                     usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                    string(credentialsId: 'homelab-proxmox-host', variable: 'PROXMOX_HOST'),
                     string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
                     string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
                     string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT'),

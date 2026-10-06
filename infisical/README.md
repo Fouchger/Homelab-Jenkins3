@@ -1,39 +1,35 @@
-# Infisical settings for Jenkins
+# Infisical integration
 
-The values in `jenkins/config/install.conf` are bootstrap defaults. Job 002
-collects all five settings and saves the active values in Jenkins credentials.
-Do not add Client Secrets, API tokens, or the real project UUID to this public
-repository.
+During first-time Proxmox controlplane creation, a `whiptail` dialog collects
+the project URL, project UUID, environment, optional project slug, and the
+existing `jenkins-read` and `jenkins-write` Machine Identity Client IDs and
+Client Secrets. The secrets are entered into password dialogs and are not
+printed. Both identities are authenticated before the setup proceeds.
 
-```bash
-HOMELAB_INFISICAL_CREDENTIAL_ID="infisical-homelab-prod"
-HOMELAB_INFISICAL_URL="https://app.infisical.com"
-HOMELAB_INFISICAL_ENVIRONMENT="prod"
-HOMELAB_INFISICAL_PROJECT_SLUG=""
-```
+The bootstrap generates a dedicated Ed25519 SSH key for Jenkins. It reads the
+Proxmox Ed25519 host public key locally, builds a `known_hosts` entry for the
+address Jenkins will use, and displays that host-key fingerprint for operator
+confirmation. It saves `PVE_SSH_PRIVATE_KEY` and `PVE_SSH_HOST_KEY` in Infisical
+under `/proxmox/automation`, verifies the values using the read-only identity,
+and adds the matching public key to root's Proxmox `authorized_keys`. The private
+key is never put in the public repository.
 
-Run `001 - Infisical Credential Setup` and provide all five settings shown
-above, plus the existing `jenkins-read` and `jenkins-write` Machine Identity
-Client IDs and Client Secrets. The pipeline uses the credential ID for the
-read-only Universal Auth credential and saves the URL, project UUID,
-environment, and project slug as Jenkins Secret text credentials. Jobs 001 and
-003 bind those saved settings when they access Infisical. The project UUID and
-Client Secrets use non-stored password parameters and are not printed.
+The same setup passes the Machine Identity credentials and project settings to
+the controller installer. Jenkins stores them in its encrypted credentials
+store for its Infisical integration and the automation pipelines. Proxmox uses
+root-only temporary files for this handoff and removes them after Jenkins has
+imported and verified the credentials.
 
-Fake UUID for documentation examples only:
+Before creating each new Jenkins LXC, the bootstrap also asks for its root
+password and writes `LXC_ROOT_PASSWORD` to that LXC's `/proxmox/lxc/<name>`
+folder in Infisical. The password is applied to the container and both host-side
+temporary copies are removed. Reused containers are not prompted or rotated.
 
-```text
-00000000-0000-4000-8000-000000000001
-```
+When a controlplane already exists, an interactive bootstrap offers to rotate
+the Infisical/SSH setup or keep the current credentials. Automated reuse skips
+the dialog. Recreating the controlplane requires configuring Infisical again.
 
-The existing project Machine Identities are `jenkins-read` (Viewer) and
-`jenkins-write` (Member). The read credential ID is set by
-`HOMELAB_INFISICAL_CREDENTIAL_ID` (default `infisical-homelab-prod`); the writer
-credential ID is `infisical-homelab-prod-writer`. The API-form credentials are
-`infisical-homelab-prod-read-api` and
-`infisical-homelab-prod-writer-api`.
-
-The current secret tree is organized under `/proxmox`:
+The current secret layout is:
 
 | Infisical path | Secret names |
 | --- | --- |
@@ -41,46 +37,21 @@ The current secret tree is organized under `/proxmox`:
 | `/proxmox/pve01` | `PROXMOX_ROOT_PASSWORD` |
 | `/proxmox/lxc/controlplane`, `/proxmox/lxc/jenkins-agent`, and other LXC folders | `LXC_ROOT_PASSWORD` only |
 
-The installer does not create Machine Identities; the two project identities
-already exist. The project slug remains configurable because it is not visible
-in the provided project URL.
+The Proxmox access pipeline uses the read identity to retrieve the SSH key,
+trusted host key, and existing API token values. It uses the writer identity to
+save and verify rotated API token values. It does not read LXC password folders.
 
-## Proxmox API access setup
+## Jenkins credentials
 
-The controller seeds three operator jobs:
+| Credential ID | Purpose |
+| --- | --- |
+| Configured `HOMELAB_INFISICAL_CREDENTIAL_ID` (default `infisical-homelab-prod`) | `jenkins-read` Universal Auth |
+| `infisical-homelab-prod-writer` | `jenkins-write` Universal Auth |
+| `infisical-homelab-prod-read-api` | Read identity for pipeline API calls |
+| `infisical-homelab-prod-writer-api` | Write identity for pipeline API calls |
+| `pve01-automation-ssh` | Imported SSH private key for Proxmox administration |
+| `homelab-infisical-url`, `homelab-infisical-project-id`, `homelab-infisical-environment`, `homelab-infisical-project-slug`, `homelab-proxmox-host` | Project and host settings used by Jenkins pipelines |
 
-1. `001 - Infisical Credential Setup` accepts all five settings and both
-   Machine Identity credential pairs, saves them into Jenkins, and verifies
-   both Universal Auth logins.
-2. `002 - Update Servers` updates both Jenkins LXCs daily and uses the saved
-   Infisical connection settings to retrieve the trusted Proxmox SSH host key.
-3. `003 - Proxmox Access Setup` creates or rotates the Proxmox API token using
-   the saved Infisical connection settings and Machine Identity credentials.
-
-For a fresh setup, run job 001, then 002, then 003. When rotating Infisical
-credentials, rerun job 001 before the jobs that use them.
-On an existing controller, run its current `001 - Update Servers` job once
-after deploying the change; the Jenkins startup hook renumbers the managed jobs
-and preserves their build history.
-Job 003 reads `PVE_SSH_PRIVATE_KEY`, `PVE_SSH_HOST_KEY`, and the current API
-token values from `/proxmox/automation`. The Proxmox account and role are
-pipeline settings. It applies that role to `/vms` and each selected storage
-path, then creates or rotates an API token for the existing account. The token
-inherits those user ACLs (`privsep` is disabled for the token). It then updates
-and verifies `PVE_API_TOKEN_ID` and `PVE_API_TOKEN_SECRET` before removing the
-previous token. If saving or verification fails, the previous values are
-restored where possible and the old token stays active. Review Proxmox after a
-failed run because the newly created token may need manual cleanup. The previous
-token is automatically removed only when its stored ID belongs to the configured
-`PROXMOX_USER`; otherwise it is left active for review.
-
-The SSH host key secret must be an OpenSSH `known_hosts` line for the Proxmox
-host (including its hostname or IP). The private key must authorize root SSH to
-that host. LXC password folders under `/proxmox/lxc` are unrelated and are not
-read by this pipeline.
-
-Job 001 uses the read identity to retrieve `PVE_SSH_PRIVATE_KEY` and
-`PVE_SSH_HOST_KEY` from `/proxmox/automation`. It holds the SSH key in a
-temporary mode 0600 file for the run, downloads this publicly readable
-repository without GitHub credentials, reuses the controller and agent, then
-removes the temporary key file.
+For automated use, run `001 - Update Servers` before `002 - Proxmox Access
+Setup`. The first job retrieves the Proxmox SSH key and host key from Infisical;
+the second creates or rotates the Proxmox API token and saves the result.

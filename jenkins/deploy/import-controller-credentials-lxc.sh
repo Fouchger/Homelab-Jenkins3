@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 umask 077
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-source "$script_dir/../config/install.conf"
+source "${HOMELAB_INSTALL_CONFIG:-$script_dir/../config/install.conf}"
 credential_dir=${1:-}
 controller_id=${2:-$CONTROLLER_CTID}
 [[ $EUID -eq 0 && $controller_id =~ ^[1-9][0-9]+$ && -d $credential_dir ]] || {
@@ -16,7 +16,10 @@ controller_id=${2:-$CONTROLLER_CTID}
 }
 files=(homelab-github-readonly.token homelab-pve01-automation-key \
   homelab-infisical-client-id homelab-infisical-client-secret \
-  homelab-infisical-writer-client-id homelab-infisical-writer-client-secret)
+  homelab-infisical-writer-client-id homelab-infisical-writer-client-secret \
+  homelab-infisical-project-id homelab-infisical-url \
+  homelab-infisical-environment homelab-infisical-project-slug \
+  homelab-proxmox-host)
 [[ $(pct status "$controller_id") == 'status: running' ]] || exit 1
 # Validate all inputs before transferring any credentials.
 found=0
@@ -68,6 +71,11 @@ for filename in "${transferred[@]}"; do
     homelab-pve01-automation-key) credential_id=pve01-automation-ssh;;
     homelab-infisical-client-id) credential_id=$HOMELAB_INFISICAL_CREDENTIAL_ID;;
     homelab-infisical-writer-client-id) credential_id=infisical-homelab-prod-writer;;
+    homelab-infisical-project-id) credential_id=homelab-infisical-project-id;;
+    homelab-infisical-url) credential_id=homelab-infisical-url;;
+    homelab-infisical-environment) credential_id=homelab-infisical-environment;;
+    homelab-infisical-project-slug) credential_id=homelab-infisical-project-slug;;
+    homelab-proxmox-host) credential_id=homelab-proxmox-host;;
     *) continue;;
   esac
   pct exec "$controller_id" -- grep -Fq -- "$credential_id" /var/lib/jenkins/credentials.xml || {
