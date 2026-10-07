@@ -1,0 +1,93 @@
+pipeline {
+    agent { label 'homelab-automation' }
+
+    options {
+        disableConcurrentBuilds()
+        timestamps()
+        timeout(time: 20, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+
+    parameters {
+        string(name: 'DNS01_IPV4', defaultValue: '', description: 'Optional DNS01 IPv4 address. Leave blank to keep the value already in Infisical.')
+        string(name: 'DNS02_IPV4', defaultValue: '', description: 'Optional DNS02 IPv4 address. Leave blank to keep the value already in Infisical.')
+        string(name: 'DNS_PUBLIC_FALLBACKS', defaultValue: '', description: 'Optional comma-separated public DNS resolver IPs used only after both Technitium servers fail.')
+        string(name: 'MIKROTIK_DHCP_DNS_MODE', defaultValue: '', description: 'Optional DHCP DNS mode: router or direct. Blank keeps the current Infisical value.')
+        password(name: 'DNS01_ROOT_PASSWORD', defaultValue: '', description: 'Optional LXC root password for dns01. Blank keeps the existing Infisical value.')
+        password(name: 'DNS02_ROOT_PASSWORD', defaultValue: '', description: 'Optional LXC root password for dns02. Blank keeps the existing Infisical value.')
+        password(name: 'DNS01_ADMIN_PASSWORD', defaultValue: '', description: 'Optional Technitium admin password saved as /dns/dns01/DNS_SERVER_ADMIN_PASSWORD. Blank keeps the existing Infisical value.')
+        password(name: 'DNS02_ADMIN_PASSWORD', defaultValue: '', description: 'Optional Technitium admin password saved as /dns/dns02/DNS_SERVER_ADMIN_PASSWORD. Blank keeps the existing Infisical value.')
+        string(name: 'DNS_HOSTED_ZONES', defaultValue: '', description: 'Optional comma-separated domains to create as primary zones on dns01 and replicate to dns02. Blank keeps the current Infisical value.')
+
+        string(name: 'MIKROTIK_HOST', defaultValue: '', description: 'Optional router management IP or hostname. Required to generate missing MikroTik SSH keys.')
+        string(name: 'MIKROTIK_IP', defaultValue: '', description: 'Optional router IPv4 address Jenkins must reconnect to after a full reset. It must be configured on the direct Proxmox/ether2 path by MIKROTIK_SCRIPT.')
+        string(name: 'MIKROTIK_ADMIN_USER', defaultValue: '', description: 'Optional existing RouterOS administrator username.')
+        password(name: 'MIKROTIK_ADMIN_USER_PASSWORD', defaultValue: '', description: 'Optional existing RouterOS administrator password.')
+        string(name: 'MIKROTIK_SSH_USER', defaultValue: '', description: 'Optional RouterOS username Jenkins will use after its public key is authorized on the router.')
+        password(name: 'MIKROTIK_BACKUP_PASSWORD', defaultValue: '', description: 'Optional password for encrypting RouterOS binary backups.')
+        password(name: 'SEC_GUEST_PASSPHRASE', defaultValue: '', description: 'Optional Guest Wi-Fi passphrase.')
+        password(name: 'SEC_IOT_PASSPHRASE', defaultValue: '', description: 'Optional IoT Wi-Fi passphrase.')
+        password(name: 'SEC_MGMT_PASSPHRASE', defaultValue: '', description: 'Optional Management Wi-Fi passphrase.')
+        password(name: 'SEC_USERS_PASSPHRASE', defaultValue: '', description: 'Optional Users Wi-Fi passphrase.')
+        string(name: 'MIKROTIK_SSH_HOST_KEY_FINGERPRINT', defaultValue: '', description: 'Required only when the router host key is not yet in Infisical. Enter the SHA256 fingerprint verified independently from the router.')
+
+        string(name: 'CLOUDFLARE_ACCOUNT_ID', defaultValue: '', description: 'Optional Cloudflare account ID. Leave blank to keep the value already in Infisical.')
+        password(name: 'CLOUDFLARE_API_TOKEN', defaultValue: '', description: 'Optional Cloudflare API token. Blank keeps the existing token; the value is stored only in Infisical.')
+        string(name: 'CLOUDFLARE_DOMAIN_1', defaultValue: '', description: 'Optional first Cloudflare-managed domain, for example example.com. Leave blank until decided.')
+        string(name: 'CLOUDFLARE_DOMAIN_2', defaultValue: '', description: 'Optional second Cloudflare-managed domain. Leave blank until decided.')
+        string(name: 'CLOUDFLARE_ZONE_ID_1', defaultValue: '', description: 'Optional Cloudflare Zone ID for the first domain.')
+        string(name: 'CLOUDFLARE_ZONE_ID_2', defaultValue: '', description: 'Optional Cloudflare Zone ID for the second domain.')
+        string(name: 'DOCKFLARE_ACCESS_EMAILS', defaultValue: '', description: 'Optional comma-separated email allowlist for protected services. Leave blank to keep the current value.')
+        string(name: 'DOCKFLARE_ADMIN_CIDRS', defaultValue: '', description: 'Optional comma-separated CIDR ranges allowed to reach DockFlare administration. Leave blank to keep the current value.')
+    }
+
+    stages {
+        stage('Save configurable DNS and Cloudflare settings') {
+            steps {
+                withCredentials([
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-writer-api', usernameVariable: 'INFISICAL_WRITE_CLIENT_ID', passwordVariable: 'INFISICAL_WRITE_CLIENT_SECRET'),
+                    string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
+                    string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
+                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT'),
+                    string(credentialsId: 'homelab-infisical-project-slug', variable: 'INFISICAL_PROJECT_SLUG')
+                ]) {
+                    withEnv([
+                        "CFG_DNS01_IPV4=${params.DNS01_IPV4}",
+                        "CFG_DNS02_IPV4=${params.DNS02_IPV4}",
+                        "CFG_DNS_PUBLIC_FALLBACKS=${params.DNS_PUBLIC_FALLBACKS}",
+                        "CFG_MIKROTIK_DHCP_DNS_MODE=${params.MIKROTIK_DHCP_DNS_MODE}",
+                        "CFG_DNS01_ROOT_PASSWORD=${params.DNS01_ROOT_PASSWORD}",
+                        "CFG_DNS02_ROOT_PASSWORD=${params.DNS02_ROOT_PASSWORD}",
+                        "CFG_DNS01_ADMIN_PASSWORD=${params.DNS01_ADMIN_PASSWORD}",
+                        "CFG_DNS02_ADMIN_PASSWORD=${params.DNS02_ADMIN_PASSWORD}",
+                        "CFG_DNS_HOSTED_ZONES=${params.DNS_HOSTED_ZONES}",
+                        "CFG_MIKROTIK_HOST=${params.MIKROTIK_HOST}",
+                        "CFG_MIKROTIK_IP=${params.MIKROTIK_IP}",
+                        "CFG_MIKROTIK_ADMIN_USER=${params.MIKROTIK_ADMIN_USER}",
+                        "CFG_MIKROTIK_ADMIN_USER_PASSWORD=${params.MIKROTIK_ADMIN_USER_PASSWORD}",
+                        "CFG_MIKROTIK_SSH_USER=${params.MIKROTIK_SSH_USER}",
+                        "CFG_MIKROTIK_BACKUP_PASSWORD=${params.MIKROTIK_BACKUP_PASSWORD}",
+                        "CFG_SEC_GUEST_PASSPHRASE=${params.SEC_GUEST_PASSPHRASE}",
+                        "CFG_SEC_IOT_PASSPHRASE=${params.SEC_IOT_PASSPHRASE}",
+                        "CFG_SEC_MGMT_PASSPHRASE=${params.SEC_MGMT_PASSPHRASE}",
+                        "CFG_SEC_USERS_PASSPHRASE=${params.SEC_USERS_PASSPHRASE}",
+                        "CFG_MIKROTIK_SSH_HOST_KEY_FINGERPRINT=${params.MIKROTIK_SSH_HOST_KEY_FINGERPRINT}",
+                        "CFG_CLOUDFLARE_ACCOUNT_ID=${params.CLOUDFLARE_ACCOUNT_ID}",
+                        "CFG_CLOUDFLARE_API_TOKEN=${params.CLOUDFLARE_API_TOKEN}",
+                        "CFG_CLOUDFLARE_DOMAIN_1=${params.CLOUDFLARE_DOMAIN_1}",
+                        "CFG_CLOUDFLARE_DOMAIN_2=${params.CLOUDFLARE_DOMAIN_2}",
+                        "CFG_CLOUDFLARE_ZONE_ID_1=${params.CLOUDFLARE_ZONE_ID_1}",
+                        "CFG_CLOUDFLARE_ZONE_ID_2=${params.CLOUDFLARE_ZONE_ID_2}",
+                        "CFG_DOCKFLARE_ACCESS_EMAILS=${params.DOCKFLARE_ACCESS_EMAILS}",
+                        "CFG_DOCKFLARE_ADMIN_CIDRS=${params.DOCKFLARE_ADMIN_CIDRS}"
+                    ]) {
+                        sh(label: 'Validate and save settings in Infisical', script: '''#!/bin/sh
+set +x
+python3 jenkins/pipelines/network-settings/save-network-settings.py
+''')
+                    }
+                }
+            }
+        }
+    }
+}

@@ -18,7 +18,7 @@ if command -v java >/dev/null 2>&1; then
   update-alternatives --set java "$current_java_path"
 fi
 apt-get install -y ca-certificates curl git gnupg jq openssh-client openjdk-25-jre-headless \
-  python3 python3-venv python3-pip unzip rsync zip make shellcheck yamllint
+  python3 python3-paramiko python3-venv python3-pip unzip rsync zip make shellcheck yamllint
 java25_path="$(update-alternatives --list java | awk '/java-25-openjdk/ { print; exit }')"
 [[ -x "$java25_path" ]] || { echo "OpenJDK 25 is installed but its java alternative is missing." >&2; exit 1; }
 update-alternatives --set java "$java25_path"

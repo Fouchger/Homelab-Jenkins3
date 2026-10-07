@@ -1,0 +1,39 @@
+pipeline {
+    agent { label 'homelab-automation' }
+
+    options {
+        disableConcurrentBuilds()
+        timestamps()
+        timeout(time: 35, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+
+    stages {
+        stage('Confirm destructive full reset') {
+            steps {
+                input message: 'This will erase the MikroTik configuration, run MIKROTIK_SCRIPT from Infisical, and interrupt the router connection. An encrypted backup will be saved first. Continue only if the script restores access on MIKROTIK_IP through the Proxmox-connected ether2 link.', ok: 'Back up, reset, and restore router'
+            }
+        }
+        stage('Back up, reset, and restore MikroTik') {
+            steps {
+                withCredentials([
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                    string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
+                    string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
+                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT')
+                ]) {
+                    sh(label: 'Reset and restore RouterOS from Infisical configuration', script: '''#!/bin/sh
+set +x
+python3 jenkins/pipelines/mikrotik-restore/restore-mikrotik.py
+''')
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: "artifacts/${env.BUILD_NUMBER}/homelab-router-before-*.backup", allowEmptyArchive: true, fingerprint: true
+        }
+    }
+}

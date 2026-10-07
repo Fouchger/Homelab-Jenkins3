@@ -210,10 +210,22 @@ held in root-only temporary files on Proxmox, then removed after Jenkins imports
 them. The generated public key is installed on Proxmox; the private key stays in
 Infisical and Jenkins' encrypted store.
 
-The controller seeds two operator jobs: `001 - Update Servers`, which updates
-both LXCs daily, and `002 - Proxmox Access Setup`, which rotates the Proxmox API
-token. For an existing installation that does not yet have the Proxmox SSH key
-in Infisical, run the one-command bootstrap from the Proxmox shell, choose
+The controller seeds seven operator jobs: `001 - Update Servers`, which updates
+both LXCs daily; `002 - Proxmox Access Setup`, which rotates the Proxmox API
+token; `003 - DNS and Cloudflare Settings`, which collects configurable
+network/service settings and stores them in Infisical; `004 - MikroTik
+Configuration`, which requires manual approval, stores an encrypted RouterOS
+backup as a Jenkins artifact, then applies DNS, DHCP DNS, and configured Wi-Fi
+passphrases from Infisical; and `005 - MikroTik Full Reset and Restore`, a
+separate destructive job that runs the complete Infisical RouterOS script after
+a reset and verifies access through the configured `ether2` link; and `006 - DNS
+Deployment and Router Sync`, which creates/reuses the two Technitium LXCs,
+configures DNS zone replication, then applies DHCP DNS settings to MikroTik
+after taking an encrypted backup; and `007 - Infisical Variable Audit`, which
+lists configured variable names (never values), checks required entries against
+the repository inventory, and archives a CSV report. Jobs 003 and 004 do not deploy DockFlare. For
+an existing installation that does not yet have the Proxmox SSH key in Infisical, run the one-command
+bootstrap from the Proxmox shell, choose
 **reuse** for both matching LXCs, then choose **configure** in the Infisical
 menu. This performs the one-time credential setup locally and renames the
 managed Jenkins jobs; the retired setup job is disabled with its build history
@@ -224,6 +236,21 @@ uses the read identity to retrieve the Proxmox SSH key and host key from
 Proxmox API token there. It does not read secrets under `/proxmox/lxc`. See
 [`infisical/README.md`](infisical/README.md) for secret formats and rotation
 behavior.
+
+Before running `006 - DNS Deployment and Router Sync`, set the two Technitium
+admin passwords in `/dns/dns01/DNS_SERVER_ADMIN_PASSWORD` and
+`/dns/dns02/DNS_SERVER_ADMIN_PASSWORD`, and the DNS LXC root passwords in
+`/proxmox/lxc/dns01` and `/proxmox/lxc/dns02`. Confirm DHCP reservations for
+192.168.30.2 and 192.168.30.3 match the DNS profiles. Configure the MikroTik
+SSH credentials and trusted host key under `/proxmox/mikrotik`; the job saves
+an encrypted router backup before applying resolver settings. Set
+`DNS_HOSTED_ZONES` only for zones you want hosted locally. A local primary zone
+shadows public DNS for that name, so leave public Cloudflare domains out unless
+you intentionally plan and maintain split-horizon records. Create and edit
+primary records on dns01; dns02 receives them through DNS zone transfers. DHCP
+advertises both resolver addresses. Fallback behavior depends on each client;
+choose MikroTik `router` mode if you also want configured public resolvers
+available when both Technitium servers are down.
 
 These scripts seed the Proxmox access
 setup job. The job applies the existing `HomelabLxcOperator` role to

@@ -1,0 +1,39 @@
+pipeline {
+    agent { label 'homelab-automation' }
+
+    options {
+        disableConcurrentBuilds()
+        timestamps()
+        timeout(time: 15, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+
+    stages {
+        stage('Confirm MikroTik changes') {
+            steps {
+                input message: 'Apply the DNS/DHCP settings and any configured Wi-Fi passphrases from Infisical to the MikroTik? The job first creates and downloads an encrypted RouterOS backup.', ok: 'Back up and apply configuration'
+            }
+        }
+        stage('Back up and configure MikroTik') {
+            steps {
+                withCredentials([
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                    string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
+                    string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
+                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT')
+                ]) {
+                    sh(label: 'Use Infisical configuration to back up and update RouterOS', script: '''#!/bin/sh
+set +x
+python3 jenkins/pipelines/mikrotik-config/apply-mikrotik-config.py
+''')
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: "artifacts/${env.BUILD_NUMBER}/homelab-router-before-dns-*.backup", allowEmptyArchive: true, fingerprint: true
+        }
+    }
+}

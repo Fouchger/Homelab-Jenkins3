@@ -128,8 +128,8 @@ def update_authorized_keys(public_key, prune=False):
 
 
 def save_lxc_password(folder, role, password_file):
-    if role not in ("controlplane", "jenkins-agent"):
-        raise SetupError("LXC password can only be saved for controlplane or jenkins-agent")
+    if role not in ("controlplane", "jenkins-agent", "dns01", "dns02"):
+        raise SetupError("Unsupported LXC role for root-password storage")
     base_url = read_file(folder, "infisical-url").rstrip("/")
     project_id = read_file(folder, "project-id")
     environment = read_file(folder, "environment")

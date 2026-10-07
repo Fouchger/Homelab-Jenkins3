@@ -553,6 +553,194 @@ JENKINS_UPDATE_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/97-homelab-server-update-pipeline.groovy"
 chmod 0640 "$jenkins_home/init.groovy.d/97-homelab-server-update-pipeline.groovy"
 
+# Seed the operator-editable network settings job. It stores only values entered
+# by the operator and never changes the router or DNS services itself.
+cat >"$jenkins_home/init.groovy.d/98-homelab-network-settings-pipeline.groovy" <<'JENKINS_NETWORK_SETTINGS_PIPELINE_HOOK'
+import hudson.plugins.git.BranchSpec
+import hudson.plugins.git.GitSCM
+import jenkins.model.Jenkins
+import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition
+import org.jenkinsci.plugins.workflow.job.WorkflowJob
+
+def jenkins = Jenkins.get()
+def projectSettings = new Properties()
+new File('/etc/homelab/project.properties').withInputStream { projectSettings.load(it) }
+def repositoryUrl = "https://github.com/${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
+def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
+def branch = projectSettings.getProperty('githubBranch', 'main')
+def jobName = '003 - DNS and Cloudflare Settings'
+def job = jenkins.getItem(jobName)
+def scm = new GitSCM(
+    GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
+    Collections.singletonList(new BranchSpec("*/${branch}")),
+    null, null, Collections.emptyList()
+)
+def definition = new CpsScmFlowDefinition(scm, 'jenkins/pipelines/network-settings/Jenkinsfile')
+definition.setLightweight(true)
+if (job == null) {
+    job = jenkins.createProject(WorkflowJob, jobName)
+    println("Created manual Pipeline '${jobName}' for branch '${branch}'.")
+} else if (!(job instanceof WorkflowJob)) {
+    throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
+} else {
+    println("Updating managed Pipeline '${jobName}' to use the repository's network settings pipeline.")
+}
+job.setDefinition(definition)
+job.setDescription('003 - Saves operator-entered DNS, MikroTik (including the post-reset IP), Cloudflare account/domain, DockFlare Access email and admin network settings in their documented Infisical folders. Generates a missing MikroTik Ed25519 client key and pins the router host key only after SHA256 fingerprint confirmation. This job does not apply router, DNS server, or DockFlare changes.')
+job.save()
+JENKINS_NETWORK_SETTINGS_PIPELINE_HOOK
+chown jenkins:jenkins "$jenkins_home/init.groovy.d/98-homelab-network-settings-pipeline.groovy"
+chmod 0640 "$jenkins_home/init.groovy.d/98-homelab-network-settings-pipeline.groovy"
+
+# Seed the manually approved MikroTik pipeline. Sensitive values stay in
+# Infisical; the job takes an encrypted RouterOS backup before each apply.
+cat >"$jenkins_home/init.groovy.d/99-homelab-mikrotik-config-pipeline.groovy" <<'JENKINS_MIKROTIK_CONFIG_PIPELINE_HOOK'
+import hudson.plugins.git.BranchSpec
+import hudson.plugins.git.GitSCM
+import jenkins.model.Jenkins
+import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition
+import org.jenkinsci.plugins.workflow.job.WorkflowJob
+
+def jenkins = Jenkins.get()
+def projectSettings = new Properties()
+new File('/etc/homelab/project.properties').withInputStream { projectSettings.load(it) }
+def repositoryUrl = "https://github.com/${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
+def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
+def branch = projectSettings.getProperty('githubBranch', 'main')
+def jobName = '004 - MikroTik Configuration'
+def job = jenkins.getItem(jobName)
+def scm = new GitSCM(
+    GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
+    Collections.singletonList(new BranchSpec("*/${branch}")),
+    null, null, Collections.emptyList()
+)
+def definition = new CpsScmFlowDefinition(scm, 'jenkins/pipelines/mikrotik-config/Jenkinsfile')
+definition.setLightweight(true)
+if (job == null) {
+    job = jenkins.createProject(WorkflowJob, jobName)
+    println("Created manually approved MikroTik configuration Pipeline for branch '${branch}'.")
+} else if (!(job instanceof WorkflowJob)) {
+    throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
+}
+job.setDefinition(definition)
+job.setDescription('004 - Reads DNS, DHCP mode, Wi-Fi passphrases, router credentials and SSH material from Infisical. Requires manual approval, authorizes the generated SSH key using the stored administrator login, saves/downloads an encrypted RouterOS backup, then applies only the configured DNS/DHCP and named Wi-Fi security profile settings.')
+job.save()
+JENKINS_MIKROTIK_CONFIG_PIPELINE_HOOK
+chown jenkins:jenkins "$jenkins_home/init.groovy.d/99-homelab-mikrotik-config-pipeline.groovy"
+chmod 0640 "$jenkins_home/init.groovy.d/99-homelab-mikrotik-config-pipeline.groovy"
+
+# Seed the explicitly approved full-reset and restore job. Its configuration
+# script and credentials are fetched from Infisical at runtime and never stored
+# in this public repository.
+cat >"$jenkins_home/init.groovy.d/100-homelab-mikrotik-restore-pipeline.groovy" <<'JENKINS_MIKROTIK_RESTORE_PIPELINE_HOOK'
+import hudson.plugins.git.BranchSpec
+import hudson.plugins.git.GitSCM
+import jenkins.model.Jenkins
+import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition
+import org.jenkinsci.plugins.workflow.job.WorkflowJob
+
+def jenkins = Jenkins.get()
+def projectSettings = new Properties()
+new File('/etc/homelab/project.properties').withInputStream { projectSettings.load(it) }
+def repositoryUrl = "https://github.com/${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
+def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
+def branch = projectSettings.getProperty('githubBranch', 'main')
+def jobName = '005 - MikroTik Full Reset and Restore'
+def job = jenkins.getItem(jobName)
+def scm = new GitSCM(
+    GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
+    Collections.singletonList(new BranchSpec("*/${branch}")),
+    null, null, Collections.emptyList()
+)
+def definition = new CpsScmFlowDefinition(scm, 'jenkins/pipelines/mikrotik-restore/Jenkinsfile')
+definition.setLightweight(true)
+if (job == null) {
+    job = jenkins.createProject(WorkflowJob, jobName)
+    println("Created destructive, manually approved MikroTik reset and restore Pipeline for branch '${branch}'.")
+} else if (!(job instanceof WorkflowJob)) {
+    throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
+}
+job.setDefinition(definition)
+job.setDescription('005 - Destructive full RouterOS reset. Requires explicit manual approval, reads MIKROTIK_SCRIPT and credentials from Infisical, validates the script, saves and archives an encrypted backup, then runs the script after reset and verifies SSH access at MIKROTIK_IP through the configured ether2 network path.')
+job.save()
+JENKINS_MIKROTIK_RESTORE_PIPELINE_HOOK
+chown jenkins:jenkins "$jenkins_home/init.groovy.d/100-homelab-mikrotik-restore-pipeline.groovy"
+chmod 0640 "$jenkins_home/init.groovy.d/100-homelab-mikrotik-restore-pipeline.groovy"
+
+# Seed the approved DNS deployment job. It provisions/reuses DNS guests,
+# configures Technitium replication, then applies DNS-only router settings.
+cat >"$jenkins_home/init.groovy.d/101-homelab-dns-deploy-pipeline.groovy" <<'JENKINS_DNS_DEPLOY_PIPELINE_HOOK'
+import hudson.plugins.git.BranchSpec
+import hudson.plugins.git.GitSCM
+import jenkins.model.Jenkins
+import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition
+import org.jenkinsci.plugins.workflow.job.WorkflowJob
+
+def jenkins = Jenkins.get()
+def projectSettings = new Properties()
+new File('/etc/homelab/project.properties').withInputStream { projectSettings.load(it) }
+def repositoryUrl = "https://github.com/${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
+def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
+def branch = projectSettings.getProperty('githubBranch', 'main')
+def jobName = '006 - DNS Deployment and Router Sync'
+def job = jenkins.getItem(jobName)
+def scm = new GitSCM(
+    GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
+    Collections.singletonList(new BranchSpec("*/${branch}")),
+    null, null, Collections.emptyList()
+)
+def definition = new CpsScmFlowDefinition(scm, 'jenkins/pipelines/dns-deploy/Jenkinsfile')
+definition.setLightweight(true)
+if (job == null) {
+    job = jenkins.createProject(WorkflowJob, jobName)
+    println("Created manually approved DNS deployment Pipeline for branch '${branch}'.")
+} else if (!(job instanceof WorkflowJob)) {
+    throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
+}
+job.setDefinition(definition)
+job.setDescription('006 - Creates missing dns01/dns02 containers or verifies and reuses matching guests, sets Technitium admin credentials, establishes restricted primary-to-secondary zone transfers, then backs up and applies DNS-only MikroTik resolver/DHCP settings. Requires manual approval; does not delete containers or invent zones/records.')
+job.save()
+JENKINS_DNS_DEPLOY_PIPELINE_HOOK
+chown jenkins:jenkins "$jenkins_home/init.groovy.d/101-homelab-dns-deploy-pipeline.groovy"
+chmod 0640 "$jenkins_home/init.groovy.d/101-homelab-dns-deploy-pipeline.groovy"
+
+# Seed a read-only Infisical variable inventory/audit job. It lists names only
+# and compares them with the variables the project pipelines currently expect.
+cat >"$jenkins_home/init.groovy.d/102-homelab-infisical-audit-pipeline.groovy" <<'JENKINS_INFISICAL_AUDIT_PIPELINE_HOOK'
+import hudson.plugins.git.BranchSpec
+import hudson.plugins.git.GitSCM
+import jenkins.model.Jenkins
+import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition
+import org.jenkinsci.plugins.workflow.job.WorkflowJob
+
+def jenkins = Jenkins.get()
+def projectSettings = new Properties()
+new File('/etc/homelab/project.properties').withInputStream { projectSettings.load(it) }
+def repositoryUrl = "https://github.com/${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
+def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
+def branch = projectSettings.getProperty('githubBranch', 'main')
+def jobName = '007 - Infisical Variable Audit'
+def job = jenkins.getItem(jobName)
+def scm = new GitSCM(
+    GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
+    Collections.singletonList(new BranchSpec("*/${branch}")),
+    null, null, Collections.emptyList()
+)
+def definition = new CpsScmFlowDefinition(scm, 'jenkins/pipelines/infisical-audit/Jenkinsfile')
+definition.setLightweight(true)
+if (job == null) {
+    job = jenkins.createProject(WorkflowJob, jobName)
+    println("Created read-only Infisical variable audit Pipeline for branch '${branch}'.")
+} else if (!(job instanceof WorkflowJob)) {
+    throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
+}
+job.setDefinition(definition)
+job.setDescription('007 - Lists Infisical folder and variable names without requesting secret values, compares them with the repository inventory, reports required/missing/optional/planned/untracked entries, and archives a names-only CSV. Requires the Infisical read identity to list the project paths.')
+job.save()
+JENKINS_INFISICAL_AUDIT_PIPELINE_HOOK
+chown jenkins:jenkins "$jenkins_home/init.groovy.d/102-homelab-infisical-audit-pipeline.groovy"
+chmod 0640 "$jenkins_home/init.groovy.d/102-homelab-infisical-audit-pipeline.groovy"
+
 rm -f -- "$jenkins_home/init.groovy.d/97-homelab-infisical-credential-approvals.groovy" \
   "$jenkins_home/init.groovy.d/98-homelab-infisical-credential-setup-pipeline.groovy"
 install -o jenkins -g jenkins -m 0600 /dev/null "$jenkins_home/secrets/homelab-agent-enrollment.pending"
