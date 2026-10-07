@@ -19,6 +19,10 @@ def required(name):
     return value
 
 
+def shell_quote(value):
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
 def http_json(url, method="GET", headers=None, form=None):
     request_headers = {"Accept": "application/json"}
     request_headers.update(headers or {})
@@ -103,11 +107,14 @@ def main():
     host = required("PROXMOX_HOST")
     owner = required("GITHUB_OWNER")
     repository = required("GITHUB_REPOSITORY")
+    github_token = os.environ.get("GITHUB_TOKEN", "").strip()
     commit = required("UPDATE_COMMIT")
     if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
         raise RuntimeError("PROXMOX_HOST must be a hostname or IPv4 address")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", owner) or not re.fullmatch(r"[A-Za-z0-9_.-]+", repository):
         raise RuntimeError("Invalid GitHub repository owner or name")
+    if github_token and not re.fullmatch(r"[A-Za-z0-9_]{20,}", github_token):
+        raise RuntimeError("GITHUB_TOKEN must be a GitHub token without whitespace")
     if not re.fullmatch(r"[0-9a-fA-F]{40,64}", commit):
         raise RuntimeError("UPDATE_COMMIT must be the checked-out Git commit SHA")
 
@@ -131,17 +138,29 @@ def main():
             raise RuntimeError("Proxmox returned an unexpected temporary directory")
 
         script = f"""set -Eeuo pipefail
+umask 077
 update_dir='{remote_dir}'
 cleanup_update_dir() {{ rm -rf -- "$update_dir"; }}
 trap cleanup_update_dir EXIT
-curl --fail --silent --show-error --location \\
+github_token={shell_quote(github_token)}
+if [[ -n $github_token ]]; then
+  printf 'header = "Authorization: Bearer %s"\\n' "$github_token" > "$update_dir/github-curl.conf"
+  curl --config "$update_dir/github-curl.conf" --fail --silent --show-error --location \\
+    --retry 3 --connect-timeout 15 --max-time 120 \\
+    'https://raw.githubusercontent.com/{owner}/{repository}/{commit}/proxmox_helper_script/controlplane.sh' \\
+    -o "$update_dir/controlplane.sh"
+  rm -f -- "$update_dir/github-curl.conf"
+else
+  curl --fail --silent --show-error --location \\
   --retry 3 --connect-timeout 15 --max-time 120 \\
   'https://raw.githubusercontent.com/{owner}/{repository}/{commit}/proxmox_helper_script/controlplane.sh' \\
   -o "$update_dir/controlplane.sh"
+fi
 [[ -s $update_dir/controlplane.sh ]]
 bash -n "$update_dir/controlplane.sh"
 chmod 0700 "$update_dir/controlplane.sh"
 printf 'Running repository update for commit {commit}; both LXCs are explicitly set to reuse.\\n'
+HOMELAB_GITHUB_TOKEN="$github_token" \\
 HOMELAB_BOOTSTRAP_OWNER='{owner}' \\
 HOMELAB_BOOTSTRAP_REPOSITORY='{repository}' \\
 HOMELAB_BOOTSTRAP_REF='{commit}' \\
@@ -150,6 +169,7 @@ HOMELAB_AGENT_ACTION=reuse \\
 HOMELAB_DEFER_AGENT_RESTART=yes \\
 HOMELAB_SKIP_AGENT_ENROLMENT=yes \\
   bash "$update_dir/controlplane.sh"
+unset github_token
 """
         run_ssh(host, key_file, known_hosts_file, "bash -s", input_text=script, timeout=5400)
         print(f"Proxmox bootstrap completed for commit {commit}.")

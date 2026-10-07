@@ -18,6 +18,7 @@ pipeline {
         booleanParam(name: 'AUTOMATED_UPDATE', defaultValue: false, description: 'Set by the daily timer. Leave disabled for manual runs so they require confirmation.')
         string(name: 'GITHUB_OWNER', defaultValue: 'Fouchger', description: 'Repository owner used by the Proxmox bootstrap download.')
         string(name: 'GITHUB_REPOSITORY', defaultValue: 'Homelab-Jenkins3', description: 'Repository name used by the Proxmox bootstrap download.')
+        password(name: 'GITHUB_TOKEN', defaultValue: '', description: 'Optional GitHub token for private repositories. Leave blank for public repositories.')
     }
 
     stages {
@@ -50,10 +51,16 @@ pipeline {
                     string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT'),
                     string(credentialsId: 'homelab-infisical-project-slug', variable: 'INFISICAL_PROJECT_SLUG')
                 ]) {
-                    sh(label: 'Update both matching Jenkins LXCs from this repository revision', script: '''#!/bin/sh
+                    withEnv([
+                        "GITHUB_OWNER=${params.GITHUB_OWNER}",
+                        "GITHUB_REPOSITORY=${params.GITHUB_REPOSITORY}",
+                        "GITHUB_TOKEN=${params.GITHUB_TOKEN ?: ''}"
+                    ]) {
+                        sh(label: 'Update both matching Jenkins LXCs from this repository revision', script: '''#!/bin/sh
 set +x
 python3 jenkins/pipelines/server-update/update-servers.py
 ''')
+                    }
                 }
             }
         }

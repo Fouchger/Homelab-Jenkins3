@@ -26,10 +26,16 @@ pipeline {
                     string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT'),
                     string(credentialsId: 'homelab-infisical-project-slug', variable: 'INFISICAL_PROJECT_SLUG')
                 ]) {
-                    sh(label: 'Create least-privilege Proxmox token and update Infisical', script: '''#!/bin/sh
+                    withEnv([
+                        "PROXMOX_USER=${params.PROXMOX_USER}",
+                        "PROXMOX_ROLE=${params.PROXMOX_ROLE}",
+                        "PROXMOX_STORAGE_IDS=${params.PROXMOX_STORAGE_IDS}"
+                    ]) {
+                        sh(label: 'Create least-privilege Proxmox token and update Infisical', script: '''#!/bin/sh
 set +x
 python3 jenkins/pipelines/proxmox-access/provision-proxmox-access.py
 ''')
+                    }
                 }
             }
         }
