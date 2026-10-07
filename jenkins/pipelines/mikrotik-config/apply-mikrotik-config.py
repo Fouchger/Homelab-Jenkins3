@@ -67,15 +67,17 @@ def infisical_secrets():
     values = {}
     for path, names in {
         "/dns": (
-            "DNS01_IPV4", "DNS02_IPV4", "DNS_PUBLIC_FALLBACKS", "MIKROTIK_DHCP_DNS_MODE",
+            "DNS_PUBLIC_FALLBACKS", "MIKROTIK_DHCP_DNS_MODE",
         ),
-        "/proxmox/mikrotik": (
-            "MIKROTIK_HOST", "MIKROTIK_IP", "MIKROTIK_ADMIN_USER", "MIKROTIK_ADMIN_USER_PASSWORD",
+        "/mikrotik/router01": (
+            "MIKROTIK_HOST", "MIKROTIK_IP", "MIKROTIK_BOOTSTRAP_USERNAME", "MIKROTIK_BOOTSTRAP_PASSWORD",
             "MIKROTIK_SSH_USER", "MIKROTIK_SSH_PRIVATE_KEY", "MIKROTIK_SSH_PUBLIC_KEY",
-            "MIKROTIK_SSH_HOST_KEY", "MIKROTIK_BACKUP_PASSWORD",
-            "SEC_GUEST_PASSPHRASE", "SEC_IOT_PASSPHRASE", "SEC_MGMT_PASSPHRASE",
-            "SEC_USERS_PASSPHRASE",
+            "MIKROTIK_SSH_HOST_KEY", "MIKROTIK_USERNAME", "MIKROTIK_PASSWORD",
         ),
+        "/mikrotik/backup": ("BINARY_BACKUP_PASSWORD",),
+        "/mikrotik/wifi_security": ("SEC_GUEST_PASSWORD", "SEC_IOT_PASSWORD", "SEC_MGMT_PASSWORD", "SEC_USERS_PASSWORD"),
+        "/dns/dns01": ("DNS_IPV4",),
+        "/dns/dns02": ("DNS_IPV4",),
     }.items():
         query = urllib.parse.urlencode({
             "projectId": required("INFISICAL_PROJECT_ID"),
@@ -91,7 +93,8 @@ def infisical_secrets():
             secret = result.get("secret", {}) if isinstance(result, dict) else {}
             value = secret.get("secretValue") if isinstance(secret, dict) else None
             if isinstance(value, str):
-                values[name] = value
+                key = f"{path.rsplit('/', 1)[-1].upper()}_IPV4" if name == "DNS_IPV4" else name
+                values[key] = value
     return values
 
 
@@ -168,7 +171,7 @@ def connection_host(values):
     if not host:
         host = values.get("MIKROTIK_HOST", "").strip()
     if not re.fullmatch(r"[A-Za-z0-9.-]+", host) or host.startswith(".") or host.endswith("."):
-        raise RuntimeError("Set a valid MIKROTIK_HOST in /proxmox/mikrotik")
+        raise RuntimeError("Set a valid MIKROTIK_HOST in /mikrotik/router01")
     return host
 
 
@@ -273,25 +276,25 @@ def ssh_client(host, username, key_file, host_key_fields, password=None):
 def apply(values):
     host = connection_host(values)
     host_key_host = values.get("MIKROTIK_HOST", "").strip()
-    admin_user = values.get("MIKROTIK_ADMIN_USER", "").strip()
-    admin_password = values.get("MIKROTIK_ADMIN_USER_PASSWORD", "")
+    admin_user = values.get("MIKROTIK_BOOTSTRAP_USERNAME", "").strip()
+    admin_password = values.get("MIKROTIK_BOOTSTRAP_PASSWORD", "")
     ssh_user = values.get("MIKROTIK_SSH_USER", "").strip()
     private_key = values.get("MIKROTIK_SSH_PRIVATE_KEY", "")
     public_key = values.get("MIKROTIK_SSH_PUBLIC_KEY", "").strip()
     trusted_host_key = values.get("MIKROTIK_SSH_HOST_KEY", "")
-    backup_password = values.get("MIKROTIK_BACKUP_PASSWORD", "")
+    backup_password = values.get("BINARY_BACKUP_PASSWORD", "")
     mode = values.get("MIKROTIK_DHCP_DNS_MODE", "").strip()
 
     if not re.fullmatch(r"[A-Za-z0-9.-]+", host_key_host) or host_key_host.startswith(".") or host_key_host.endswith("."):
-        raise RuntimeError("Set a valid MIKROTIK_HOST in /proxmox/mikrotik")
+        raise RuntimeError("Set a valid MIKROTIK_HOST in /mikrotik/router01")
     if admin_user and not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", admin_user):
-        raise RuntimeError("MIKROTIK_ADMIN_USER must be a RouterOS username without spaces")
+        raise RuntimeError("MIKROTIK_BOOTSTRAP_USERNAME must be a RouterOS username without spaces")
     if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", ssh_user):
-        raise RuntimeError("Set a valid MIKROTIK_SSH_USER in /proxmox/mikrotik")
+        raise RuntimeError("Set a valid MIKROTIK_SSH_USER in /mikrotik/router01")
     if not private_key.startswith("-----BEGIN OPENSSH PRIVATE KEY-----") or not public_key.startswith("ssh-ed25519 "):
         raise RuntimeError("Run Job 003 first to generate the MikroTik Ed25519 key pair")
     if not backup_password:
-        raise RuntimeError("Set MIKROTIK_BACKUP_PASSWORD in /proxmox/mikrotik before applying router changes")
+        raise RuntimeError("Set BINARY_BACKUP_PASSWORD in /mikrotik/backup before applying router changes")
     if mode not in ("router", "direct"):
         raise RuntimeError("Set MIKROTIK_DHCP_DNS_MODE to router or direct in /dns")
 
@@ -314,10 +317,10 @@ def apply(values):
 
     dns_only = os.environ.get("HOMELAB_MIKROTIK_DNS_ONLY", "").strip().lower() in ("1", "yes", "true")
     wifi = {} if dns_only else {
-        "SEC_USERS_PASSPHRASE": "sec-users",
-        "SEC_MGMT_PASSPHRASE": "sec-mgmt",
-        "SEC_IOT_PASSPHRASE": "sec-iot",
-        "SEC_GUEST_PASSPHRASE": "sec-guest",
+        "SEC_USERS_PASSWORD": "sec-users",
+        "SEC_MGMT_PASSWORD": "sec-mgmt",
+        "SEC_IOT_PASSWORD": "sec-iot",
+        "SEC_GUEST_PASSWORD": "sec-guest",
     }
     wifi_updates = []
     for secret, profile in wifi.items():
@@ -343,7 +346,7 @@ def apply(values):
             key_login = True
         except RuntimeError:
             if not admin_user or not admin_password:
-                raise RuntimeError("Stored MikroTik SSH key login failed. To bootstrap or repair it, set MIKROTIK_ADMIN_USER and MIKROTIK_ADMIN_USER_PASSWORD in /proxmox/mikrotik") from None
+                raise RuntimeError("Stored MikroTik SSH key login failed. To bootstrap or repair it, set MIKROTIK_BOOTSTRAP_USERNAME and MIKROTIK_BOOTSTRAP_PASSWORD in /mikrotik/router01") from None
             admin_client = ssh_client(host, admin_user, str(key_path), host_fields, password=admin_password)
             create_backup(admin_client, backup_password)
             add_key = f"/user/ssh-keys/add user={ros_quote(ssh_user)} key={ros_quote(public_key)}"
@@ -410,7 +413,7 @@ def apply(values):
         if wifi_updates:
             print(f"Updated Wi-Fi security profiles: {', '.join(profile for profile, _ in wifi_updates)}.")
         else:
-            print("Wi-Fi passphrases were unchanged because no SEC_*_PASSPHRASE values were supplied.")
+            print("Wi-Fi settings were unchanged because no SEC_*_PASSWORD values were supplied.")
     finally:
         if client:
             client.close()

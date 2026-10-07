@@ -81,11 +81,11 @@ def read_infisical():
 
     fetch("/proxmox/automation", ("PVE_SSH_PRIVATE_KEY", "PVE_SSH_HOST_KEY"))
     fetch("/dns", (
-        "DNS01_IPV4", "DNS02_IPV4", "DNS_PUBLIC_FALLBACKS", "MIKROTIK_DHCP_DNS_MODE",
-        "DNS_HOSTED_ZONES",
+        "DNS_PUBLIC_FALLBACKS", "MIKROTIK_DHCP_DNS_MODE", "DNS_HOSTED_ZONES",
     ), optional=("DNS_PUBLIC_FALLBACKS", "DNS_HOSTED_ZONES"))
     for role in ("dns01", "dns02"):
-        fetch(f"/dns/{role}", ("DNS_SERVER_ADMIN_PASSWORD",))
+        fetch(f"/dns/{role}", ("DNS_IPV4", "DNS_SERVER_ADMIN_PASSWORD"))
+        values[f"{role.upper()}_IPV4"] = values.pop("DNS_IPV4")
         values[f"{role.upper()}_ADMIN_PASSWORD"] = values.pop("DNS_SERVER_ADMIN_PASSWORD")
     for role in ("dns01", "dns02"):
         fetch(f"/proxmox/lxc/{role}", ("LXC_ROOT_PASSWORD",))

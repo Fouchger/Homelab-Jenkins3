@@ -17,7 +17,7 @@ Proxmox host-side LXC creation/profile scripts remain in `../../proxmox_helper_s
 | `mikrotik-config/apply-mikrotik-config.py` | Reads sensitive router settings from Infisical, authorizes the generated SSH key with the stored admin login, downloads an encrypted backup to the Jenkins artifact, then configures RouterOS over pinned SSH. |
 | `mikrotik-restore/Jenkinsfile` | Job `005 - MikroTik Full Reset and Restore`: a separate destructive, manually approved reset using the complete configuration stored in Infisical. |
 | `mikrotik-restore/restore-mikrotik.py` | Validates and dry-runs the Infisical script, downloads an encrypted pre-reset backup, resets with a generated account/bootstrap wrapper, then waits for pinned SSH recovery at `MIKROTIK_IP`. |
-| `dns-deploy/Jenkinsfile` | Job `006 - DNS Deployment and Router Sync`: after manual approval, creates missing dns01/dns02 LXCs or verifies and reuses existing matches, secures both Technitium admin accounts, creates optional `DNS_HOSTED_ZONES` primaries on dns01, configures zone transfers to dns02, and invokes the DNS-only MikroTik update with an encrypted pre-change backup. DNS settings are read from `/dns`; each server password is read from its `/dns/<server>` folder as `DNS_SERVER_ADMIN_PASSWORD`. |
+| `dns-deploy/Jenkinsfile` | Job `006 - DNS Deployment and Router Sync`: after manual approval, creates missing dns01/dns02 LXCs or verifies and reuses existing matches, secures both Technitium admin accounts, creates optional `DNS_HOSTED_ZONES` primaries on dns01, configures zone transfers to dns02, and invokes the DNS-only MikroTik update with an encrypted pre-change backup. Shared policy is read from `/dns`; each server's `DNS_IPV4` and `DNS_SERVER_ADMIN_PASSWORD` are read from its `/dns/<server>` folder. |
 | `dns-deploy/deploy-dns.py` | Reads the Proxmox SSH identity and DNS/LXC secrets from Infisical, provisions through the pinned Proxmox SSH connection, and runs DNS management locally inside each guest so passwords do not cross the network in clear text. |
 | `dns-deploy/manage-technitium.py` | Uses Technitium's local HTTP API over loopback to secure the admin login, create configured primary zones, permit zone transfers only from dns02, and create/resync secondary zones on dns02. |
 | `infisical-audit/Jenkinsfile` | Job `007 - Infisical Variable Audit`: lists secret folder/name pairs without values, checks required and optional entries against the project inventory, and archives a names-only CSV. |
@@ -45,6 +45,6 @@ directly in Infisical using the folder and variable names in
 emails, and DockFlare management CIDRs have no repository defaults.
 The full reset job is intentionally separate from routine router configuration.
 It reads the multiline `MIKROTIK_SCRIPT` secret and post-reset address
-`MIKROTIK_IP` from `/proxmox/mikrotik`, requires explicit approval, and relies
+`MIKROTIK_IP` from `/mikrotik/router01`, requires explicit approval, and relies
 on the configuration script restoring SSH reachability over the Proxmox-linked
 `ether2` path.

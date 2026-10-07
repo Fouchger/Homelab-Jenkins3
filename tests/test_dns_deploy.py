@@ -67,9 +67,11 @@ tags: community-script;dns;homelab;managed-by-jenkins
 
     def test_dns_secret_path_mapping_uses_new_layout(self):
         self.assertEqual(network_settings.CONFIG["/dns/dns01"], {
+            "DNS_IPV4": "CFG_DNS01_IPV4",
             "DNS_SERVER_ADMIN_PASSWORD": "CFG_DNS01_ADMIN_PASSWORD"
         })
         self.assertEqual(network_settings.CONFIG["/dns/dns02"], {
+            "DNS_IPV4": "CFG_DNS02_IPV4",
             "DNS_SERVER_ADMIN_PASSWORD": "CFG_DNS02_ADMIN_PASSWORD"
         })
         self.assertNotIn("/proxmox/dns", network_settings.CONFIG)
@@ -85,8 +87,8 @@ tags: community-script;dns;homelab;managed-by-jenkins
         secrets = {
             ("/proxmox/automation", "PVE_SSH_PRIVATE_KEY"): "private-key",
             ("/proxmox/automation", "PVE_SSH_HOST_KEY"): "host-key",
-            ("/dns", "DNS01_IPV4"): "192.168.30.2",
-            ("/dns", "DNS02_IPV4"): "192.168.30.3",
+            ("/dns/dns01", "DNS_IPV4"): "192.168.30.2",
+            ("/dns/dns02", "DNS_IPV4"): "192.168.30.3",
             ("/dns", "MIKROTIK_DHCP_DNS_MODE"): "router",
             ("/dns", "DNS_PUBLIC_FALLBACKS"): "1.1.1.1,1.0.0.1",
             ("/dns", "DNS_HOSTED_ZONES"): "example.internal",
@@ -206,7 +208,7 @@ tags: community-script;dns;homelab;managed-by-jenkins
             requests.append((url, headers, form))
             if url.endswith("/api/v1/auth/universal-auth/login"):
                 return {"accessToken": "token"}
-            return {"secrets": [{"secretPath": "/dns", "secretKey": "DNS01_IPV4"}]}
+            return {"secrets": [{"secretPath": "/dns/dns01", "secretKey": "DNS_IPV4"}]}
 
         with patch.dict(os.environ, env, clear=True), patch.object(
             audit, "request_json", side_effect=fake_request
@@ -216,14 +218,14 @@ tags: community-script;dns;homelab;managed-by-jenkins
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(requests[1][0]).query)
         self.assertEqual(query["viewSecretValue"], ["false"])
         self.assertEqual(query["recursive"], ["true"])
-        self.assertEqual(actual, {("/dns", "DNS01_IPV4")})
+        self.assertEqual(actual, {("/dns/dns01", "DNS_IPV4")})
         self.assertNotIn("secretValue", repr(actual))
 
     def test_infisical_audit_flags_missing_required_but_not_optional(self):
         rows, failed = audit.build_report(
             set(),
             [
-                {"path": "/dns", "name": "DNS01_IPV4", "state": "required", "used_by": "006"},
+                {"path": "/dns/dns01", "name": "DNS_IPV4", "state": "required", "used_by": "006"},
                 {"path": "/dns", "name": "DNS_HOSTED_ZONES", "state": "optional", "used_by": "006"},
                 {"path": "/mikrotik", "name": "MIKROTIK_SCRIPT", "state": "conditional", "used_by": "005"},
                 {"path": "/cloudflare", "name": "API_TOKEN", "state": "planned", "used_by": "future"},

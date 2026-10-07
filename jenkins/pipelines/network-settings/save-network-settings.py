@@ -15,35 +15,39 @@ import urllib.request
 
 CONFIG = {
     "/dns": {
-        "DNS01_IPV4": "CFG_DNS01_IPV4",
-        "DNS02_IPV4": "CFG_DNS02_IPV4",
         "DNS_PUBLIC_FALLBACKS": "CFG_DNS_PUBLIC_FALLBACKS",
         "MIKROTIK_DHCP_DNS_MODE": "CFG_MIKROTIK_DHCP_DNS_MODE",
         "DNS_HOSTED_ZONES": "CFG_DNS_HOSTED_ZONES",
     },
-    "/dns/dns01": {"DNS_SERVER_ADMIN_PASSWORD": "CFG_DNS01_ADMIN_PASSWORD"},
-    "/dns/dns02": {"DNS_SERVER_ADMIN_PASSWORD": "CFG_DNS02_ADMIN_PASSWORD"},
+    "/dns/dns01": {"DNS_IPV4": "CFG_DNS01_IPV4", "DNS_SERVER_ADMIN_PASSWORD": "CFG_DNS01_ADMIN_PASSWORD"},
+    "/dns/dns02": {"DNS_IPV4": "CFG_DNS02_IPV4", "DNS_SERVER_ADMIN_PASSWORD": "CFG_DNS02_ADMIN_PASSWORD"},
     "/proxmox/lxc/dns01": {"LXC_ROOT_PASSWORD": "CFG_DNS01_ROOT_PASSWORD"},
     "/proxmox/lxc/dns02": {"LXC_ROOT_PASSWORD": "CFG_DNS02_ROOT_PASSWORD"},
-    "/proxmox/mikrotik": {
+    "/mikrotik/router01": {
         "MIKROTIK_HOST": "CFG_MIKROTIK_HOST",
         "MIKROTIK_IP": "CFG_MIKROTIK_IP",
-        "MIKROTIK_ADMIN_USER": "CFG_MIKROTIK_ADMIN_USER",
-        "MIKROTIK_ADMIN_USER_PASSWORD": "CFG_MIKROTIK_ADMIN_USER_PASSWORD",
+        "MIKROTIK_USERNAME": "CFG_MIKROTIK_USERNAME",
+        "MIKROTIK_PASSWORD": "CFG_MIKROTIK_PASSWORD",
+        "MIKROTIK_BOOTSTRAP_USERNAME": "CFG_MIKROTIK_BOOTSTRAP_USERNAME",
+        "MIKROTIK_BOOTSTRAP_PASSWORD": "CFG_MIKROTIK_BOOTSTRAP_PASSWORD",
         "MIKROTIK_SSH_USER": "CFG_MIKROTIK_SSH_USER",
-        "MIKROTIK_BACKUP_PASSWORD": "CFG_MIKROTIK_BACKUP_PASSWORD",
-        "SEC_GUEST_PASSPHRASE": "CFG_SEC_GUEST_PASSPHRASE",
-        "SEC_IOT_PASSPHRASE": "CFG_SEC_IOT_PASSPHRASE",
-        "SEC_MGMT_PASSPHRASE": "CFG_SEC_MGMT_PASSPHRASE",
-        "SEC_USERS_PASSPHRASE": "CFG_SEC_USERS_PASSPHRASE",
     },
-    "/proxmox/cloudflare/dockflare": {
+    "/mikrotik/backup": {"BINARY_BACKUP_PASSWORD": "CFG_BINARY_BACKUP_PASSWORD"},
+    "/mikrotik/wifi_security": {
+        "SEC_GUEST_PASSWORD": "CFG_SEC_GUEST_PASSWORD",
+        "SEC_IOT_PASSWORD": "CFG_SEC_IOT_PASSWORD",
+        "SEC_MGMT_PASSWORD": "CFG_SEC_MGMT_PASSWORD",
+        "SEC_USERS_PASSWORD": "CFG_SEC_USERS_PASSWORD",
+    },
+    "/cloudflare": {
         "CLOUDFLARE_ACCOUNT_ID": "CFG_CLOUDFLARE_ACCOUNT_ID",
         "CLOUDFLARE_API_TOKEN": "CFG_CLOUDFLARE_API_TOKEN",
         "CLOUDFLARE_DOMAIN_1": "CFG_CLOUDFLARE_DOMAIN_1",
         "CLOUDFLARE_DOMAIN_2": "CFG_CLOUDFLARE_DOMAIN_2",
         "CLOUDFLARE_ZONE_ID_1": "CFG_CLOUDFLARE_ZONE_ID_1",
         "CLOUDFLARE_ZONE_ID_2": "CFG_CLOUDFLARE_ZONE_ID_2",
+    },
+    "/dockflare": {
         "DOCKFLARE_ACCESS_EMAILS": "CFG_DOCKFLARE_ACCESS_EMAILS",
         "DOCKFLARE_ADMIN_CIDRS": "CFG_DOCKFLARE_ADMIN_CIDRS",
     },
@@ -169,19 +173,19 @@ def validate_value(name, value):
             except ipaddress.AddressValueError:
                 raise RuntimeError("MIKROTIK_HOST is not a valid IPv4 address") from None
         return value
-    if name in ("MIKROTIK_ADMIN_USER", "MIKROTIK_SSH_USER"):
+    if name in ("MIKROTIK_USERNAME", "MIKROTIK_BOOTSTRAP_USERNAME", "MIKROTIK_SSH_USER"):
         if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", value):
             raise RuntimeError(f"{name} must be a RouterOS username without spaces")
         return value
-    if name in ("MIKROTIK_ADMIN_USER_PASSWORD", "MIKROTIK_BACKUP_PASSWORD"):
+    if name in ("MIKROTIK_PASSWORD", "MIKROTIK_BOOTSTRAP_PASSWORD", "BINARY_BACKUP_PASSWORD"):
         if len(value) < 8 or any(char in value for char in "\r\n\0"):
             raise RuntimeError(f"{name} must be at least 8 characters and must not contain a line break")
         return value
-    if name.endswith("_PASSPHRASE"):
+    if name.endswith("_PASSWORD") and name.startswith("SEC_"):
         if len(value) < 8 or any(char in value for char in "\r\n\0"):
             raise RuntimeError(f"{name} must be at least 8 characters and must not contain a line break")
         return value
-    if name in ("DNS01_IPV4", "DNS02_IPV4"):
+    if name == "DNS_IPV4":
         try:
             return str(ipaddress.IPv4Address(value))
         except ipaddress.AddressValueError:
@@ -325,12 +329,9 @@ def main():
             value = os.environ.get(environment_name, "").strip()
             if value:
                 updates[(secret_path, name)] = validate_value(name, value)
-    if not updates:
-        raise RuntimeError("No settings were supplied; enter at least one value or edit the values in Infisical directly")
-
     token = infisical_login(base_url)
-    stored_router_host = read_secret(base_url, token, "/proxmox/mikrotik", "MIKROTIK_HOST") or ""
-    router_host = updates.get(("/proxmox/mikrotik", "MIKROTIK_HOST"), stored_router_host)
+    stored_router_host = read_secret(base_url, token, "/mikrotik/router01", "MIKROTIK_HOST") or ""
+    router_host = updates.get(("/mikrotik/router01", "MIKROTIK_HOST"), stored_router_host)
     if router_host:
         router_host_changed = bool(stored_router_host and router_host != stored_router_host)
         supplied_fingerprint = os.environ.get("CFG_MIKROTIK_SSH_HOST_KEY_FINGERPRINT", "").strip()
@@ -338,14 +339,17 @@ def main():
             raise RuntimeError("Changing MIKROTIK_HOST requires its independently verified SHA256 fingerprint; the existing router host and key were left unchanged")
         if not os.environ.get("CFG_MIKROTIK_HOST", "").strip():
             os.environ["CFG_MIKROTIK_HOST"] = router_host
-        existing_router_key = read_secret(base_url, token, "/proxmox/mikrotik", "MIKROTIK_SSH_PRIVATE_KEY") or ""
-        existing_router_pub = read_secret(base_url, token, "/proxmox/mikrotik", "MIKROTIK_SSH_PUBLIC_KEY") or ""
-        existing_router_host_key = read_secret(base_url, token, "/proxmox/mikrotik", "MIKROTIK_SSH_HOST_KEY") or ""
+        existing_router_key = read_secret(base_url, token, "/mikrotik/router01", "MIKROTIK_SSH_PRIVATE_KEY") or ""
+        existing_router_pub = read_secret(base_url, token, "/mikrotik/router01", "MIKROTIK_SSH_PUBLIC_KEY") or ""
+        existing_router_host_key = read_secret(base_url, token, "/mikrotik/router01", "MIKROTIK_SSH_HOST_KEY") or ""
         if router_host_changed:
             existing_router_host_key = ""
         generated = router_key_material(existing_router_key, existing_router_pub, existing_router_host_key)
         for name, value in generated.items():
-            updates[("/proxmox/mikrotik", name)] = value
+            updates[("/mikrotik/router01", name)] = value
+
+    if not updates:
+        raise RuntimeError("No settings were supplied and no missing MikroTik SSH key material needed generation")
 
     previous = {
         key: read_secret(base_url, token, key[0], key[1])
@@ -375,7 +379,7 @@ def main():
         names = sorted(name for path, name in updates if path == secret_path)
         if names:
             print(f"Saved and verified {', '.join(names)} in {secret_path}.")
-    public_key = read_secret(base_url, token, "/proxmox/mikrotik", "MIKROTIK_SSH_PUBLIC_KEY")
+    public_key = read_secret(base_url, token, "/mikrotik/router01", "MIKROTIK_SSH_PUBLIC_KEY")
     if public_key:
         print("Generated Jenkins SSH public key (public key only; Job 004 authorizes it with the stored RouterOS administrator login):")
         print(public_key)

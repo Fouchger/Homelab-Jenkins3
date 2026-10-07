@@ -69,21 +69,25 @@ def load_settings():
     environment = os.environ.get("INFISICAL_ENVIRONMENT", "").strip()
     if not project_id or not environment:
         raise RuntimeError("Infisical project ID and environment credentials are required")
-    names = (
-        "MIKROTIK_HOST", "MIKROTIK_IP", "MIKROTIK_ADMIN_USER",
-        "MIKROTIK_ADMIN_USER_PASSWORD", "MIKROTIK_SSH_USER",
-        "MIKROTIK_SSH_PRIVATE_KEY", "MIKROTIK_SSH_PUBLIC_KEY",
-        "MIKROTIK_SSH_HOST_KEY", "MIKROTIK_BACKUP_PASSWORD", "MIKROTIK_SCRIPT",
-    )
-    query = urllib.parse.urlencode({
-        "projectId": project_id,
-        "environment": environment,
-        "secretPath": "/proxmox/mikrotik",
-    })
     values = {}
-    for name in names:
-        url = f"{base_url}/api/v4/secrets/{urllib.parse.quote(name)}?{query}"
-        result = api_json(url, token=token, allow_404=True)
+    for path, names in {
+        "/mikrotik/router01": (
+            "MIKROTIK_HOST", "MIKROTIK_IP", "MIKROTIK_USERNAME", "MIKROTIK_PASSWORD",
+            "MIKROTIK_BOOTSTRAP_USERNAME", "MIKROTIK_BOOTSTRAP_PASSWORD", "MIKROTIK_SSH_USER",
+            "MIKROTIK_SSH_PRIVATE_KEY", "MIKROTIK_SSH_PUBLIC_KEY", "MIKROTIK_SSH_HOST_KEY",
+        ),
+        "/mikrotik/backup": ("BINARY_BACKUP_PASSWORD",),
+    }.items():
+        query = urllib.parse.urlencode({"projectId": project_id, "environment": environment, "secretPath": path})
+        for name in names:
+            url = f"{base_url}/api/v4/secrets/{urllib.parse.quote(name)}?{query}"
+            result = api_json(url, token=token, allow_404=True)
+            secret = result.get("secret", {}) if isinstance(result, dict) else {}
+            value = secret.get("secretValue") if isinstance(secret, dict) else None
+            values[name] = value if isinstance(value, str) else ""
+    for name in ("MIKROTIK_SCRIPT",):
+        query = urllib.parse.urlencode({"projectId": project_id, "environment": environment, "secretPath": "/mikrotik/router01"})
+        result = api_json(f"{base_url}/api/v4/secrets/{urllib.parse.quote(name)}?{query}", token=token, allow_404=True)
         secret = result.get("secret", {}) if isinstance(result, dict) else {}
         value = secret.get("secretValue") if isinstance(secret, dict) else None
         values[name] = value if isinstance(value, str) else ""
@@ -272,21 +276,23 @@ def main():
     values = load_settings()
     current_host = required(values, "MIKROTIK_HOST")
     address = str(ipaddress.IPv4Address(required(values, "MIKROTIK_IP")))
-    admin_user = required(values, "MIKROTIK_ADMIN_USER")
+    bootstrap_user = required(values, "MIKROTIK_BOOTSTRAP_USERNAME")
+    admin_user = required(values, "MIKROTIK_USERNAME")
     ssh_user = required(values, "MIKROTIK_SSH_USER")
-    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", admin_user) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", ssh_user):
+    if not all(re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", user) for user in (bootstrap_user, admin_user, ssh_user)):
         raise RuntimeError("MikroTik usernames must contain only letters, digits, underscore, period, or hyphen")
-    admin_password = required(values, "MIKROTIK_ADMIN_USER_PASSWORD")
-    backup_password = required(values, "MIKROTIK_BACKUP_PASSWORD")
-    if len(admin_password) < 8 or len(backup_password) < 8:
-        raise RuntimeError("MIKROTIK_ADMIN_USER_PASSWORD and MIKROTIK_BACKUP_PASSWORD must each be at least 8 characters")
+    bootstrap_password = required(values, "MIKROTIK_BOOTSTRAP_PASSWORD")
+    admin_password = required(values, "MIKROTIK_PASSWORD")
+    backup_password = required(values, "BINARY_BACKUP_PASSWORD")
+    if any(len(value) < 8 for value in (bootstrap_password, admin_password, backup_password)):
+        raise RuntimeError("MikroTik bootstrap, admin, and backup passwords must each be at least 8 characters")
     private_key = required(values, "MIKROTIK_SSH_PRIVATE_KEY")
     public_key = required(values, "MIKROTIK_SSH_PUBLIC_KEY")
     script = verify_config_script(required(values, "MIKROTIK_SCRIPT"), address)
     if not private_key.startswith("-----BEGIN OPENSSH PRIVATE KEY-----") or not public_key.startswith("ssh-ed25519 "):
         raise RuntimeError("Run Job 003 first to generate the MikroTik Ed25519 SSH client key pair")
     host_key = known_host_key(required(values, "MIKROTIK_SSH_HOST_KEY"), current_host)
-    if any(char in backup_password or char in admin_password for char in "\r\n\0"):
+    if any(char in value for value in (backup_password, admin_password, bootstrap_password) for char in "\r\n\0"):
         raise RuntimeError("MikroTik passwords must not contain line breaks or NUL characters")
 
     key_path = Path("mikrotik-restore-key")
@@ -294,7 +300,7 @@ def main():
     os.chmod(key_path, 0o600)
     client = None
     try:
-        client = connect(current_host, admin_user, host_key, password=admin_password)
+        client = connect(current_host, bootstrap_user, host_key, password=bootstrap_password)
         save_backup(client, backup_password)
 
         build_number = os.environ.get("BUILD_NUMBER", "")

@@ -90,7 +90,7 @@ def build_report(actual, expected):
         expected_keys.add(key)
         present = key in actual
         state = item["state"]
-        status = "SET" if present else (
+        status = ("REMOVE" if present else "RETIRED") if state == "obsolete" else "SET" if present else (
             "MISSING" if state in ("required", "required-for-reset") else
             "MISSING-CONDITIONAL" if state == "conditional" else
             "OPTIONAL-MISSING" if state == "optional" else
