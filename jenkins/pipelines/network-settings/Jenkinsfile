@@ -12,7 +12,7 @@ pipeline {
         string(name: 'DNS01_IPV4', defaultValue: '', description: 'Optional DNS01 address saved as /dns/dns01/DNS_IPV4. Blank keeps the current value.')
         string(name: 'DNS02_IPV4', defaultValue: '', description: 'Optional DNS02 address saved as /dns/dns02/DNS_IPV4. Blank keeps the current value.')
         string(name: 'DNS_PUBLIC_FALLBACKS', defaultValue: '', description: 'Optional comma-separated public DNS resolver IPs used only after both Technitium servers fail.')
-        string(name: 'MIKROTIK_DHCP_DNS_MODE', defaultValue: '', description: 'Optional DHCP DNS mode: router or direct. Blank keeps the current Infisical value.')
+        string(name: 'MIKROTIK_DHCP_DNS_MODE', defaultValue: '', description: 'Optional DHCP DNS mode: router/MikroTik resolver or direct/Technitium. Blank keeps the current Infisical value.')
         password(name: 'DNS01_ROOT_PASSWORD', defaultValue: '', description: 'Optional LXC root password for dns01. Blank keeps the existing Infisical value.')
         password(name: 'DNS02_ROOT_PASSWORD', defaultValue: '', description: 'Optional LXC root password for dns02. Blank keeps the existing Infisical value.')
         password(name: 'DNS01_ADMIN_PASSWORD', defaultValue: '', description: 'Optional Technitium admin password saved as /dns/dns01/DNS_SERVER_ADMIN_PASSWORD. Blank keeps the existing Infisical value.')
@@ -53,43 +53,10 @@ pipeline {
                     string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT'),
                     string(credentialsId: 'homelab-infisical-project-slug', variable: 'INFISICAL_PROJECT_SLUG')
                 ]) {
-                    withEnv([
-                        "CFG_DNS01_IPV4=${params.DNS01_IPV4}",
-                        "CFG_DNS02_IPV4=${params.DNS02_IPV4}",
-                        "CFG_DNS_PUBLIC_FALLBACKS=${params.DNS_PUBLIC_FALLBACKS}",
-                        "CFG_MIKROTIK_DHCP_DNS_MODE=${params.MIKROTIK_DHCP_DNS_MODE}",
-                        "CFG_DNS01_ROOT_PASSWORD=${params.DNS01_ROOT_PASSWORD}",
-                        "CFG_DNS02_ROOT_PASSWORD=${params.DNS02_ROOT_PASSWORD}",
-                        "CFG_DNS01_ADMIN_PASSWORD=${params.DNS01_ADMIN_PASSWORD}",
-                        "CFG_DNS02_ADMIN_PASSWORD=${params.DNS02_ADMIN_PASSWORD}",
-                        "CFG_DNS_HOSTED_ZONES=${params.DNS_HOSTED_ZONES}",
-                        "CFG_MIKROTIK_HOST=${params.MIKROTIK_HOST}",
-                        "CFG_MIKROTIK_IP=${params.MIKROTIK_IP}",
-                        "CFG_MIKROTIK_USERNAME=${params.MIKROTIK_USERNAME}",
-                        "CFG_MIKROTIK_PASSWORD=${params.MIKROTIK_PASSWORD}",
-                        "CFG_MIKROTIK_BOOTSTRAP_USERNAME=${params.MIKROTIK_BOOTSTRAP_USERNAME}",
-                        "CFG_MIKROTIK_BOOTSTRAP_PASSWORD=${params.MIKROTIK_BOOTSTRAP_PASSWORD}",
-                        "CFG_MIKROTIK_SSH_USER=${params.MIKROTIK_SSH_USER}",
-                        "CFG_BINARY_BACKUP_PASSWORD=${params.BINARY_BACKUP_PASSWORD}",
-                        "CFG_SEC_GUEST_PASSWORD=${params.SEC_GUEST_PASSWORD}",
-                        "CFG_SEC_IOT_PASSWORD=${params.SEC_IOT_PASSWORD}",
-                        "CFG_SEC_MGMT_PASSWORD=${params.SEC_MGMT_PASSWORD}",
-                        "CFG_SEC_USERS_PASSWORD=${params.SEC_USERS_PASSWORD}",
-                        "CFG_MIKROTIK_SSH_HOST_KEY_FINGERPRINT=${params.MIKROTIK_SSH_HOST_KEY_FINGERPRINT}",
-                        "CFG_CLOUDFLARE_ACCOUNT_ID=${params.CLOUDFLARE_ACCOUNT_ID}",
-                        "CFG_CLOUDFLARE_API_TOKEN=${params.CLOUDFLARE_API_TOKEN}",
-                        "CFG_CLOUDFLARE_DOMAIN_1=${params.CLOUDFLARE_DOMAIN_1}",
-                        "CFG_CLOUDFLARE_DOMAIN_2=${params.CLOUDFLARE_DOMAIN_2}",
-                        "CFG_CLOUDFLARE_ZONE_ID_1=${params.CLOUDFLARE_ZONE_ID_1}",
-                        "CFG_CLOUDFLARE_ZONE_ID_2=${params.CLOUDFLARE_ZONE_ID_2}",
-                        "CFG_DOCKFLARE_ACCESS_EMAILS=${params.DOCKFLARE_ACCESS_EMAILS}",
-                        "CFG_DOCKFLARE_ADMIN_CIDRS=${params.DOCKFLARE_ADMIN_CIDRS}"
-                    ]) {
-                        sh(label: 'Validate and save settings in Infisical', script: '''#!/bin/sh
+                    sh(label: 'Validate and save settings in Infisical', script: '''#!/bin/sh
 set +x
 python3 jenkins/pipelines/network-settings/save-network-settings.py
 ''')
-                    }
                 }
             }
         }

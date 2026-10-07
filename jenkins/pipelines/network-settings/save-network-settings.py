@@ -202,9 +202,12 @@ def validate_value(name, value):
         except ValueError:
             raise RuntimeError("DNS_PUBLIC_FALLBACKS must be a comma-separated list of IP addresses") from None
     if name == "MIKROTIK_DHCP_DNS_MODE":
-        if value not in ("router", "direct"):
-            raise RuntimeError("MIKROTIK_DHCP_DNS_MODE must be router or direct")
-        return value
+        mode = " ".join(value.strip().lower().replace("_", " ").split())
+        if mode in ("router", "mikrotik", "mikrotik router", "mikrotik resolver"):
+            return "router"
+        if mode in ("direct", "technitium", "technitium direct"):
+            return "direct"
+        raise RuntimeError("MIKROTIK_DHCP_DNS_MODE must be router (MikroTik resolver) or direct (Technitium)")
     if name == "CLOUDFLARE_ACCOUNT_ID":
         if not re.fullmatch(r"[0-9a-fA-F]{32}", value):
             raise RuntimeError("CLOUDFLARE_ACCOUNT_ID must be a 32-character hexadecimal account ID")
@@ -241,7 +244,7 @@ def validate_value(name, value):
 
 def router_key_material(existing_private, existing_public, existing_host_key):
     """Create missing client credentials, pinning a scanned host key to an operator-supplied fingerprint."""
-    host = os.environ.get("CFG_MIKROTIK_HOST", "").strip()
+    host = os.environ.get("MIKROTIK_HOST", "").strip()
     private_key = existing_private
     public_key = existing_public
     host_key = existing_host_key
@@ -278,7 +281,7 @@ def router_key_material(existing_private, existing_public, existing_host_key):
         generated["MIKROTIK_SSH_PUBLIC_KEY"] = public_key
 
     if not host_key and host:
-        expected = os.environ.get("CFG_MIKROTIK_SSH_HOST_KEY_FINGERPRINT", "").strip()
+        expected = os.environ.get("MIKROTIK_SSH_HOST_KEY_FINGERPRINT", "").strip()
         try:
             scanned = subprocess.run(
                 ["ssh-keyscan", "-T", "10", "-t", "ed25519,rsa,ecdsa", host],
@@ -326,7 +329,11 @@ def main():
     updates = {}
     for secret_path, items in CONFIG.items():
         for name, environment_name in items.items():
-            value = os.environ.get(environment_name, "").strip()
+            # Jenkins exposes build parameters as environment variables. Read
+            # those directly instead of interpolating password parameters into
+            # a Groovy withEnv list.
+            parameter_name = environment_name.removeprefix("CFG_")
+            value = os.environ.get(parameter_name, "").strip()
             if value:
                 updates[(secret_path, name)] = validate_value(name, value)
     token = infisical_login(base_url)
@@ -334,11 +341,11 @@ def main():
     router_host = updates.get(("/mikrotik/router01", "MIKROTIK_HOST"), stored_router_host)
     if router_host:
         router_host_changed = bool(stored_router_host and router_host != stored_router_host)
-        supplied_fingerprint = os.environ.get("CFG_MIKROTIK_SSH_HOST_KEY_FINGERPRINT", "").strip()
+        supplied_fingerprint = os.environ.get("MIKROTIK_SSH_HOST_KEY_FINGERPRINT", "").strip()
         if router_host_changed and not re.fullmatch(r"SHA256:[A-Za-z0-9+/]{43}", supplied_fingerprint):
             raise RuntimeError("Changing MIKROTIK_HOST requires its independently verified SHA256 fingerprint; the existing router host and key were left unchanged")
-        if not os.environ.get("CFG_MIKROTIK_HOST", "").strip():
-            os.environ["CFG_MIKROTIK_HOST"] = router_host
+        if not os.environ.get("MIKROTIK_HOST", "").strip():
+            os.environ["MIKROTIK_HOST"] = router_host
         existing_router_key = read_secret(base_url, token, "/mikrotik/router01", "MIKROTIK_SSH_PRIVATE_KEY") or ""
         existing_router_pub = read_secret(base_url, token, "/mikrotik/router01", "MIKROTIK_SSH_PUBLIC_KEY") or ""
         existing_router_host_key = read_secret(base_url, token, "/mikrotik/router01", "MIKROTIK_SSH_HOST_KEY") or ""

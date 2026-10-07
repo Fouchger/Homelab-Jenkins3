@@ -118,9 +118,10 @@ run-after-reset script to two minutes; a failed import or missing `ether2`
 address may require local/console recovery. Keep the encrypted artifact
 available before running. Do not run this job as a routine configuration update.
 
-Allowed values for `MIKROTIK_DHCP_DNS_MODE` are `router` (clients ask the
-MikroTik, which forwards to dns01, dns02, then configured public fallbacks) and
-`direct` (clients receive the two Technitium addresses). `DNS_PUBLIC_FALLBACKS`
+Allowed values for `MIKROTIK_DHCP_DNS_MODE` are `router` or `mikrotik` (clients
+ask the MikroTik, which forwards to dns01, dns02, then configured public
+fallbacks) and `direct` or `technitium` (clients receive the two Technitium
+addresses). `DNS_PUBLIC_FALLBACKS`
 is a comma-separated IP address list. `DOCKFLARE_ACCESS_EMAILS` is a
 comma-separated email list; `DOCKFLARE_ADMIN_CIDRS` is a comma-separated list
 of IP networks. Job 003 only stores configuration. Job 004 applies MikroTik DNS,
