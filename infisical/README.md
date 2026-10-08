@@ -89,8 +89,29 @@ HTTPS REST only; it does not require the SSH key or SSH host-key pin. Enable
 64-character SHA-256 fingerprint of the RouterOS HTTPS certificate. When the
 setting is blank, Job 003 displays the fingerprint it sees but does not trust
 or save it; compare it with a trusted RouterOS view, then enter it in Job 003.
-Job 003 checks the supplied fingerprint against the live certificate before
-saving. REST uses `MIKROTIK_USERNAME` and `MIKROTIK_PASSWORD`, falling back to
+To obtain that trusted value, connect to the router through a trusted WinBox
+session, open **New Terminal**, and run:
+
+```routeros
+/ip/service/print detail where name=www-ssl
+```
+
+Read the `certificate` value from the `www-ssl` entry. Then run this command,
+replacing `<certificate name>` with that value:
+
+```routeros
+/certificate/print detail where name="<certificate name>"
+```
+
+Copy the `fingerprint` value (64 hexadecimal characters) into Job 003's
+`MIKROTIK_TLS_CERT_SHA256` field without spaces. The first Job 003 run can
+also print the fingerprint it sees at `MIKROTIK_HOST:443`; compare it with the
+value shown in the trusted RouterOS terminal. If they match, rerun Job 003 with
+the fingerprint. Job 003 checks it against the live HTTPS certificate before
+saving it to Infisical. Confirm `www-ssl` is enabled and that its assigned
+certificate is the one Jenkins reaches at `MIKROTIK_HOST`.
+
+REST uses `MIKROTIK_USERNAME` and `MIKROTIK_PASSWORD`, falling back to
 the bootstrap credentials when the normal account is not configured. To create
 the pre-change artifact, Job 004 saves a RouterOS sensitive configuration export
 over REST, encrypts it on the Jenkins agent with `BINARY_BACKUP_PASSWORD`, and
