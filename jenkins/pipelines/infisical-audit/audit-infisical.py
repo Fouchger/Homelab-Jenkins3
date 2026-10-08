@@ -85,20 +85,21 @@ def build_report(actual, expected):
     expected_keys = set()
     rows = []
     failed = False
+    required_states = {"required", "required-for-reset", "created", "bootstrap"}
     for item in expected:
         key = (item["path"], item["name"])
         expected_keys.add(key)
         present = key in actual
         state = item["state"]
-        status = ("REMOVE" if present else "RETIRED") if state == "obsolete" else "SET" if present else (
-            "MISSING" if state in ("required", "required-for-reset") else
-            "MISSING-CONDITIONAL" if state == "conditional" else
-            "OPTIONAL-MISSING" if state == "optional" else
-            "NOT-YET-CREATED" if state in ("created", "bootstrap") else
-            "PLANNED"
-        )
-        if not present and state in ("required", "required-for-reset"):
+        if present:
+            status = "UNUSED" if state in ("obsolete", "planned") else "SET"
+        elif state in required_states:
+            status = "MISSING"
             failed = True
+        else:
+            # Missing optional, conditional, obsolete, and planned entries do
+            # not need operator action, so keep them out of the report.
+            continue
         rows.append({
             "status": status,
             "folder": item["path"],
@@ -108,11 +109,11 @@ def build_report(actual, expected):
         })
     for path, name in sorted(actual - expected_keys):
         rows.append({
-            "status": "UNTRACKED",
+            "status": "UNUSED",
             "folder": path,
             "variable": name,
             "expected_state": "review",
-            "pipeline_use": "Not in the repository's declared Infisical inventory",
+            "pipeline_use": "Present in Infisical but not used by the repository",
         })
     return rows, failed
 
@@ -140,7 +141,7 @@ def main():
     print("-" * 100)
     for row in rows:
         print(f"{row['status']:<18} {row['folder']:<38} {row['variable']}")
-    print(f"\nInventory contains {len(actual)} configured variable(s); report saved as {report.relative_to(ROOT)}.")
+    print(f"\nFound {len(actual)} configured variable(s); report saved as {report.relative_to(ROOT)}.")
     if missing_required:
         print("One or more required variables are missing. See MISSING rows above.", file=sys.stderr)
         return 1

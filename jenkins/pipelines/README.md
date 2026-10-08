@@ -20,8 +20,8 @@ Proxmox host-side LXC creation/profile scripts remain in `../../proxmox_helper_s
 | `dns-deploy/Jenkinsfile` | Job `006 - DNS Deployment and Router Sync`: after manual approval, creates missing dns01/dns02 LXCs or verifies and reuses existing matches, secures both Technitium admin accounts, creates optional `DNS_HOSTED_ZONES` primaries on dns01, configures zone transfers to dns02, and invokes the DNS-only MikroTik update with an encrypted pre-change backup. Shared policy is read from `/dns`; each server's `DNS_IPV4` and `DNS_SERVER_ADMIN_PASSWORD` are read from its `/dns/<server>` folder. |
 | `dns-deploy/deploy-dns.py` | Reads the Proxmox SSH identity and DNS/LXC secrets from Infisical, provisions through the pinned Proxmox SSH connection, and runs DNS management locally inside each guest so passwords do not cross the network in clear text. |
 | `dns-deploy/manage-technitium.py` | Uses Technitium's local HTTP API over loopback to secure the admin login, create configured primary zones, permit zone transfers only from dns02, and create/resync secondary zones on dns02. |
-| `infisical-audit/Jenkinsfile` | Job `007 - Infisical Variable Audit`: lists secret folder/name pairs without values, checks required and optional entries against the project inventory, and archives a names-only CSV. |
-| `infisical-audit/audit-infisical.py` | Uses the Infisical read identity and `viewSecretValue=false`; reports missing, configured, planned, bootstrap-only, created-by-job, and untracked names. |
+| `infisical-audit/Jenkinsfile` | Job `007 - Infisical Variable Audit`: lists secret folder/name pairs without values, reports active values as SET, required omissions as MISSING, and present-but-unused values as UNUSED, then archives a names-only CSV. |
+| `infisical-audit/audit-infisical.py` | Uses the Infisical read identity and `viewSecretValue=false`; omits absent optional, conditional, planned, and obsolete entries from its report. |
 | `infisical-audit/expected-secrets.json` | Source-controlled declaration of current Infisical folder/name expectations and which jobs use them. |
 
 Infisical identities and project settings are collected with `whiptail` during

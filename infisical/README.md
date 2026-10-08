@@ -142,17 +142,17 @@ DHCP clients receive the resolver arrangement selected by
 `MIKROTIK_DHCP_DNS_MODE`. DockFlare deployment still has separate
 implementation work remaining.
 
-Run `007 - Infisical Variable Audit` to list every visible variable name and
-folder in the selected project/environment and compare it with
+Run `007 - Infisical Variable Audit` to compare visible variable names and
+folders in the selected project/environment with
 [`expected-secrets.json`](../jenkins/pipelines/infisical-audit/expected-secrets.json).
 The job calls Infisical's recursive secrets-list endpoint with
 `viewSecretValue=false`; it never requests, prints, or stores secret values.
-Its console output and archived CSV distinguish configured, missing required,
-conditionally required, optional, bootstrap-only, created-by-job, planned,
-and untracked variables.
-Missing active requirements fail the build. Cloudflare/DockFlare entries are
-marked planned because no pipeline consumes them yet. The read identity must
-have list/read access to all project folders included in the audit.
+Its console output and archived CSV show `SET` for configured variables used by
+the project, `MISSING` for absent required variables, and `UNUSED` for present
+variables that the project does not consume (including untracked names).
+Missing optional, conditional, planned, and obsolete variables are omitted.
+Missing required entries fail the build. The read identity must have list/read
+access to all project folders included in the audit.
 
 The Proxmox access pipeline uses the read identity to retrieve the SSH key,
 trusted host key, and existing API token values. It uses the writer identity to
