@@ -19,7 +19,7 @@ pipeline {
         password(name: 'DNS02_ADMIN_PASSWORD', defaultValue: '', description: 'Optional Technitium admin password saved as /dns/dns02/DNS_SERVER_ADMIN_PASSWORD. Blank keeps the existing Infisical value.')
         string(name: 'DNS_HOSTED_ZONES', defaultValue: '', description: 'Optional comma-separated domains to create as primary zones on dns01 and replicate to dns02. Blank keeps the current Infisical value.')
 
-        string(name: 'MIKROTIK_HOST', defaultValue: '', description: 'Optional router management IP or hostname. Required to generate missing MikroTik SSH keys.')
+        string(name: 'MIKROTIK_HOST', defaultValue: '', description: 'Router management IP/hostname reachable by Jenkins, e.g. 192.168.20.1 or router.example.local. Enter the address only: no https://, port (such as :22), or path. Required to generate missing MikroTik SSH keys.')
         string(name: 'MIKROTIK_IP', defaultValue: '', description: 'Optional router IPv4 address Jenkins must reconnect to after a full reset. It must be configured on the direct Proxmox/ether2 path by MIKROTIK_SCRIPT.')
         string(name: 'MIKROTIK_USERNAME', defaultValue: '', description: 'Optional RouterOS administrator username created or maintained by the full reset workflow.')
         password(name: 'MIKROTIK_PASSWORD', defaultValue: '', description: 'Password for MIKROTIK_USERNAME.')
