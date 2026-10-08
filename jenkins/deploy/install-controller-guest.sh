@@ -586,7 +586,7 @@ if (job == null) {
     println("Updating managed Pipeline '${jobName}' to use the repository's network settings pipeline.")
 }
 job.setDefinition(definition)
-job.setDescription('003 - Saves operator-entered DNS, MikroTik (including the post-reset IP), Cloudflare account/domain, DockFlare Access email and admin network settings in their documented Infisical folders. Generates a missing MikroTik Ed25519 client key and pins the router host key only after SHA256 fingerprint confirmation. This job does not apply router, DNS server, or DockFlare changes.')
+job.setDescription('003 - Saves operator-entered DNS, MikroTik (including the post-reset IP), Cloudflare account/domain, DockFlare Access email and admin network settings in their documented Infisical folders. Generates a missing MikroTik Ed25519 client key and pins SSH and HTTPS certificates only after SHA256 fingerprint confirmation. This job does not apply router, DNS server, or DockFlare changes.')
 job.save()
 JENKINS_NETWORK_SETTINGS_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/98-homelab-network-settings-pipeline.groovy"
@@ -623,7 +623,7 @@ if (job == null) {
     throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
 }
 job.setDefinition(definition)
-job.setDescription('004 - Reads DNS, DHCP mode, Wi-Fi passphrases, router credentials and SSH material from Infisical. Requires manual approval, authorizes the generated SSH key using the stored administrator login, saves/downloads an encrypted RouterOS backup, then applies only the configured DNS/DHCP and named Wi-Fi security profile settings.')
+job.setDescription('004 - Requires manual approval, creates/downloads an encrypted binary backup using the pinned SSH identity, then applies and verifies DNS/DHCP and configured Wi-Fi settings through RouterOS REST over HTTPS with the pinned certificate in Infisical.')
 job.save()
 JENKINS_MIKROTIK_CONFIG_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/99-homelab-mikrotik-config-pipeline.groovy"

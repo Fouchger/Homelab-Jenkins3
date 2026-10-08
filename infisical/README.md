@@ -40,7 +40,7 @@ The current secret layout is:
 | `/dns/dns01` | `DNS_IPV4`, `DNS_SERVER_ADMIN_PASSWORD` |
 | `/dns/dns02` | `DNS_IPV4`, `DNS_SERVER_ADMIN_PASSWORD` |
 | `/proxmox/lxc/dns01`, `/proxmox/lxc/dns02` | `LXC_ROOT_PASSWORD` only |
-| `/mikrotik/router01` | `MIKROTIK_HOST`, `MIKROTIK_IP`, `MIKROTIK_USERNAME`, `MIKROTIK_PASSWORD`, `MIKROTIK_BOOTSTRAP_USERNAME`, `MIKROTIK_BOOTSTRAP_PASSWORD`, `MIKROTIK_SCRIPT`, `MIKROTIK_SSH_USER`, `MIKROTIK_SSH_PRIVATE_KEY`, `MIKROTIK_SSH_PUBLIC_KEY`, `MIKROTIK_SSH_HOST_KEY` |
+| `/mikrotik/router01` | `MIKROTIK_HOST`, `MIKROTIK_IP`, `MIKROTIK_USERNAME`, `MIKROTIK_PASSWORD`, `MIKROTIK_BOOTSTRAP_USERNAME`, `MIKROTIK_BOOTSTRAP_PASSWORD`, `MIKROTIK_SCRIPT`, `MIKROTIK_SSH_USER`, `MIKROTIK_SSH_PRIVATE_KEY`, `MIKROTIK_SSH_PUBLIC_KEY`, `MIKROTIK_SSH_HOST_KEY`, `MIKROTIK_TLS_CERT_SHA256` |
 | `/mikrotik/backup` | `BINARY_BACKUP_PASSWORD` |
 | `/mikrotik/wifi_security` | `SEC_GUEST_PASSWORD`, `SEC_IOT_PASSWORD`, `SEC_MGMT_PASSWORD`, `SEC_USERS_PASSWORD` |
 | `/cloudflare` | `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_DOMAIN_1`, `CLOUDFLARE_DOMAIN_2`, `CLOUDFLARE_ZONE_ID_1`, `CLOUDFLARE_ZONE_ID_2` |
@@ -96,6 +96,17 @@ DNS, DHCP, firewall, and Wi-Fi security settings. Its RouterOS group must allow
 SSH, read/write configuration, sensitive settings, and file transfer. RouterOS
 may require a full-rights administrator to assign SSH keys; this project does
 not create router users or grant privileges automatically.
+
+After the encrypted binary backup is downloaded, Job 004 applies routine
+changes through RouterOS REST over HTTPS. Enable `www-ssl` and set
+`/mikrotik/router01/MIKROTIK_TLS_CERT_SHA256` to the independently verified
+64-character SHA-256 fingerprint of the RouterOS HTTPS certificate. When the
+setting is blank, Job 003 displays the fingerprint it sees but does not trust
+or save it; compare it with a trusted RouterOS view, then enter it in Job 003.
+Job 003 checks the supplied fingerprint against the live certificate before
+saving. REST uses `MIKROTIK_USERNAME` and `MIKROTIK_PASSWORD`. Update the pin
+after a certificate rotation. SSH is retained only for the encrypted backup
+transfer and the separate full-reset recovery workflow.
 
 `MIKROTIK_BOOTSTRAP_USERNAME` and `MIKROTIK_BOOTSTRAP_PASSWORD` are the
 existing router administrator credentials used only to bootstrap key access

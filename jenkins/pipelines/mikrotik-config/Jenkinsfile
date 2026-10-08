@@ -11,7 +11,7 @@ pipeline {
     stages {
         stage('Confirm MikroTik changes') {
             steps {
-                input message: 'Apply the DNS/DHCP settings and any configured Wi-Fi passphrases from Infisical to the MikroTik? The job first creates and downloads an encrypted RouterOS backup.', ok: 'Back up and apply configuration'
+                input message: 'Create and download an encrypted binary backup over the pinned SSH connection, then apply DNS/DHCP and configured Wi-Fi settings through pinned HTTPS REST? Job 003 must have saved both independently verified router fingerprints.', ok: 'Back up and apply configuration'
             }
         }
         stage('Back up and configure MikroTik') {

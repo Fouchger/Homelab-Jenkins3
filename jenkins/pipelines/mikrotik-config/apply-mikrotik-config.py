@@ -2,9 +2,14 @@
 """Apply Infisical-managed DNS and Wi-Fi settings to RouterOS after an encrypted backup."""
 
 import ipaddress
+import http.client
+import hashlib
+import hmac
+import base64
 import json
 import os
 import re
+import ssl
 import sys
 import tempfile
 import urllib.error
@@ -72,7 +77,7 @@ def infisical_secrets():
         "/mikrotik/router01": (
             "MIKROTIK_HOST", "MIKROTIK_IP", "MIKROTIK_BOOTSTRAP_USERNAME", "MIKROTIK_BOOTSTRAP_PASSWORD",
             "MIKROTIK_SSH_USER", "MIKROTIK_SSH_PRIVATE_KEY", "MIKROTIK_SSH_PUBLIC_KEY",
-            "MIKROTIK_SSH_HOST_KEY", "MIKROTIK_USERNAME", "MIKROTIK_PASSWORD",
+            "MIKROTIK_SSH_HOST_KEY", "MIKROTIK_USERNAME", "MIKROTIK_PASSWORD", "MIKROTIK_TLS_CERT_SHA256",
         ),
         "/mikrotik/backup": ("BINARY_BACKUP_PASSWORD",),
         "/mikrotik/wifi_security": ("SEC_GUEST_PASSWORD", "SEC_IOT_PASSWORD", "SEC_MGMT_PASSWORD", "SEC_USERS_PASSWORD"),
@@ -104,61 +109,10 @@ def ros_quote(value):
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def parse_export_networks(export_text):
-    # RouterOS wraps long export commands with a trailing backslash.
-    lines = []
-    pending = ""
-    for raw in export_text.splitlines():
-        line = raw.strip()
-        if pending:
-            pending += " " + line
-        else:
-            pending = line
-        if pending.endswith("\\"):
-            pending = pending[:-1].rstrip()
-            continue
-        lines.append(pending)
-        pending = ""
-    if pending:
-        lines.append(pending)
-
-    section = ""
-    networks = []
-    for line in lines:
-        if line.startswith("/"):
-            if line.startswith("/ip dhcp-server network add "):
-                section = "/ip dhcp-server network"
-                line = line[len("/ip dhcp-server network "):]
-            else:
-                section = line
-                continue
-        if section != "/ip dhcp-server network" or not line.startswith("add "):
-            continue
-        fields = {}
-        for match in re.finditer(r'([A-Za-z0-9-]+)=("(?:\\.|[^"\\])*"|[^\s]+)', line):
-            value = match.group(2)
-            if value.startswith('"') and value.endswith('"'):
-                value = value[1:-1].replace('\\"', '"').replace('\\\\', '\\')
-            fields[match.group(1)] = value
-        address = fields.get("address", "")
-        gateway = fields.get("gateway", "")
-        if not address or not gateway:
-            continue
-        try:
-            network = ipaddress.ip_network(address, strict=True)
-            ipaddress.ip_address(gateway)
-        except ValueError:
-            continue
-        networks.append((str(network), gateway))
-    if not networks:
-        raise RuntimeError("Could not read any DHCP network and gateway entries from the MikroTik export; no DNS changes were made")
-    return networks
-
-
 def host_key_line(value, host):
     lines = [line.strip() for line in value.splitlines() if line.strip() and not line.lstrip().startswith("#")]
     if len(lines) != 1:
-        raise RuntimeError("MIKROTIK_SSH_HOST_KEY must contain one verified known_hosts entry")
+        raise RuntimeError("MIKROTIK_SSH_HOST_KEY is missing or invalid; run Job 003 and enter the independently verified SHA256 fingerprint in MIKROTIK_SSH_HOST_KEY_FINGERPRINT")
     fields = lines[0].split()
     if len(fields) < 3 or fields[0] != host or not fields[1].startswith("ssh-"):
         raise RuntimeError("MIKROTIK_SSH_HOST_KEY does not match MIKROTIK_HOST")
@@ -218,27 +172,151 @@ def create_backup(client, backup_password):
     print(f"Encrypted pre-change backup saved as Jenkins artifact {backup_name}.")
 
 
-def require_router_object(client, command, description):
-    result = run_command(client, command).strip()
-    if result != "1":
-        raise RuntimeError(f"RouterOS must contain exactly one matching {description}; no router configuration was changed")
+class RouterREST:
+    """RouterOS REST client with an independently pinned HTTPS certificate."""
+
+    def __init__(self, host, username, password, fingerprint):
+        if not username or not password:
+            raise RuntimeError("Set MIKROTIK_USERNAME and MIKROTIK_PASSWORD or the bootstrap username/password in /mikrotik/router01 for RouterOS REST access")
+        fingerprint = fingerprint.lower().replace(":", "").strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+            raise RuntimeError("Set MIKROTIK_TLS_CERT_SHA256 in /mikrotik/router01; run Job 003 to save the independently verified HTTPS certificate fingerprint")
+        if not re.fullmatch(r"[A-Za-z0-9.-]+", host) or host.startswith(".") or host.endswith("."):
+            raise RuntimeError("MIKROTIK_HOST must be a hostname or IPv4 address")
+        self.host = host
+        self.auth = "Basic " + base64.b64encode(f"{username}:{password}".encode()).decode("ascii")
+        self.fingerprint = fingerprint
+
+    def call(self, path, method="GET", payload=None, allow_404=False):
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8") if payload is not None else None
+        connection = http.client.HTTPSConnection(self.host, 443, timeout=25, context=ssl._create_unverified_context())
+        try:
+            connection.connect()
+            actual = hashlib.sha256(connection.sock.getpeercert(binary_form=True)).hexdigest()
+            if not hmac.compare_digest(actual, self.fingerprint):
+                raise RuntimeError("MikroTik HTTPS certificate does not match MIKROTIK_TLS_CERT_SHA256; no changes were applied")
+            connection.request(method, "/rest/" + path.lstrip("/"), body=body, headers={
+                "Authorization": self.auth,
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            })
+            response = connection.getresponse()
+            raw = response.read()
+            if allow_404 and response.status == 404:
+                return None
+            if response.status >= 400:
+                raise RuntimeError(f"RouterOS REST {method} {path} failed with HTTP {response.status}; response suppressed")
+            if not raw:
+                return {}
+            try:
+                return json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                raise RuntimeError(f"RouterOS REST {method} {path} returned invalid JSON") from None
+        except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+            raise RuntimeError(f"MikroTik HTTPS REST connection failed ({type(exc).__name__})") from None
+        finally:
+            connection.close()
 
 
-def verify_dhcp_dns(client, networks, mode, dns_servers):
-    direct_dns = ",".join(dns_servers)
-    for address, gateway in networks:
-        require_router_object(
-            client,
-            f"/ip/dhcp-server/network/print count-only where address={ros_quote(address)}",
-            f"DHCP network {address}",
-        )
-        configured_dns = run_command(
-            client,
-            f"/ip/dhcp-server/network/get [find where address={ros_quote(address)}] dns-server",
-        ).strip().replace(" ", "")
-        expected_dns = gateway if mode == "router" else direct_dns
-        if configured_dns != expected_dns:
-            raise RuntimeError(f"DHCP DNS verification failed for {address}; encrypted backup is available in Jenkins artifacts")
+def rest_record_id(record):
+    identifier = record.get(".id") if isinstance(record, dict) else None
+    if not isinstance(identifier, str) or not re.fullmatch(r"\*[0-9A-Fa-f]+", identifier):
+        raise RuntimeError("RouterOS REST returned an invalid record ID")
+    return identifier
+
+
+def rest_networks(router):
+    rows = router.call("ip/dhcp-server/network")
+    if not isinstance(rows, list):
+        raise RuntimeError("RouterOS REST returned an invalid DHCP network list")
+    networks = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("disabled") == "true":
+            continue
+        try:
+            network = str(ipaddress.ip_network(row.get("address", ""), strict=True))
+            gateway = str(ipaddress.IPv4Address(row.get("gateway", "")))
+        except ValueError:
+            continue
+        networks.append((rest_record_id(row), network, gateway))
+    if not networks:
+        raise RuntimeError("Could not read active DHCP network and gateway records; no changes were made")
+    return networks
+
+
+def rest_set(router, path, payload):
+    result = router.call(path, "PATCH", payload)
+    if not isinstance(result, dict):
+        raise RuntimeError(f"RouterOS did not confirm the update to {path}")
+    return result
+
+
+def rest_apply(router, values, networks, mode, dns_list, wifi_updates):
+    # Validate every target before the first write to avoid a partial rollout.
+    dns_state = router.call("ip/dns")
+    if isinstance(dns_state, list):
+        dns_state = dns_state[0] if dns_state else {}
+    if not isinstance(dns_state, dict):
+        raise RuntimeError("RouterOS REST returned invalid DNS settings")
+    wifi_records = {}
+    if wifi_updates:
+        rows = router.call("interface/wifi/security")
+        for profile, _password in wifi_updates:
+            matches = [row for row in rows if isinstance(row, dict) and row.get("name") == profile]
+            if len(matches) != 1:
+                raise RuntimeError(f"RouterOS must contain exactly one Wi-Fi security profile named {profile}; no changes were made")
+            wifi_records[profile] = matches[0]
+    existing_rules = router.call("ip/firewall/filter")
+    if not isinstance(existing_rules, list):
+        raise RuntimeError("RouterOS REST returned an invalid firewall filter list")
+
+    router.call("ip/dns/set", "POST", {
+        "allow-remote-requests": "true" if mode == "router" else "false",
+        "servers": dns_list,
+    })
+
+    dhcp_dns = [gateway if mode == "router" else dns_list for _identifier, _network, gateway in networks]
+    for (identifier, network, _gateway), server_list in zip(networks, dhcp_dns):
+        rest_set(router, f"ip/dhcp-server/network/{identifier}", {"dns-server": server_list})
+
+    for rule in existing_rules:
+        if isinstance(rule, dict) and str(rule.get("comment", "")).startswith("homelab-managed-router-dns-"):
+            router.call(f"ip/firewall/filter/{rest_record_id(rule)}", "DELETE")
+    if mode == "router":
+        for _identifier, network, _gateway in networks:
+            tag = re.sub(r"[^A-Za-z0-9.-]", "-", network)
+            for protocol in ("udp", "tcp"):
+                router.call("ip/firewall/filter", "PUT", {
+                    "chain": "input", "action": "accept", "protocol": protocol,
+                    "dst-port": "53", "src-address": network,
+                    "comment": "homelab-managed-router-dns-" + tag,
+                    "place-before": "0",
+                })
+
+    for profile, password in wifi_updates:
+        rest_set(router, f"interface/wifi/security/{rest_record_id(wifi_records[profile])}", {"passphrase": password})
+
+    for identifier, network, gateway in networks:
+        rows = router.call("ip/dhcp-server/network")
+        match = next((row for row in rows if isinstance(row, dict) and row.get(".id") == identifier), None)
+        expected = gateway if mode == "router" else dns_list
+        if not match or match.get("dns-server", "").replace(" ", "") != expected.replace(" ", ""):
+            raise RuntimeError(f"DHCP DNS verification failed for {network}; encrypted backup is available in Jenkins artifacts")
+    dns_state = router.call("ip/dns")
+    if isinstance(dns_state, list):
+        dns_state = dns_state[0] if dns_state else {}
+    expected_remote = "true" if mode == "router" else "false"
+    if (dns_state.get("servers", "").replace(" ", "") != dns_list.replace(" ", "")
+            or dns_state.get("allow-remote-requests") != expected_remote):
+        raise RuntimeError("RouterOS DNS settings verification failed; encrypted backup is available in Jenkins artifacts")
+    managed_rules = [
+        rule for rule in router.call("ip/firewall/filter")
+        if isinstance(rule, dict) and str(rule.get("comment", "")).startswith("homelab-managed-router-dns-")
+    ]
+    if mode == "router" and len(managed_rules) != 2 * len(networks):
+        raise RuntimeError("RouterOS did not retain all managed DNS firewall rules; encrypted backup is available in Jenkins artifacts")
+    if mode == "direct" and managed_rules:
+        raise RuntimeError("Managed router DNS firewall rules remain in direct mode; encrypted backup is available in Jenkins artifacts")
 
 
 def ssh_client(host, username, key_file, host_key_fields, password=None):
@@ -330,6 +408,15 @@ def apply(values):
                 raise RuntimeError(f"{secret} must be at least 8 characters and must not contain a line break")
             wifi_updates.append((profile, password))
 
+    rest_user = values.get("MIKROTIK_USERNAME", "").strip()
+    rest_password = values.get("MIKROTIK_PASSWORD", "")
+    if not rest_user or not rest_password:
+        rest_user = values.get("MIKROTIK_BOOTSTRAP_USERNAME", "").strip()
+        rest_password = values.get("MIKROTIK_BOOTSTRAP_PASSWORD", "")
+    rest = RouterREST(host, rest_user, rest_password, values.get("MIKROTIK_TLS_CERT_SHA256", ""))
+    networks = rest_networks(rest)
+    rest.call("system/resource")  # Authenticate before creating the backup.
+
     key_descriptor, key_filename = tempfile.mkstemp(prefix="mikrotik-ssh-key-")
     os.close(key_descriptor)
     key_path = Path(key_filename)
@@ -338,9 +425,7 @@ def apply(values):
     client = None
     admin_client = None
     try:
-        # Reuse an already-authorized key on subsequent runs. On first setup,
-        # take the encrypted backup through the admin password session before
-        # adding the SSH key, then switch to key authentication for changes.
+        # Keep SSH only for the encrypted binary backup and its file transfer.
         try:
             client = ssh_client(host, ssh_user, str(key_path), host_fields)
             key_login = True
@@ -358,56 +443,8 @@ def apply(values):
         if key_login:
             create_backup(client, backup_password)
 
-        export = run_command(client, "/export terse")
-        networks = parse_export_networks(export)
-        for address, _gateway in networks:
-            require_router_object(
-                client,
-                f"/ip/dhcp-server/network/print count-only where address={ros_quote(address)}",
-                f"DHCP network {address}",
-            )
-        for profile, _password in wifi_updates:
-            require_router_object(
-                client,
-                f"/interface/wifi/security/print count-only where name={ros_quote(profile)}",
-                f"Wi-Fi security profile {profile}",
-            )
-
         dns_list = ",".join(upstreams)
-        allow_remote = "yes" if mode == "router" else "no"
-        run_command(client, f"/ip/dns/set allow-remote-requests={allow_remote} servers={ros_quote(dns_list)}")
-
-        if mode == "router":
-            for address, gateway in networks:
-                dhcp_dns = gateway
-                run_command(client, f"/ip/dhcp-server/network/set [find where address={ros_quote(address)}] dns-server={ros_quote(dhcp_dns)}")
-            # Remove only this automation's prior rules, then permit DNS queries
-            # from the current DHCP client subnets to the router itself.
-            run_command(client, '/ip/firewall/filter/remove [find where comment~"homelab-managed-router-dns-"]', allow_error=True)
-            for address, _gateway in networks:
-                tag = re.sub(r"[^A-Za-z0-9.-]", "-", address)
-                for protocol in ("udp", "tcp"):
-                    run_command(
-                        client,
-                        f"/ip/firewall/filter/add chain=input action=accept protocol={protocol} dst-port=53 src-address={ros_quote(address)} comment={ros_quote('homelab-managed-router-dns-' + tag)} place-before=0",
-                    )
-        else:
-            direct_dns = ",".join(dns_servers)
-            for address, _gateway in networks:
-                run_command(client, f"/ip/dhcp-server/network/set [find where address={ros_quote(address)}] dns-server={ros_quote(direct_dns)}")
-            run_command(client, '/ip/firewall/filter/remove [find where comment~"homelab-managed-router-dns-"]', allow_error=True)
-
-        for profile, password in wifi_updates:
-            run_command(
-                client,
-                f"/interface/wifi/security/set [find where name={ros_quote(profile)}] passphrase={ros_quote(password)}",
-            )
-
-        verify_dhcp_dns(client, networks, mode, dns_servers)
-
-        verified_dns = run_command(client, "/ip/dns/get servers").strip().replace(" ", "")
-        if verified_dns != dns_list or run_command(client, "/ip/dns/get allow-remote-requests").strip() != allow_remote:
-            raise RuntimeError("RouterOS DNS upstream verification did not match the requested Infisical values; encrypted backup is available in Jenkins artifacts")
+        rest_apply(rest, values, networks, mode, dns_list, wifi_updates)
         print(f"Configured MikroTik DNS upstreams in order: {', '.join(upstreams)}.")
         print(f"Set DHCP DNS for {len(networks)} network(s) using mode '{mode}'.")
         if wifi_updates:

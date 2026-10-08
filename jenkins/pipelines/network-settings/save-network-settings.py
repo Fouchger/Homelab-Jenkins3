@@ -2,9 +2,13 @@
 """Validate operator-supplied network settings and persist them to Infisical."""
 
 import ipaddress
+import hashlib
+import hmac
 import json
 import os
 import re
+import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -31,6 +35,7 @@ CONFIG = {
         "MIKROTIK_BOOTSTRAP_USERNAME": "CFG_MIKROTIK_BOOTSTRAP_USERNAME",
         "MIKROTIK_BOOTSTRAP_PASSWORD": "CFG_MIKROTIK_BOOTSTRAP_PASSWORD",
         "MIKROTIK_SSH_USER": "CFG_MIKROTIK_SSH_USER",
+        "MIKROTIK_TLS_CERT_SHA256": "CFG_MIKROTIK_TLS_CERT_SHA256",
     },
     "/mikrotik/backup": {"BINARY_BACKUP_PASSWORD": "CFG_BINARY_BACKUP_PASSWORD"},
     "/mikrotik/wifi_security": {
@@ -226,6 +231,11 @@ def validate_value(name, value):
         if any(char in value for char in "\r\n\0"):
             raise RuntimeError("CLOUDFLARE_API_TOKEN must be a single-line value")
         return value
+    if name == "MIKROTIK_TLS_CERT_SHA256":
+        normalized = value.lower().replace(":", "")
+        if not re.fullmatch(r"[0-9a-f]{64}", normalized):
+            raise RuntimeError("MIKROTIK_TLS_CERT_SHA256 must be a 64-character SHA-256 fingerprint (colons are optional)")
+        return normalized
     if name == "LXC_ROOT_PASSWORD":
         if len(value) < 6 or ":" in value or any(char in value for char in "\r\n\0"):
             raise RuntimeError("LXC root passwords must be at least 6 characters and cannot contain a colon or line break")
@@ -322,6 +332,25 @@ def router_key_material(existing_private, existing_public, existing_host_key):
     return generated
 
 
+def router_tls_fingerprint(host):
+    """Read the presented certificate fingerprint; never treat scanning as trust."""
+    try:
+        with socket.create_connection((host, 443), timeout=15) as raw:
+            with ssl._create_unverified_context().wrap_socket(raw, server_hostname=host) as tls:
+                return hashlib.sha256(tls.getpeercert(binary_form=True)).hexdigest()
+    except (OSError, ssl.SSLError):
+        raise RuntimeError("Could not read the MikroTik HTTPS certificate on port 443") from None
+
+
+def verify_router_tls_pin(host, expected):
+    """Ensure the entered fingerprint matches the certificate served at MIKROTIK_HOST."""
+    if not expected:
+        return
+    actual = router_tls_fingerprint(host)
+    if not hmac.compare_digest(actual, expected):
+        raise RuntimeError("The entered MikroTik HTTPS fingerprint does not match the certificate currently served by MIKROTIK_HOST; it was not saved")
+
+
 def main():
     base_url = required("INFISICAL_URL").rstrip("/")
     if not base_url.startswith("https://"):
@@ -354,6 +383,18 @@ def main():
         generated = router_key_material(existing_router_key, existing_router_pub, existing_router_host_key)
         for name, value in generated.items():
             updates[("/mikrotik/router01", name)] = value
+        supplied_tls_pin = updates.get(("/mikrotik/router01", "MIKROTIK_TLS_CERT_SHA256"), "")
+        stored_tls_pin = read_secret(base_url, token, "/mikrotik/router01", "MIKROTIK_TLS_CERT_SHA256") or ""
+        if supplied_tls_pin:
+            verify_router_tls_pin(router_host, supplied_tls_pin)
+        elif router_host_changed:
+            observed = router_tls_fingerprint(router_host)
+            print("RouterOS HTTPS certificate fingerprint seen by this Jenkins agent: " + observed)
+            raise RuntimeError("Changing MIKROTIK_HOST requires its independently verified HTTPS certificate fingerprint in MIKROTIK_TLS_CERT_SHA256")
+        elif not stored_tls_pin:
+            observed = router_tls_fingerprint(router_host)
+            print("RouterOS HTTPS certificate fingerprint seen by this Jenkins agent: " + observed)
+            print("Compare it with the fingerprint shown by RouterOS through a trusted local connection. If it matches, rerun Job 003 and enter it in MIKROTIK_TLS_CERT_SHA256; the scanned value is not trusted or saved automatically.")
 
     if not updates:
         raise RuntimeError("No settings were supplied and no missing MikroTik SSH key material needed generation")
