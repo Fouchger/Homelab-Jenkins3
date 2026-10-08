@@ -89,8 +89,20 @@ HTTPS REST only; it does not require the SSH key or SSH host-key pin. Enable
 64-character SHA-256 fingerprint of the RouterOS HTTPS certificate. When the
 setting is blank, Job 003 displays the fingerprint it sees but does not trust
 or save it; compare it with a trusted RouterOS view, then enter it in Job 003.
-To obtain that trusted value, connect to the router through a trusted WinBox
-session, open **New Terminal**, and run:
+The separate `MIKROTIK_SSH_HOST_KEY_FINGERPRINT` field is only needed when
+Job 003 is adding a new SSH host key. In a trusted WinBox Terminal, run:
+
+```routeros
+/ip/ssh/print
+```
+
+Copy the `host-key-fingerprint` value exactly, including the `SHA256:` prefix,
+into that Jenkins field. Job 003 compares it with the SSH key scanned from
+`MIKROTIK_HOST` before saving the key to Infisical. RouterOS documents this
+command as the way to display the current SSH host-key fingerprint.
+
+To obtain the HTTPS certificate fingerprint, connect to the router through a
+trusted WinBox session, open **New Terminal**, and run:
 
 ```routeros
 /ip/service/print detail where name=www-ssl
