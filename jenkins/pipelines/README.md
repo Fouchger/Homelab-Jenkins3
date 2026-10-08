@@ -14,7 +14,7 @@ Proxmox host-side LXC creation/profile scripts remain in `../../proxmox_helper_s
 | `network-settings/Jenkinsfile` | Job `003 - DNS and Cloudflare Settings`: collects editable settings and stores them in Infisical without applying router/DNS configuration. |
 | `network-settings/save-network-settings.py` | Validates, writes, verifies, and rolls back operator-entered DNS, MikroTik, Cloudflare, and DockFlare settings. It generates a missing MikroTik Ed25519 client key and saves a scanned RouterOS host key only after its fingerprint matches the operator-supplied pin. |
 | `mikrotik-config/Jenkinsfile` | Job `004 - MikroTik Configuration`: waits for operator approval, backs up the router, then applies Infisical-managed DNS, DHCP DNS, and supplied Wi-Fi security profile passphrases. |
-| `mikrotik-config/apply-mikrotik-config.py` | Reads router settings from Infisical, uses pinned SSH only to create/download the encrypted binary backup, then applies and verifies DNS/DHCP/Wi-Fi changes through HTTPS RouterOS REST with a pinned certificate. |
+| `mikrotik-config/apply-mikrotik-config.py` | Reads router settings from Infisical, creates a sensitive RouterOS text export through pinned HTTPS REST, encrypts it on the agent, removes the router-side temporary file, then applies and verifies DNS/DHCP/Wi-Fi changes through REST. The `.rsc.enc` artifact is not a binary clone. |
 | `mikrotik-restore/Jenkinsfile` | Job `005 - MikroTik Full Reset and Restore`: a separate destructive, manually approved reset using the complete configuration stored in Infisical. |
 | `mikrotik-restore/restore-mikrotik.py` | Validates and dry-runs the Infisical script, downloads an encrypted pre-reset backup, resets with a generated account/bootstrap wrapper, then waits for pinned SSH recovery at `MIKROTIK_IP`. |
 | `dns-deploy/Jenkinsfile` | Job `006 - DNS Deployment and Router Sync`: after manual approval, creates missing dns01/dns02 LXCs or verifies and reuses existing matches, secures both Technitium admin accounts, creates optional `DNS_HOSTED_ZONES` primaries on dns01, configures zone transfers to dns02, and invokes the DNS-only MikroTik update with an encrypted pre-change backup. Shared policy is read from `/dns`; each server's `DNS_IPV4` and `DNS_SERVER_ADMIN_PASSWORD` are read from its `/dns/<server>` folder. |
@@ -47,9 +47,12 @@ Routine RouterOS changes require `MIKROTIK_TLS_CERT_SHA256` in
 `/mikrotik/router01`, plus the dedicated REST account in `MIKROTIK_USERNAME`
 and `MIKROTIK_PASSWORD`. Job 003 checks the entered certificate fingerprint
 against the live certificate before saving it. `www-ssl` must be enabled on
-RouterOS. Job 004 still needs the independently pinned SSH host key and SSH key
-to transfer the encrypted binary backup; only the configuration calls use
-HTTPS REST. Update the saved fingerprint after a router certificate rotation.
+RouterOS. Job 004 requires the independently verified HTTPS certificate
+fingerprint and a RouterOS account with REST access, write permissions for the
+settings it manages, and permissions to export and read files. The sensitive
+export includes passwords and keys, so protect the encrypted build artifact and
+its `BINARY_BACKUP_PASSWORD`. It is a text export, not a binary clone. Update
+the saved fingerprint after certificate rotation.
 The full reset job is intentionally separate from routine router configuration.
 It reads the multiline `MIKROTIK_SCRIPT` secret and post-reset address
 `MIKROTIK_IP` from `/mikrotik/router01`, requires explicit approval, and relies

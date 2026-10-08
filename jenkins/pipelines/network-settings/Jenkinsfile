@@ -26,7 +26,7 @@ pipeline {
         string(name: 'MIKROTIK_BOOTSTRAP_USERNAME', defaultValue: '', description: 'Existing RouterOS administrator username used to authorize Jenkins SSH access and start the reset workflow.')
         password(name: 'MIKROTIK_BOOTSTRAP_PASSWORD', defaultValue: '', description: 'Password for the existing MIKROTIK_BOOTSTRAP_USERNAME account.')
         string(name: 'MIKROTIK_SSH_USER', defaultValue: '', description: 'Optional RouterOS username Jenkins will use after its public key is authorized on the router.')
-        password(name: 'BINARY_BACKUP_PASSWORD', defaultValue: '', description: 'Optional password for encrypting RouterOS binary backups; saved under /mikrotik/backup.')
+        password(name: 'BINARY_BACKUP_PASSWORD', defaultValue: '', description: 'Optional password used to encrypt RouterOS pre-change exports and full-reset binary backups; saved under /mikrotik/backup.')
         password(name: 'SEC_GUEST_PASSWORD', defaultValue: '', description: 'Optional Guest Wi-Fi password; saved under /mikrotik/wifi_security.')
         password(name: 'SEC_IOT_PASSWORD', defaultValue: '', description: 'Optional IoT Wi-Fi password; saved under /mikrotik/wifi_security.')
         password(name: 'SEC_MGMT_PASSWORD', defaultValue: '', description: 'Optional Management Wi-Fi password; saved under /mikrotik/wifi_security.')

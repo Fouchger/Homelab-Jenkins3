@@ -242,8 +242,9 @@ admin passwords in `/dns/dns01/DNS_SERVER_ADMIN_PASSWORD` and
 `/dns/dns02/DNS_SERVER_ADMIN_PASSWORD`, and the DNS LXC root passwords in
 `/proxmox/lxc/dns01` and `/proxmox/lxc/dns02`. Confirm DHCP reservations for
 192.168.30.2 and 192.168.30.3 match the DNS profiles. Configure the MikroTik
-SSH credentials and trusted host key under `/mikrotik/router01`; the job saves
-an encrypted router backup before applying resolver settings. Set
+HTTPS REST credentials and trusted certificate fingerprint under
+`/mikrotik/router01`; the job saves an encrypted sensitive text export before
+applying resolver settings. Set
 `DNS_HOSTED_ZONES` only for zones you want hosted locally. A local primary zone
 shadows public DNS for that name, so leave public Cloudflare domains out unless
 you intentionally plan and maintain split-horizon records. Create and edit

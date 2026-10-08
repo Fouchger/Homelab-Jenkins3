@@ -51,7 +51,7 @@ python3 jenkins/pipelines/mikrotik-config/apply-mikrotik-config.py
 
     post {
         always {
-            archiveArtifacts artifacts: "artifacts/${env.BUILD_NUMBER}/homelab-router-before-dns-*.backup", allowEmptyArchive: true, fingerprint: true
+            archiveArtifacts artifacts: "artifacts/${env.BUILD_NUMBER}/homelab-router-before-dns-*.rsc.enc", allowEmptyArchive: true, fingerprint: true
         }
     }
 }

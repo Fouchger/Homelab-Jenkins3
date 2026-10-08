@@ -623,7 +623,7 @@ if (job == null) {
     throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
 }
 job.setDefinition(definition)
-job.setDescription('004 - Requires manual approval, creates/downloads an encrypted binary backup using the pinned SSH identity, then applies and verifies DNS/DHCP and configured Wi-Fi settings through RouterOS REST over HTTPS with the pinned certificate in Infisical.')
+job.setDescription('004 - Requires manual approval, creates a sensitive RouterOS configuration export through pinned HTTPS REST, encrypts it on the Jenkins agent, then applies and verifies DNS/DHCP and configured Wi-Fi settings. The encrypted text export is archived as a build artifact; this is not a binary router clone.')
 job.save()
 JENKINS_MIKROTIK_CONFIG_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/99-homelab-mikrotik-config-pipeline.groovy"

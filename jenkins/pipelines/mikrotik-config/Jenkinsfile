@@ -11,7 +11,7 @@ pipeline {
     stages {
         stage('Confirm MikroTik changes') {
             steps {
-                input message: 'Create and download an encrypted binary backup over the pinned SSH connection, then apply DNS/DHCP and configured Wi-Fi settings through pinned HTTPS REST? Job 003 must have saved both independently verified router fingerprints.', ok: 'Back up and apply configuration'
+                input message: 'Create and encrypt a sensitive RouterOS configuration export through the pinned HTTPS REST connection, then apply DNS/DHCP and configured Wi-Fi settings? Job 003 must have saved the independently verified HTTPS certificate fingerprint.', ok: 'Create encrypted export and apply'
             }
         }
         stage('Back up and configure MikroTik') {
@@ -33,7 +33,7 @@ python3 jenkins/pipelines/mikrotik-config/apply-mikrotik-config.py
 
     post {
         always {
-            archiveArtifacts artifacts: "artifacts/${env.BUILD_NUMBER}/homelab-router-before-dns-*.backup", allowEmptyArchive: true, fingerprint: true
+            archiveArtifacts artifacts: "artifacts/${env.BUILD_NUMBER}/homelab-router-before-dns-*.rsc.enc", allowEmptyArchive: true, fingerprint: true
         }
     }
 }

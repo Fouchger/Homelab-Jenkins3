@@ -9,7 +9,9 @@ import base64
 import json
 import os
 import re
+import shutil
 import ssl
+import subprocess
 import sys
 import tempfile
 import urllib.error
@@ -18,8 +20,6 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-import paramiko
-from paramiko.hostkeys import HostKeyEntry
 
 
 def required(name):
@@ -76,8 +76,7 @@ def infisical_secrets():
         ),
         "/mikrotik/router01": (
             "MIKROTIK_HOST", "MIKROTIK_IP", "MIKROTIK_BOOTSTRAP_USERNAME", "MIKROTIK_BOOTSTRAP_PASSWORD",
-            "MIKROTIK_SSH_USER", "MIKROTIK_SSH_PRIVATE_KEY", "MIKROTIK_SSH_PUBLIC_KEY",
-            "MIKROTIK_SSH_HOST_KEY", "MIKROTIK_USERNAME", "MIKROTIK_PASSWORD", "MIKROTIK_TLS_CERT_SHA256",
+            "MIKROTIK_USERNAME", "MIKROTIK_PASSWORD", "MIKROTIK_TLS_CERT_SHA256",
         ),
         "/mikrotik/backup": ("BINARY_BACKUP_PASSWORD",),
         "/mikrotik/wifi_security": ("SEC_GUEST_PASSWORD", "SEC_IOT_PASSWORD", "SEC_MGMT_PASSWORD", "SEC_USERS_PASSWORD"),
@@ -109,16 +108,6 @@ def ros_quote(value):
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def host_key_line(value, host):
-    lines = [line.strip() for line in value.splitlines() if line.strip() and not line.lstrip().startswith("#")]
-    if len(lines) != 1:
-        raise RuntimeError("MIKROTIK_SSH_HOST_KEY is missing or invalid; run Job 003 and enter the independently verified SHA256 fingerprint in MIKROTIK_SSH_HOST_KEY_FINGERPRINT")
-    fields = lines[0].split()
-    if len(fields) < 3 or fields[0] != host or not fields[1].startswith("ssh-"):
-        raise RuntimeError("MIKROTIK_SSH_HOST_KEY does not match MIKROTIK_HOST")
-    return fields
-
-
 def connection_host(values):
     """Use the management endpoint normally; only reset recovery overrides it."""
     host = os.environ.get("HOMELAB_MIKROTIK_CONNECT_HOST", "").strip()
@@ -127,49 +116,6 @@ def connection_host(values):
     if not re.fullmatch(r"[A-Za-z0-9.-]+", host) or host.startswith(".") or host.endswith("."):
         raise RuntimeError("Set a valid MIKROTIK_HOST in /mikrotik/router01")
     return host
-
-
-def run_command(client, command, *, allow_error=False):
-    try:
-        _stdin, stdout, stderr = client.exec_command(command, timeout=30)
-        output = stdout.read().decode("utf-8", errors="replace")
-        error = stderr.read().decode("utf-8", errors="replace")
-        status = stdout.channel.recv_exit_status()
-    except Exception:
-        raise RuntimeError("RouterOS SSH command failed; command output was suppressed") from None
-    if not allow_error and (status != 0 or re.search(r"(?im)^\s*(failure|error):", output + "\n" + error)):
-        raise RuntimeError("RouterOS rejected a configuration command; output was suppressed")
-    return output
-
-
-def create_backup(client, backup_password):
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup_name = f"homelab-router-before-dns-{stamp}.backup"
-    backup_remote_path = "/" + backup_name
-    build_number = os.environ.get("BUILD_NUMBER", "").strip()
-    if not re.fullmatch(r"[0-9]+", build_number):
-        raise RuntimeError("Jenkins BUILD_NUMBER is missing or invalid; cannot safely archive this run's backup")
-    artifact_dir = Path("artifacts") / build_number
-    artifact_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(artifact_dir, 0o700)
-    backup_local_path = artifact_dir / backup_name
-    run_command(client, f"/system/backup/save name={backup_name} password={ros_quote(backup_password)}")
-    try:
-        sftp = client.open_sftp()
-        try:
-            try:
-                sftp.get(backup_remote_path, str(backup_local_path))
-            except OSError:
-                sftp.get(backup_name, str(backup_local_path))
-        finally:
-            sftp.close()
-    except Exception:
-        raise RuntimeError("Encrypted RouterOS backup was created but could not be downloaded; no router changes were applied") from None
-    if not backup_local_path.is_file() or backup_local_path.stat().st_size == 0:
-        raise RuntimeError("RouterOS backup download was empty; no router changes were applied")
-    os.chmod(backup_local_path, 0o600)
-    run_command(client, f"/file/remove [find where name={ros_quote(backup_name)}]", allow_error=True)
-    print(f"Encrypted pre-change backup saved as Jenkins artifact {backup_name}.")
 
 
 class RouterREST:
@@ -216,6 +162,103 @@ class RouterREST:
             raise RuntimeError(f"MikroTik HTTPS REST connection failed ({type(exc).__name__})") from None
         finally:
             connection.close()
+
+
+def create_encrypted_export(router, backup_password):
+    """Create and archive a sensitive RouterOS export without opening SSH/SFTP."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    export_name = f"homelab-router-before-dns-{stamp}.rsc"
+    build_number = os.environ.get("BUILD_NUMBER", "").strip()
+    if not re.fullmatch(r"[0-9]+", build_number):
+        raise RuntimeError("Jenkins BUILD_NUMBER is missing or invalid; cannot safely archive this run's backup")
+    artifact_dir = Path("artifacts") / build_number
+    artifact_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(artifact_dir, 0o700)
+    artifact_path = artifact_dir / (export_name + ".enc")
+    temporary_artifact = artifact_dir / (export_name + ".enc.tmp")
+    plaintext_path = None
+    export_attempted = False
+    try:
+        # The request can time out after RouterOS has already created the file.
+        # Always try deleting this unique name, even when the request errors.
+        export_attempted = True
+        created = router.call("export", "POST", {"show-sensitive": "", "file": export_name})
+        if isinstance(created, dict) and created.get("error"):
+            raise RuntimeError("RouterOS could not create the pre-change export; no router settings were changed")
+        files = router.call("file")
+        matches = [item for item in files if isinstance(item, dict) and item.get("name") == export_name]
+        if len(matches) != 1:
+            raise RuntimeError("RouterOS did not create exactly one pre-change export; no router settings were changed")
+        rest_record_id(matches[0])  # Validate the returned record before reading it.
+
+        chunks = []
+        offset = 0
+        max_export_size = 32 * 1024 * 1024
+        while True:
+            response = router.call("file/read", "POST", {
+                "file": export_name, "offset": str(offset), "chunk-size": "32768",
+            })
+            if isinstance(response, dict):
+                response = [response]
+            if not isinstance(response, list) or len(response) != 1 or not isinstance(response[0], dict):
+                raise RuntimeError("RouterOS returned an invalid pre-change export chunk")
+            chunk = response[0].get("data", "")
+            if not isinstance(chunk, str):
+                raise RuntimeError("RouterOS returned invalid export data")
+            if not chunk:
+                break
+            encoded = chunk.encode("utf-8")
+            chunks.append(encoded)
+            offset += len(encoded)
+            if offset > max_export_size:
+                raise RuntimeError("RouterOS pre-change export exceeded the 32 MiB safety limit")
+            if len(encoded) < 32768:
+                break
+
+        export_bytes = b"".join(chunks)
+        if not export_bytes or b"/" not in export_bytes:
+            raise RuntimeError("RouterOS pre-change export was empty or malformed")
+        openssl = shutil.which("openssl")
+        if not openssl:
+            raise RuntimeError("OpenSSL is required on the Jenkins agent to encrypt the pre-change export")
+        descriptor, plaintext_name = tempfile.mkstemp(prefix="homelab-router-export-", suffix=".rsc")
+        plaintext_path = Path(plaintext_name)
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as plaintext:
+            plaintext.write(export_bytes)
+        del export_bytes, chunks
+
+        encrypted = subprocess.run(
+            [openssl, "enc", "-aes-256-cbc", "-pbkdf2", "-iter", "600000", "-salt",
+             "-in", str(plaintext_path), "-out", str(temporary_artifact), "-pass", "stdin"],
+            input=(backup_password + "\n").encode("utf-8"),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180, check=False,
+        )
+        if encrypted.returncode != 0 or not temporary_artifact.is_file() or temporary_artifact.stat().st_size < 32:
+            raise RuntimeError("Could not encrypt the RouterOS pre-change export; no router settings were changed")
+        with temporary_artifact.open("rb") as result:
+            if result.read(8) != b"Salted__":
+                raise RuntimeError("OpenSSL produced an unexpected encrypted export format")
+        os.chmod(temporary_artifact, 0o600)
+        os.replace(temporary_artifact, artifact_path)
+        print(f"Encrypted pre-change RouterOS sensitive configuration export saved as Jenkins artifact {artifact_path.name}.")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Encrypting the RouterOS pre-change export timed out; no router settings were changed") from None
+    finally:
+        if plaintext_path:
+            try:
+                plaintext_path.unlink()
+            except FileNotFoundError:
+                pass
+        try:
+            temporary_artifact.unlink()
+        except FileNotFoundError:
+            pass
+        if export_attempted:
+            try:
+                router.call(f"file/{urllib.parse.quote(export_name, safe='')}", "DELETE", allow_404=True)
+            except RuntimeError as exc:
+                raise RuntimeError(f"Could not remove the temporary sensitive export from the MikroTik: {exc}") from None
 
 
 def rest_record_id(record):
@@ -319,60 +362,13 @@ def rest_apply(router, values, networks, mode, dns_list, wifi_updates):
         raise RuntimeError("Managed router DNS firewall rules remain in direct mode; encrypted backup is available in Jenkins artifacts")
 
 
-def ssh_client(host, username, key_file, host_key_fields, password=None):
-    client = paramiko.SSHClient()
-    try:
-        entry = HostKeyEntry.from_line(" ".join(host_key_fields))
-        if entry is None:
-            raise ValueError("invalid known_hosts entry")
-        key_type, pinned_key = entry.key.get_name(), entry.key
-    except Exception:
-        raise RuntimeError("Could not load the pinned MikroTik SSH host key") from None
-    client.get_host_keys().add(host, key_type, pinned_key)
-    client.set_missing_host_key_policy(paramiko.RejectPolicy())
-    try:
-        options = {
-            "hostname": host,
-            "username": username,
-            "look_for_keys": False,
-            "allow_agent": False,
-            "timeout": 15,
-            "banner_timeout": 15,
-            "auth_timeout": 15,
-        }
-        if password is not None:
-            options.update(password=password, pkey=None)
-        else:
-            options.update(key_filename=key_file, pkey=None)
-        client.connect(**options)
-    except Exception:
-        client.close()
-        raise RuntimeError("Could not authenticate to MikroTik using the pinned host key and configured credentials") from None
-    return client
-
-
 def apply(values):
     host = connection_host(values)
-    host_key_host = values.get("MIKROTIK_HOST", "").strip()
-    admin_user = values.get("MIKROTIK_BOOTSTRAP_USERNAME", "").strip()
-    admin_password = values.get("MIKROTIK_BOOTSTRAP_PASSWORD", "")
-    ssh_user = values.get("MIKROTIK_SSH_USER", "").strip()
-    private_key = values.get("MIKROTIK_SSH_PRIVATE_KEY", "")
-    public_key = values.get("MIKROTIK_SSH_PUBLIC_KEY", "").strip()
-    trusted_host_key = values.get("MIKROTIK_SSH_HOST_KEY", "")
     backup_password = values.get("BINARY_BACKUP_PASSWORD", "")
     mode = values.get("MIKROTIK_DHCP_DNS_MODE", "").strip()
 
-    if not re.fullmatch(r"[A-Za-z0-9.-]+", host_key_host) or host_key_host.startswith(".") or host_key_host.endswith("."):
-        raise RuntimeError("Set a valid MIKROTIK_HOST in /mikrotik/router01")
-    if admin_user and not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", admin_user):
-        raise RuntimeError("MIKROTIK_BOOTSTRAP_USERNAME must be a RouterOS username without spaces")
-    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", ssh_user):
-        raise RuntimeError("Set a valid MIKROTIK_SSH_USER in /mikrotik/router01")
-    if not private_key.startswith("-----BEGIN OPENSSH PRIVATE KEY-----") or not public_key.startswith("ssh-ed25519 "):
-        raise RuntimeError("Run Job 003 first to generate the MikroTik Ed25519 key pair")
     if not backup_password:
-        raise RuntimeError("Set BINARY_BACKUP_PASSWORD in /mikrotik/backup before applying router changes")
+        raise RuntimeError("Set BINARY_BACKUP_PASSWORD in /mikrotik/backup to encrypt the pre-change RouterOS export")
     if mode not in ("router", "direct"):
         raise RuntimeError("Set MIKROTIK_DHCP_DNS_MODE to router or direct in /dns")
 
@@ -391,8 +387,6 @@ def apply(values):
         except ValueError:
             raise RuntimeError("DNS_PUBLIC_FALLBACKS must contain comma-separated IP addresses") from None
     upstreams = dns_servers + fallbacks
-    host_fields = host_key_line(trusted_host_key, host_key_host)
-
     dns_only = os.environ.get("HOMELAB_MIKROTIK_DNS_ONLY", "").strip().lower() in ("1", "yes", "true")
     wifi = {} if dns_only else {
         "SEC_USERS_PASSWORD": "sec-users",
@@ -416,50 +410,15 @@ def apply(values):
     rest = RouterREST(host, rest_user, rest_password, values.get("MIKROTIK_TLS_CERT_SHA256", ""))
     networks = rest_networks(rest)
     rest.call("system/resource")  # Authenticate before creating the backup.
-
-    key_descriptor, key_filename = tempfile.mkstemp(prefix="mikrotik-ssh-key-")
-    os.close(key_descriptor)
-    key_path = Path(key_filename)
-    key_path.write_text(private_key.rstrip("\n") + "\n", encoding="utf-8")
-    os.chmod(key_path, 0o600)
-    client = None
-    admin_client = None
-    try:
-        # Keep SSH only for the encrypted binary backup and its file transfer.
-        try:
-            client = ssh_client(host, ssh_user, str(key_path), host_fields)
-            key_login = True
-        except RuntimeError:
-            if not admin_user or not admin_password:
-                raise RuntimeError("Stored MikroTik SSH key login failed. To bootstrap or repair it, set MIKROTIK_BOOTSTRAP_USERNAME and MIKROTIK_BOOTSTRAP_PASSWORD in /mikrotik/router01") from None
-            admin_client = ssh_client(host, admin_user, str(key_path), host_fields, password=admin_password)
-            create_backup(admin_client, backup_password)
-            add_key = f"/user/ssh-keys/add user={ros_quote(ssh_user)} key={ros_quote(public_key)}"
-            run_command(admin_client, add_key, allow_error=True)
-            admin_client.close()
-            admin_client = None
-            client = ssh_client(host, ssh_user, str(key_path), host_fields)
-            key_login = False
-        if key_login:
-            create_backup(client, backup_password)
-
-        dns_list = ",".join(upstreams)
-        rest_apply(rest, values, networks, mode, dns_list, wifi_updates)
-        print(f"Configured MikroTik DNS upstreams in order: {', '.join(upstreams)}.")
-        print(f"Set DHCP DNS for {len(networks)} network(s) using mode '{mode}'.")
-        if wifi_updates:
-            print(f"Updated Wi-Fi security profiles: {', '.join(profile for profile, _ in wifi_updates)}.")
-        else:
-            print("Wi-Fi settings were unchanged because no SEC_*_PASSWORD values were supplied.")
-    finally:
-        if client:
-            client.close()
-        if admin_client:
-            admin_client.close()
-        try:
-            key_path.unlink()
-        except FileNotFoundError:
-            pass
+    create_encrypted_export(rest, backup_password)
+    dns_list = ",".join(upstreams)
+    rest_apply(rest, values, networks, mode, dns_list, wifi_updates)
+    print(f"Configured MikroTik DNS upstreams in order: {', '.join(upstreams)}.")
+    print(f"Set DHCP DNS for {len(networks)} network(s) using mode '{mode}'.")
+    if wifi_updates:
+        print(f"Updated Wi-Fi security profiles: {', '.join(profile for profile, _ in wifi_updates)}.")
+    else:
+        print("Wi-Fi settings were unchanged because no SEC_*_PASSWORD values were supplied.")
 
 
 def main():
