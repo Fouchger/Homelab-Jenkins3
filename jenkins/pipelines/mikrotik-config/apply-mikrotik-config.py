@@ -294,7 +294,7 @@ def rest_set(router, path, payload):
     return result
 
 
-def rest_apply(router, values, networks, mode, dns_list, wifi_updates):
+def rest_apply(router, networks, mode, dns_list, wifi_updates):
     # Validate every target before the first write to avoid a partial rollout.
     dns_state = router.call("ip/dns")
     if isinstance(dns_state, list):
@@ -412,7 +412,7 @@ def apply(values):
     rest.call("system/resource")  # Authenticate before creating the backup.
     create_encrypted_export(rest, backup_password)
     dns_list = ",".join(upstreams)
-    rest_apply(rest, values, networks, mode, dns_list, wifi_updates)
+    rest_apply(rest, networks, mode, dns_list, wifi_updates)
     print(f"Configured MikroTik DNS upstreams in order: {', '.join(upstreams)}.")
     print(f"Set DHCP DNS for {len(networks)} network(s) using mode '{mode}'.")
     if wifi_updates:

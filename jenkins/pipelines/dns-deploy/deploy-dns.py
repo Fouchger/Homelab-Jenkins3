@@ -104,9 +104,9 @@ def read_infisical():
     return values
 
 
-def ssh_settings(host):
-    key_text = values_for_ssh["PVE_SSH_PRIVATE_KEY"]
-    lines = [line.strip() for line in values_for_ssh["PVE_SSH_HOST_KEY"].splitlines() if line.strip() and not line.lstrip().startswith("#")]
+def ssh_settings(host, values):
+    key_text = values["PVE_SSH_PRIVATE_KEY"]
+    lines = [line.strip() for line in values["PVE_SSH_HOST_KEY"].splitlines() if line.strip() and not line.lstrip().startswith("#")]
     if len(lines) != 1:
         raise RuntimeError("Infisical PVE_SSH_HOST_KEY must contain one known_hosts entry")
     fields = lines[0].split()
@@ -139,7 +139,7 @@ def ssh_settings(host):
     return client, key_file.name
 
 
-def remote(client, command, timeout=900, capture=True):
+def remote(client, command, timeout=900):
     try:
         _stdin, stdout, _stderr = client.exec_command(command + " 2>&1", timeout=timeout)
         out = stdout.read().decode("utf-8", errors="replace")
@@ -148,7 +148,7 @@ def remote(client, command, timeout=900, capture=True):
         raise RuntimeError("Proxmox SSH operation failed; remote output was suppressed") from None
     if status:
         raise RuntimeError(f"Proxmox operation failed with exit status {status}")
-    return out.strip() if capture else ""
+    return out.strip()
 
 
 def upload(sftp, local_path, remote_path, mode=0o600):
@@ -300,17 +300,12 @@ def provision(client, stage, values):
     remote(client, f"rm -f -- {shlex.quote(stage)}/*.root-password {shlex.quote(stage)}/*.json && rm -rf -- {shlex.quote(stage)}", timeout=60)
 
 
-values_for_ssh = {}
-
-
 def main():
-    global values_for_ssh
     values = read_infisical()
-    values_for_ssh = values
     host = required("PROXMOX_HOST")
     if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
         raise RuntimeError("PROXMOX_HOST must be a hostname or IPv4 address")
-    client, key_file = ssh_settings(host)
+    client, key_file = ssh_settings(host, values)
     stage = ""
     try:
         candidate_stage = remote(client, "umask 077; mktemp -d /tmp/homelab-dns-deploy.XXXXXX", timeout=30)
