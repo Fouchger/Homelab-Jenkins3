@@ -586,7 +586,7 @@ if (job == null) {
     println("Updating managed Pipeline '${jobName}' to use the repository's network settings pipeline.")
 }
 job.setDefinition(definition)
-job.setDescription('003 - Saves operator-entered DNS, MikroTik (including the post-reset IP), Cloudflare account/domain, DockFlare Access email and admin network settings in their documented Infisical folders. Generates a missing MikroTik Ed25519 client key and pins SSH and HTTPS certificates only after SHA256 fingerprint confirmation. This job does not apply router, DNS server, or DockFlare changes.')
+job.setDescription('003 - Saves supplied network settings, generates missing MikroTik SSH client keys, then verifies the pinned RouterOS HTTPS connection and reviews managed DNS/DHCP/Wi-Fi settings. Review is read-only: it reports missing prerequisites and planned differences without changing the router or DNS servers.')
 job.save()
 JENKINS_NETWORK_SETTINGS_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/98-homelab-network-settings-pipeline.groovy"

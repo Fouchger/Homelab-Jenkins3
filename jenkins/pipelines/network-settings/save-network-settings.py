@@ -397,7 +397,7 @@ def main():
             print("Compare it with the fingerprint shown by RouterOS through a trusted local connection. If it matches, rerun Job 003 and enter it in MIKROTIK_TLS_CERT_SHA256; the scanned value is not trusted or saved automatically.")
 
     if not updates:
-        raise RuntimeError("No settings were supplied and no missing MikroTik SSH key material needed generation")
+        print("No settings changed. Existing Infisical values are ready for Review.")
 
     previous = {
         key: read_secret(base_url, token, key[0], key[1])

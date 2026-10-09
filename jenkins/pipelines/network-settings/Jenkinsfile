@@ -61,5 +61,21 @@ python3 jenkins/pipelines/network-settings/save-network-settings.py
                 }
             }
         }
+
+        stage('Review MikroTik connection and planned changes') {
+            steps {
+                withCredentials([
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                    string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
+                    string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
+                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT')
+                ]) {
+                    sh(label: 'Verify pinned RouterOS connection and preview managed settings', script: '''#!/bin/sh
+set +x
+python3 jenkins/pipelines/network-settings/review-mikrotik-settings.py
+''')
+                }
+            }
+        }
     }
 }
