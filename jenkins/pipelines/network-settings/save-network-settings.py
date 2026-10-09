@@ -18,15 +18,15 @@ import urllib.request
 
 
 CONFIG = {
+    "/proxmox/lxc/dns01": {"LXC_ROOT_PASSWORD": "CFG_DNS01_ROOT_PASSWORD"},
+    "/proxmox/lxc/dns02": {"LXC_ROOT_PASSWORD": "CFG_DNS02_ROOT_PASSWORD"},
     "/dns": {
-        "DNS_PUBLIC_FALLBACKS": "CFG_DNS_PUBLIC_FALLBACKS",
         "MIKROTIK_DHCP_DNS_MODE": "CFG_MIKROTIK_DHCP_DNS_MODE",
+        "DNS_PUBLIC_FALLBACKS": "CFG_DNS_PUBLIC_FALLBACKS",
         "DNS_HOSTED_ZONES": "CFG_DNS_HOSTED_ZONES",
     },
     "/dns/dns01": {"DNS_IPV4": "CFG_DNS01_IPV4", "DNS_SERVER_ADMIN_PASSWORD": "CFG_DNS01_ADMIN_PASSWORD"},
     "/dns/dns02": {"DNS_IPV4": "CFG_DNS02_IPV4", "DNS_SERVER_ADMIN_PASSWORD": "CFG_DNS02_ADMIN_PASSWORD"},
-    "/proxmox/lxc/dns01": {"LXC_ROOT_PASSWORD": "CFG_DNS01_ROOT_PASSWORD"},
-    "/proxmox/lxc/dns02": {"LXC_ROOT_PASSWORD": "CFG_DNS02_ROOT_PASSWORD"},
     "/mikrotik/router01": {
         "MIKROTIK_HOST": "CFG_MIKROTIK_HOST",
         "MIKROTIK_IP": "CFG_MIKROTIK_IP",
@@ -35,6 +35,9 @@ CONFIG = {
         "MIKROTIK_BOOTSTRAP_USERNAME": "CFG_MIKROTIK_BOOTSTRAP_USERNAME",
         "MIKROTIK_BOOTSTRAP_PASSWORD": "CFG_MIKROTIK_BOOTSTRAP_PASSWORD",
         "MIKROTIK_SSH_USER": "CFG_MIKROTIK_SSH_USER",
+        "MIKROTIK_SSH_PRIVATE_KEY": "CFG_MIKROTIK_SSH_PRIVATE_KEY",
+        "MIKROTIK_SSH_PUBLIC_KEY": "CFG_MIKROTIK_SSH_PUBLIC_KEY",
+        "MIKROTIK_SSH_HOST_KEY": "CFG_MIKROTIK_SSH_HOST_KEY",
         "MIKROTIK_TLS_CERT_SHA256": "CFG_MIKROTIK_TLS_CERT_SHA256",
     },
     "/mikrotik/backup": {"BINARY_BACKUP_PASSWORD": "CFG_BINARY_BACKUP_PASSWORD"},
@@ -351,11 +354,30 @@ def verify_router_tls_pin(host, expected):
         raise RuntimeError("The entered MikroTik HTTPS fingerprint does not match the certificate currently served by MIKROTIK_HOST; it was not saved")
 
 
+def save_one_secret(base_url, token, secret_path, name, value):
+    """Write and verify one value; restore only this value if verification fails."""
+    previous = read_secret(base_url, token, secret_path, name)
+    try:
+        write_secret(base_url, token, secret_path, name, value, previous is not None)
+        if read_secret(base_url, token, secret_path, name) != value:
+            raise RuntimeError("Infisical read-back did not match the submitted value")
+    except Exception:
+        try:
+            if previous is None:
+                delete_secret(base_url, token, secret_path, name)
+            else:
+                write_secret(base_url, token, secret_path, name, previous, True)
+        except Exception:
+            raise RuntimeError("save failed and rollback could not be verified") from None
+        raise RuntimeError("save failed; previous value was restored") from None
+
+
 def main():
     base_url = required("INFISICAL_URL").rstrip("/")
     if not base_url.startswith("https://"):
         raise RuntimeError("INFISICAL_URL must use HTTPS")
     updates = {}
+    results = {}
     for secret_path, items in CONFIG.items():
         for name, environment_name in items.items():
             # Jenkins exposes build parameters as environment variables. Read
@@ -364,81 +386,76 @@ def main():
             parameter_name = environment_name.removeprefix("CFG_")
             value = os.environ.get(parameter_name, "").strip()
             if value:
-                updates[(secret_path, name)] = validate_value(name, value)
+                key = (secret_path, name)
+                try:
+                    updates[key] = validate_value(name, value)
+                except RuntimeError as exc:
+                    results[key] = ("FAILED", str(exc))
     token = infisical_login(base_url)
-    stored_router_host = read_secret(base_url, token, "/mikrotik/router01", "MIKROTIK_HOST") or ""
-    router_host = updates.get(("/mikrotik/router01", "MIKROTIK_HOST"), stored_router_host)
-    if router_host:
-        router_host_changed = bool(stored_router_host and router_host != stored_router_host)
-        missing_trust = []
+    router_path = "/mikrotik/router01"
+    try:
+        stored_router_host = read_secret(base_url, token, router_path, "MIKROTIK_HOST") or ""
+    except Exception as exc:
+        stored_router_host = ""
+        results[(router_path, "MIKROTIK_HOST")] = ("FAILED", f"could not read current router host: {exc}")
+    router_host = updates.get((router_path, "MIKROTIK_HOST"), stored_router_host)
+    if router_host and not any(path == router_path for path, _ in results):
+        changed = bool(stored_router_host and router_host != stored_router_host)
         if not os.environ.get("MIKROTIK_HOST", "").strip():
             os.environ["MIKROTIK_HOST"] = router_host
-        existing_router_key = read_secret(base_url, token, "/mikrotik/router01", "MIKROTIK_SSH_PRIVATE_KEY") or ""
-        existing_router_pub = read_secret(base_url, token, "/mikrotik/router01", "MIKROTIK_SSH_PUBLIC_KEY") or ""
-        existing_router_host_key = read_secret(base_url, token, "/mikrotik/router01", "MIKROTIK_SSH_HOST_KEY") or ""
-        if router_host_changed:
-            existing_router_host_key = ""
-        generated = router_key_material(existing_router_key, existing_router_pub, existing_router_host_key)
-        for name, value in generated.items():
-            updates[("/mikrotik/router01", name)] = value
-        if router_host_changed and "MIKROTIK_SSH_HOST_KEY" not in generated:
-            missing_trust.append("MIKROTIK_SSH_HOST_KEY_FINGERPRINT")
-        supplied_tls_pin = updates.get(("/mikrotik/router01", "MIKROTIK_TLS_CERT_SHA256"), "")
-        stored_tls_pin = read_secret(base_url, token, "/mikrotik/router01", "MIKROTIK_TLS_CERT_SHA256") or ""
-        if supplied_tls_pin:
-            verify_router_tls_pin(router_host, supplied_tls_pin)
-        elif router_host_changed:
-            observed = router_tls_fingerprint(router_host)
-            print("RouterOS HTTPS certificate fingerprint seen by this Jenkins agent: " + observed)
-            print("Compare it with the fingerprint shown by RouterOS through trusted WinBox, then enter it in MIKROTIK_TLS_CERT_SHA256.")
-            missing_trust.append("MIKROTIK_TLS_CERT_SHA256")
-        elif not stored_tls_pin:
-            observed = router_tls_fingerprint(router_host)
-            print("RouterOS HTTPS certificate fingerprint seen by this Jenkins agent: " + observed)
-            print("Compare it with the fingerprint shown by RouterOS through a trusted local connection. If it matches, rerun Job 003 and enter it in MIKROTIK_TLS_CERT_SHA256; the scanned value is not trusted or saved automatically.")
-        if missing_trust:
-            raise RuntimeError(
-                "Changing MIKROTIK_HOST requires independent verification of "
-                + " and ".join(missing_trust)
-                + ". Enter the verified fingerprint(s) and rerun; no settings were saved."
-            )
+        try:
+            private = read_secret(base_url, token, router_path, "MIKROTIK_SSH_PRIVATE_KEY") or ""
+            public = read_secret(base_url, token, router_path, "MIKROTIK_SSH_PUBLIC_KEY") or ""
+            host_key = read_secret(base_url, token, router_path, "MIKROTIK_SSH_HOST_KEY") or ""
+            if changed:
+                host_key = ""
+            generated = router_key_material(private, public, host_key)
+            for name, value in generated.items():
+                updates[(router_path, name)] = value
+            if changed and "MIKROTIK_SSH_HOST_KEY" not in generated:
+                raise RuntimeError("MIKROTIK_HOST changed; enter and independently verify MIKROTIK_SSH_HOST_KEY_FINGERPRINT")
+            tls_pin = updates.get((router_path, "MIKROTIK_TLS_CERT_SHA256"), "")
+            stored_tls = read_secret(base_url, token, router_path, "MIKROTIK_TLS_CERT_SHA256") or ""
+            if tls_pin:
+                verify_router_tls_pin(router_host, tls_pin)
+            elif changed:
+                observed = router_tls_fingerprint(router_host)
+                print("RouterOS HTTPS certificate fingerprint seen by this Jenkins agent: " + observed)
+                raise RuntimeError("MIKROTIK_HOST changed; independently verify the HTTPS certificate and enter MIKROTIK_TLS_CERT_SHA256")
+            elif not stored_tls:
+                observed = router_tls_fingerprint(router_host)
+                print("RouterOS HTTPS certificate fingerprint seen by this Jenkins agent: " + observed)
+                print("Verify it through a trusted local connection and enter MIKROTIK_TLS_CERT_SHA256 on the next run; this scanned value was not saved.")
+        except Exception as exc:
+            for key in list(updates):
+                if key[0] == router_path:
+                    results[key] = ("FAILED", str(exc))
+                    updates.pop(key)
 
-    if not updates:
+    for key, value in updates.items():
+        path, name = key
+        try:
+            save_one_secret(base_url, token, path, name, value)
+            results[key] = ("SAVED", "")
+        except Exception as exc:
+            results[key] = ("FAILED", str(exc))
+
+    print("Settings results (blank inputs were left unchanged):")
+    for secret_path, items in CONFIG.items():
+        for name in items:
+            key = (secret_path, name)
+            if key in results:
+                status, detail = results[key]
+                print(f"{status}: {secret_path}/{name}" + (f" — {detail}" if detail else ""))
+    if not updates and not results:
         print("No settings changed. Existing Infisical values are ready for Review.")
-
-    previous = {
-        key: read_secret(base_url, token, key[0], key[1])
-        for key in updates
-    }
-    try:
-        for (secret_path, name), value in updates.items():
-            write_secret(base_url, token, secret_path, name, value, previous[(secret_path, name)] is not None)
-        for (secret_path, name), value in updates.items():
-            if read_secret(base_url, token, secret_path, name) != value:
-                raise RuntimeError(f"Infisical could not verify {secret_path}/{name}")
-    except Exception:
-        failures = []
-        for (secret_path, name), old_value in previous.items():
-            try:
-                if old_value is None:
-                    delete_secret(base_url, token, secret_path, name)
-                else:
-                    write_secret(base_url, token, secret_path, name, old_value, True)
-            except Exception:
-                failures.append(f"{secret_path}/{name}")
-        if failures:
-            raise RuntimeError("Infisical save failed and rollback was incomplete; inspect the affected settings in Infisical") from None
-        raise RuntimeError("Infisical save or verification failed; the previous setting values were restored") from None
-
-    for secret_path in CONFIG:
-        names = sorted(name for path, name in updates if path == secret_path)
-        if names:
-            print(f"Saved and verified {', '.join(names)} in {secret_path}.")
     public_key = read_secret(base_url, token, "/mikrotik/router01", "MIKROTIK_SSH_PUBLIC_KEY")
     if public_key:
         print("Generated Jenkins SSH public key (public key only; Job 004 authorizes it with the stored RouterOS administrator login):")
         print(public_key)
-    print("Blank inputs were left unchanged. No router, DNS server, or Cloudflare service configuration was applied by this settings job.")
+    print("No router, DNS server, or Cloudflare service configuration was applied by this settings job.")
+    if any(status == "FAILED" for status, _ in results.values()):
+        raise RuntimeError("One or more settings failed; review the per-variable results above and correct only those entries.")
 
 
 if __name__ == "__main__":
