@@ -207,10 +207,10 @@ def validate_value(name, value):
         except ValueError:
             raise RuntimeError("DNS_PUBLIC_FALLBACKS must be a comma-separated list of IP addresses") from None
     if name == "MIKROTIK_DHCP_DNS_MODE":
-        mode = " ".join(value.strip().lower().replace("_", " ").split())
-        if mode in ("router", "mikrotik", "mikrotik router", "mikrotik resolver"):
+        mode = " ".join(value.strip().lower().replace("_", " ").replace("/", " ").split())
+        if mode in ("router", "mikrotik", "mikrotik router", "mikrotik resolver", "router mikrotik resolver"):
             return "router"
-        if mode in ("direct", "technitium", "technitium direct"):
+        if mode in ("direct", "technitium", "technitium direct", "direct technitium"):
             return "direct"
         raise RuntimeError("MIKROTIK_DHCP_DNS_MODE must be router (MikroTik resolver) or direct (Technitium)")
     if name == "CLOUDFLARE_ACCOUNT_ID":
