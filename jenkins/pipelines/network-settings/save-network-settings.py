@@ -4,6 +4,8 @@
 import ipaddress
 import hashlib
 import hmac
+import base64
+import http.client
 import json
 import os
 import re
@@ -15,6 +17,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 
 CONFIG = {
@@ -255,9 +258,111 @@ def validate_value(name, value):
     raise RuntimeError("Unsupported configuration item")
 
 
-def router_key_material(existing_private, existing_public, existing_host_key):
-    """Create missing client credentials, pinning a scanned host key to an operator-supplied fingerprint."""
-    host = os.environ.get("MIKROTIK_HOST", "").strip()
+def router_rest_request(host, tls_fingerprint, username, password, method, path, body=None):
+    """Send one REST request only after checking the saved HTTPS certificate pin."""
+    connection = http.client.HTTPSConnection(host, 443, timeout=20, context=ssl._create_unverified_context())
+    headers = {
+        "Authorization": "Basic " + base64.b64encode(f"{username}:{password}".encode()).decode("ascii"),
+        "Accept": "application/json",
+    }
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    try:
+        connection.connect()
+        peer = hashlib.sha256(connection.sock.getpeercert(binary_form=True)).hexdigest()
+        if not hmac.compare_digest(peer, tls_fingerprint):
+            raise RuntimeError("Router HTTPS certificate does not match the saved trust pin")
+        connection.request(method, "/rest/" + path, body=data, headers=headers)
+        response = connection.getresponse()
+        raw = response.read()
+        if response.status >= 400:
+            raise RuntimeError(f"RouterOS SSH host-key verification request failed with HTTP {response.status}; response was suppressed")
+        try:
+            return json.loads(raw.decode("utf-8")) if raw else {}
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise RuntimeError("RouterOS returned invalid JSON while verifying its SSH host key") from None
+    except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+        raise RuntimeError(f"Router HTTPS request failed while verifying its SSH host key ({type(exc).__name__})") from None
+    finally:
+        connection.close()
+
+
+def router_host_key_fingerprints(host, tls_fingerprint, username, password):
+    """Read the router's public SSH key over pinned HTTPS, then remove temporary exports."""
+    if not re.fullmatch(r"[0-9a-f]{64}", tls_fingerprint):
+        raise RuntimeError("Set and verify MIKROTIK_TLS_CERT_SHA256 before automatically verifying the SSH host key")
+    if not username or not password:
+        raise RuntimeError("Set a RouterOS REST username and password before automatically verifying the SSH host key")
+    prefix = "jenkins_hostkey_" + uuid.uuid4().hex
+    files = []
+    try:
+        router_rest_request(
+            host, tls_fingerprint, username, password, "POST", "execute",
+            {"script": f"/ip/ssh/export-host-key key-file-prefix={prefix}", "as-string": ""},
+        )
+        records = router_rest_request(
+            host, tls_fingerprint, username, password, "GET",
+            "file?.proplist=.id,name",
+        )
+        if not isinstance(records, list):
+            raise RuntimeError("RouterOS did not return its temporary SSH key export files")
+        files = [item for item in records if isinstance(item, dict) and str(item.get("name", "")).startswith(prefix)]
+        public_keys = [item for item in files if str(item.get("name", "")).endswith("_pub.pem")]
+        fingerprints = []
+        if not public_keys:
+            raise RuntimeError("RouterOS did not provide an exported SSH public host key")
+        for item in public_keys:
+            file_id = item.get(".id")
+            if not file_id:
+                raise RuntimeError("RouterOS did not identify its exported SSH public host key")
+            content_record = router_rest_request(
+                host, tls_fingerprint, username, password, "GET",
+                "file/" + urllib.parse.quote(str(file_id), safe="*") + "?.proplist=contents",
+            )
+            contents = content_record.get("contents") if isinstance(content_record, dict) else None
+            if not isinstance(contents, str) or "BEGIN PUBLIC KEY" not in contents:
+                raise RuntimeError("RouterOS returned an unreadable SSH public host key")
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="mikrotik-router-host-", suffix=".pem", delete=True) as key_file:
+                key_file.write(contents)
+                key_file.flush()
+                converted = subprocess.run(
+                    ["ssh-keygen", "-i", "-m", "PKCS8", "-f", key_file.name],
+                    check=True, capture_output=True, text=True, timeout=20,
+                ).stdout.strip()
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="mikrotik-router-host-", suffix=".pub", delete=True) as key_file:
+                key_file.write(converted + "\n")
+                key_file.flush()
+                fingerprints.append(subprocess.run(
+                    ["ssh-keygen", "-lf", key_file.name, "-E", "sha256"],
+                    check=True, capture_output=True, text=True, timeout=20,
+                ).stdout.split()[1])
+        return fingerprints
+    except (OSError, subprocess.SubprocessError, IndexError) as exc:
+        raise RuntimeError(f"Could not convert the RouterOS public SSH key ({type(exc).__name__})") from None
+    finally:
+        cleanup_error = False
+        if not files:
+            try:
+                records = router_rest_request(host, tls_fingerprint, username, password, "GET", "file?.proplist=.id,name")
+                files = [item for item in records if isinstance(item, dict) and str(item.get("name", "")).startswith(prefix)] if isinstance(records, list) else []
+            except Exception:
+                cleanup_error = True
+        for item in files:
+            file_id = item.get(".id")
+            if file_id:
+                try:
+                    router_rest_request(host, tls_fingerprint, username, password, "DELETE", "file/" + urllib.parse.quote(str(file_id), safe="*"))
+                except Exception:
+                    cleanup_error = True
+        if cleanup_error:
+            raise RuntimeError("Could not remove temporary SSH key export files from RouterOS; check WinBox Files and delete jenkins_hostkey_* files")
+
+
+def router_key_material(existing_private, existing_public, existing_host_key, host, tls_fingerprint, username, password):
+    """Create missing client credentials and pin the SSH key to the HTTPS-authenticated router."""
+    host = host.strip()
     private_key = existing_private
     public_key = existing_public
     host_key = existing_host_key
@@ -294,17 +399,14 @@ def router_key_material(existing_private, existing_public, existing_host_key):
         generated["MIKROTIK_SSH_PUBLIC_KEY"] = public_key
 
     if not host_key and host:
-        expected = os.environ.get("MIKROTIK_SSH_HOST_KEY_FINGERPRINT", "").strip()
         try:
+            expected_fingerprints = router_host_key_fingerprints(host, tls_fingerprint, username, password)
             scanned = subprocess.run(
                 ["ssh-keyscan", "-T", "10", "-t", "ed25519,rsa,ecdsa", host],
                 check=False, capture_output=True, text=True, timeout=20,
             )
             candidates = [line for line in scanned.stdout.splitlines() if line.strip() and not line.startswith("#")]
             if scanned.returncode or not candidates:
-                if not expected:
-                    print("RouterOS SSH host key could not be scanned; no SSH host key was saved. Confirm SSH is reachable and rerun Settings.")
-                    return generated
                 raise RuntimeError("ssh-keyscan returned no usable RouterOS host key")
             known_host_line = ""
             fingerprints = []
@@ -317,21 +419,17 @@ def router_key_material(existing_private, existing_public, existing_host_key):
                         check=True, capture_output=True, text=True, timeout=20,
                     ).stdout.split()[1]
                 fingerprints.append(fingerprint)
-                if fingerprint == expected:
+                if fingerprint in expected_fingerprints:
                     known_host_line = candidate.strip()
                     break
-            if not re.fullmatch(r"SHA256:[A-Za-z0-9+/]{43}", expected):
-                print("RouterOS SSH fingerprint(s) seen by this Jenkins agent: " + ", ".join(fingerprints))
-                print("Compare a fingerprint with the value shown by the router through a trusted connection, then enter it in MIKROTIK_SSH_HOST_KEY_FINGERPRINT. The SSH host key has not been trusted or saved.")
-                return generated
             if not known_host_line:
-                raise RuntimeError("The router's scanned SSH fingerprint does not match the independently verified fingerprint; no host key was saved")
+                raise RuntimeError("SSH host key scanned by Jenkins did not match the public key returned over pinned HTTPS; no host key was saved")
             host_key = known_host_line
             generated["MIKROTIK_SSH_HOST_KEY"] = host_key
         except RuntimeError:
             raise
         except (OSError, subprocess.SubprocessError, IndexError):
-            raise RuntimeError("Could not verify the MikroTik SSH host key; no host key was saved") from None
+            raise RuntimeError("Could not verify the MikroTik SSH host key against the key returned over pinned HTTPS") from None
     return generated
 
 
@@ -409,23 +507,34 @@ def main():
             host_key = read_secret(base_url, token, router_path, "MIKROTIK_SSH_HOST_KEY") or ""
             if changed:
                 host_key = ""
-            generated = router_key_material(private, public, host_key)
-            for name, value in generated.items():
-                updates[(router_path, name)] = value
-            if changed and "MIKROTIK_SSH_HOST_KEY" not in generated:
-                raise RuntimeError("MIKROTIK_HOST changed; enter and independently verify MIKROTIK_SSH_HOST_KEY_FINGERPRINT")
             tls_pin = updates.get((router_path, "MIKROTIK_TLS_CERT_SHA256"), "")
             stored_tls = read_secret(base_url, token, router_path, "MIKROTIK_TLS_CERT_SHA256") or ""
+            effective_tls_pin = tls_pin or stored_tls
             if tls_pin:
                 verify_router_tls_pin(router_host, tls_pin)
-            elif changed:
+            elif changed and not stored_tls:
                 observed = router_tls_fingerprint(router_host)
                 print("RouterOS HTTPS certificate fingerprint seen by this Jenkins agent: " + observed)
-                raise RuntimeError("MIKROTIK_HOST changed; independently verify the HTTPS certificate and enter MIKROTIK_TLS_CERT_SHA256")
+                raise RuntimeError("MIKROTIK_HOST changed; verify and enter MIKROTIK_TLS_CERT_SHA256 before SSH host-key verification")
+            elif changed:
+                verify_router_tls_pin(router_host, stored_tls)
             elif not stored_tls:
                 observed = router_tls_fingerprint(router_host)
                 print("RouterOS HTTPS certificate fingerprint seen by this Jenkins agent: " + observed)
                 print("Verify it through a trusted local connection and enter MIKROTIK_TLS_CERT_SHA256 on the next run; this scanned value was not saved.")
+            rest_username = updates.get((router_path, "MIKROTIK_USERNAME")) or read_secret(base_url, token, router_path, "MIKROTIK_USERNAME") or ""
+            rest_password = updates.get((router_path, "MIKROTIK_PASSWORD")) or read_secret(base_url, token, router_path, "MIKROTIK_PASSWORD") or ""
+            if not rest_username or not rest_password:
+                rest_username = updates.get((router_path, "MIKROTIK_BOOTSTRAP_USERNAME")) or read_secret(base_url, token, router_path, "MIKROTIK_BOOTSTRAP_USERNAME") or ""
+                rest_password = updates.get((router_path, "MIKROTIK_BOOTSTRAP_PASSWORD")) or read_secret(base_url, token, router_path, "MIKROTIK_BOOTSTRAP_PASSWORD") or ""
+            generated = router_key_material(
+                private, public, host_key, router_host, effective_tls_pin,
+                rest_username, rest_password,
+            )
+            if "MIKROTIK_SSH_HOST_KEY" in generated:
+                print("RouterOS SSH host key verified against its public key over the pinned HTTPS connection.")
+            for name, value in generated.items():
+                updates[(router_path, name)] = value
         except Exception as exc:
             for key in list(updates):
                 if key[0] == router_path:
