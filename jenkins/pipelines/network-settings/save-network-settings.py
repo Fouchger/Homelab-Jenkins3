@@ -398,7 +398,7 @@ def router_key_material(existing_private, existing_public, existing_host_key, ho
                 raise RuntimeError("Could not derive the public key from the stored MikroTik private key") from None
         generated["MIKROTIK_SSH_PUBLIC_KEY"] = public_key
 
-    if not host_key and host:
+    if host:
         try:
             expected_fingerprints = router_host_key_fingerprints(host, tls_fingerprint, username, password)
             scanned = subprocess.run(
@@ -424,8 +424,8 @@ def router_key_material(existing_private, existing_public, existing_host_key, ho
                     break
             if not known_host_line:
                 raise RuntimeError("SSH host key scanned by Jenkins did not match the public key returned over pinned HTTPS; no host key was saved")
-            host_key = known_host_line
-            generated["MIKROTIK_SSH_HOST_KEY"] = host_key
+            if known_host_line != existing_host_key:
+                generated["MIKROTIK_SSH_HOST_KEY"] = known_host_line
         except RuntimeError:
             raise
         except (OSError, subprocess.SubprocessError, IndexError):
@@ -497,6 +497,7 @@ def main():
         stored_router_host = ""
         results[(router_path, "MIKROTIK_HOST")] = ("FAILED", f"could not read current router host: {exc}")
     router_host = updates.get((router_path, "MIKROTIK_HOST"), stored_router_host)
+    update_ssh_host_key = os.environ.get("MIKROTIK_SSH_HOST_KEY_UPDATE", "no").strip().lower() == "yes"
     if router_host and not any(path == router_path for path, _ in results):
         changed = bool(stored_router_host and router_host != stored_router_host)
         if not os.environ.get("MIKROTIK_HOST", "").strip():
@@ -505,8 +506,6 @@ def main():
             private = read_secret(base_url, token, router_path, "MIKROTIK_SSH_PRIVATE_KEY") or ""
             public = read_secret(base_url, token, router_path, "MIKROTIK_SSH_PUBLIC_KEY") or ""
             host_key = read_secret(base_url, token, router_path, "MIKROTIK_SSH_HOST_KEY") or ""
-            if changed:
-                host_key = ""
             tls_pin = updates.get((router_path, "MIKROTIK_TLS_CERT_SHA256"), "")
             stored_tls = read_secret(base_url, token, router_path, "MIKROTIK_TLS_CERT_SHA256") or ""
             effective_tls_pin = tls_pin or stored_tls
@@ -531,8 +530,16 @@ def main():
                 private, public, host_key, router_host, effective_tls_pin,
                 rest_username, rest_password,
             )
-            if "MIKROTIK_SSH_HOST_KEY" in generated:
+            verified_host_key = generated.pop("MIKROTIK_SSH_HOST_KEY", None)
+            host_key_result = (router_path, "MIKROTIK_SSH_HOST_KEY")
+            if verified_host_key and update_ssh_host_key:
+                updates[host_key_result] = verified_host_key
                 print("RouterOS SSH host key verified against its public key over the pinned HTTPS connection.")
+            elif verified_host_key:
+                detail = "verified; saved key left unchanged" if host_key else "verified; choose yes to save the SSH host key"
+                results[host_key_result] = ("VERIFIED (NOT UPDATED)", detail)
+            elif host_key:
+                results[host_key_result] = ("VERIFIED (UNCHANGED)", "router SSH host key matches the saved key")
             for name, value in generated.items():
                 updates[(router_path, name)] = value
         except Exception as exc:
