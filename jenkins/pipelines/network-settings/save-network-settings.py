@@ -300,7 +300,7 @@ def router_key_material(existing_private, existing_public, existing_host_key):
             candidates = [line for line in scanned.stdout.splitlines() if line.strip() and not line.startswith("#")]
             if scanned.returncode or not candidates:
                 if not expected:
-                    print("RouterOS SSH host key could not be scanned yet. The client key pair and other settings will still be saved; rerun this job after SSH is reachable to pin the host key.")
+                    print("RouterOS SSH host key could not be scanned; no SSH host key was saved. Confirm SSH is reachable and rerun Settings.")
                     return generated
                 raise RuntimeError("ssh-keyscan returned no usable RouterOS host key")
             known_host_line = ""
@@ -319,7 +319,7 @@ def router_key_material(existing_private, existing_public, existing_host_key):
                     break
             if not re.fullmatch(r"SHA256:[A-Za-z0-9+/]{43}", expected):
                 print("RouterOS SSH fingerprint(s) seen by this Jenkins agent: " + ", ".join(fingerprints))
-                print("Compare a fingerprint with the router's trusted value from a separate source, then rerun with it in MIKROTIK_SSH_HOST_KEY_FINGERPRINT. The client key pair and other settings will still be saved; the host key is not trusted yet.")
+                print("Compare a fingerprint with the value shown by the router through a trusted connection, then enter it in MIKROTIK_SSH_HOST_KEY_FINGERPRINT. The SSH host key has not been trusted or saved.")
                 return generated
             if not known_host_line:
                 raise RuntimeError("The router's scanned SSH fingerprint does not match the independently verified fingerprint; no host key was saved")
@@ -370,9 +370,7 @@ def main():
     router_host = updates.get(("/mikrotik/router01", "MIKROTIK_HOST"), stored_router_host)
     if router_host:
         router_host_changed = bool(stored_router_host and router_host != stored_router_host)
-        supplied_fingerprint = os.environ.get("MIKROTIK_SSH_HOST_KEY_FINGERPRINT", "").strip()
-        if router_host_changed and not re.fullmatch(r"SHA256:[A-Za-z0-9+/]{43}", supplied_fingerprint):
-            raise RuntimeError("Changing MIKROTIK_HOST requires its independently verified SHA256 fingerprint; the existing router host and key were left unchanged")
+        missing_trust = []
         if not os.environ.get("MIKROTIK_HOST", "").strip():
             os.environ["MIKROTIK_HOST"] = router_host
         existing_router_key = read_secret(base_url, token, "/mikrotik/router01", "MIKROTIK_SSH_PRIVATE_KEY") or ""
@@ -383,6 +381,8 @@ def main():
         generated = router_key_material(existing_router_key, existing_router_pub, existing_router_host_key)
         for name, value in generated.items():
             updates[("/mikrotik/router01", name)] = value
+        if router_host_changed and "MIKROTIK_SSH_HOST_KEY" not in generated:
+            missing_trust.append("MIKROTIK_SSH_HOST_KEY_FINGERPRINT")
         supplied_tls_pin = updates.get(("/mikrotik/router01", "MIKROTIK_TLS_CERT_SHA256"), "")
         stored_tls_pin = read_secret(base_url, token, "/mikrotik/router01", "MIKROTIK_TLS_CERT_SHA256") or ""
         if supplied_tls_pin:
@@ -390,11 +390,18 @@ def main():
         elif router_host_changed:
             observed = router_tls_fingerprint(router_host)
             print("RouterOS HTTPS certificate fingerprint seen by this Jenkins agent: " + observed)
-            raise RuntimeError("Changing MIKROTIK_HOST requires its independently verified HTTPS certificate fingerprint in MIKROTIK_TLS_CERT_SHA256")
+            print("Compare it with the fingerprint shown by RouterOS through trusted WinBox, then enter it in MIKROTIK_TLS_CERT_SHA256.")
+            missing_trust.append("MIKROTIK_TLS_CERT_SHA256")
         elif not stored_tls_pin:
             observed = router_tls_fingerprint(router_host)
             print("RouterOS HTTPS certificate fingerprint seen by this Jenkins agent: " + observed)
             print("Compare it with the fingerprint shown by RouterOS through a trusted local connection. If it matches, rerun Job 003 and enter it in MIKROTIK_TLS_CERT_SHA256; the scanned value is not trusted or saved automatically.")
+        if missing_trust:
+            raise RuntimeError(
+                "Changing MIKROTIK_HOST requires independent verification of "
+                + " and ".join(missing_trust)
+                + ". Enter the verified fingerprint(s) and rerun; no settings were saved."
+            )
 
     if not updates:
         print("No settings changed. Existing Infisical values are ready for Review.")
