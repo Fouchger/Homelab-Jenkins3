@@ -540,10 +540,10 @@ if (job == null) {
     println("Updating managed Pipeline '${jobName}' to the current repository pipeline path.")
 }
 job.setDefinition(definition)
-job.setDescription('001 - Updates both verified Jenkins LXCs from the configured GitHub branch every day at 2:00 a.m. Pacific/Auckland. Timer runs proceed automatically; manual runs require confirmation. Containers are always reused and never destroyed.')
+job.setDescription('001 - Updates both verified Jenkins LXCs from the configured GitHub branch every day at 2:00 a.m. Pacific/Auckland. Manual runs show the last recorded installed commit and the GitHub commit before confirmation. Timer runs proceed automatically; containers are always reused and never destroyed.')
 job.removeProperty(ParametersDefinitionProperty)
 job.addProperty(new ParametersDefinitionProperty(
-    new BooleanParameterDefinition('AUTOMATED_UPDATE', false, 'Set by the daily timer; manual runs require confirmation.')
+    new BooleanParameterDefinition('AUTOMATED_UPDATE', false, 'Set by the daily timer. Manual runs show the installed and latest GitHub versions before asking for confirmation.')
 ))
 job.addTrigger(new ExtendedTimerTrigger('''TZ=Pacific/Auckland
 0 2 * * *

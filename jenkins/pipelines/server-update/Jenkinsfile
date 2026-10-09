@@ -15,7 +15,7 @@ pipeline {
     }
 
     parameters {
-        booleanParam(name: 'AUTOMATED_UPDATE', defaultValue: false, description: 'Set by the daily timer. Leave disabled for manual runs so they require confirmation.')
+        booleanParam(name: 'AUTOMATED_UPDATE', defaultValue: false, description: 'Set by the daily timer. Manual runs show the installed and latest GitHub versions before asking for confirmation.')
         string(name: 'GITHUB_OWNER', defaultValue: 'Fouchger', description: 'Repository owner used by the Proxmox bootstrap download.')
         string(name: 'GITHUB_REPOSITORY', defaultValue: 'Homelab-Jenkins3', description: 'Repository name used by the Proxmox bootstrap download.')
         password(name: 'GITHUB_TOKEN', defaultValue: '', description: 'Optional GitHub token for private repositories. Leave blank for public repositories.')
@@ -27,7 +27,21 @@ pipeline {
                 checkout scm
                 script {
                     env.UPDATE_COMMIT = sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
-                    echo "Preparing server update from commit ${env.UPDATE_COMMIT}."
+                    // `checkout scm` has already fetched the configured GitHub branch.
+                    env.GITHUB_HEAD_COMMIT = env.UPDATE_COMMIT
+                    def previousSuccessfulDescription = currentBuild.previousSuccessfulBuild?.description ?: ''
+                    def previousInstalledCommit = previousSuccessfulDescription =~ /Installed commit: ([0-9a-fA-F]{40,64})/
+                    env.INSTALLED_COMMIT = previousInstalledCommit.find() ? previousInstalledCommit.group(1) : ''
+                    def installedVersion = env.INSTALLED_COMMIT ? env.INSTALLED_COMMIT.take(12) : 'not recorded yet'
+                    currentBuild.description = "Installed: ${installedVersion} | GitHub: ${env.GITHUB_HEAD_COMMIT.take(12)} | Update pending"
+                    echo "Currently installed on the Jenkins LXCs: ${installedVersion}"
+                    echo "GitHub branch version loaded for this run: ${env.GITHUB_HEAD_COMMIT.take(12)}"
+                    echo "This run will install checked-out commit: ${env.UPDATE_COMMIT.take(12)}"
+                    if (env.INSTALLED_COMMIT && env.INSTALLED_COMMIT == env.GITHUB_HEAD_COMMIT) {
+                        echo 'The Jenkins LXCs are already at the current GitHub version.'
+                    } else if (env.INSTALLED_COMMIT) {
+                        echo 'A newer GitHub version is available for the Jenkins LXCs.'
+                    }
                 }
             }
         }
@@ -37,7 +51,7 @@ pipeline {
                 expression { !params.AUTOMATED_UPDATE }
             }
             steps {
-                input(message: "Update both matching Jenkins LXCs from commit ${env.UPDATE_COMMIT}?", ok: 'Update both servers')
+                input(message: "Currently installed on the Jenkins LXCs: ${env.INSTALLED_COMMIT ? env.INSTALLED_COMMIT.take(12) : 'not recorded yet'}\nGitHub branch version loaded for this run: ${env.GITHUB_HEAD_COMMIT.take(12)}\nThis run will install commit: ${env.UPDATE_COMMIT.take(12)}\n\nUpdate both matching Jenkins LXCs?", ok: 'Update both servers')
             }
         }
 
@@ -62,6 +76,14 @@ python3 jenkins/pipelines/server-update/update-servers.py
 ''')
                     }
                 }
+            }
+        }
+    }
+
+    post {
+        success {
+            script {
+                currentBuild.description = "Installed commit: ${env.UPDATE_COMMIT}"
             }
         }
     }
