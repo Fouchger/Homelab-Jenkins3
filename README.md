@@ -253,6 +253,17 @@ advertises both resolver addresses. Fallback behavior depends on each client;
 choose MikroTik `router` mode if you also want configured public resolvers
 available when both Technitium servers are down.
 
+Job 006 has a `RECREATE_DNS_SERVER` parameter which defaults to `none`. You can
+select `dns01` or `dns02` to replace that one identity-verified container with a
+clean installation; the other DNS server remains in place. The approval prompt
+repeats that the selected container and its data will be permanently deleted,
+with no backup. For dns01, only zone names in `DNS_HOSTED_ZONES` are recreated;
+custom DNS records and other server data are lost. A recreated dns02 receives
+the current secondary zones again from dns01. To replace both servers, run the
+pipeline separately for each one and review/approve each run. The router's
+encrypted backup is still created before router settings are changed; it does
+not contain the deleted DNS container data.
+
 These scripts seed the Proxmox access
 setup job. The job applies the existing `HomelabLxcOperator` role to
 `homelab-automation@pve`, creates or rotates its API token, and writes the

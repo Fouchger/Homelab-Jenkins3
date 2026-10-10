@@ -208,7 +208,14 @@ def execute_in_ct(client, ct, remote_script, config, action):
             pass
 
 
-def provision(client, stage, values):
+def selected_recreate_role():
+    role = os.environ.get("HOMELAB_RECREATE_DNS_SERVER", "none").strip().lower() or "none"
+    if role != "none" and role not in PROFILES:
+        raise RuntimeError("HOMELAB_RECREATE_DNS_SERVER must be none, dns01, or dns02")
+    return role
+
+
+def provision(client, stage, values, recreate_role):
     remote(client, "command -v pct >/dev/null && command -v curl >/dev/null && command -v python3 >/dev/null", timeout=30)
     # main() creates this directory with mktemp -d; only tighten its mode here.
     remote(client, f"chmod 700 {shlex.quote(stage)}", timeout=30)
@@ -232,14 +239,44 @@ def provision(client, stage, values):
             if not matches_container_identity(existing, hostname, mac):
                 raise RuntimeError(f"CTID {ctid} already exists but does not match the {role} profile; refusing to modify or replace it")
             status = remote(client, f"pct status {ctid}", timeout=30)
-            if "status: running" not in status:
-                remote(client, f"pct start {ctid}", timeout=120)
-            print(f"Verified and reused {role} (CTID {ctid}).")
-            continue
+            if role == recreate_role:
+                print(f"RECREATING {role} (CTID {ctid}): permanently deleting its container and DNS data; no DNS-container backup will be made.")
+                try:
+                    if "status: running" in status:
+                        try:
+                            remote(client, f"pct shutdown {ctid} --timeout 120", timeout=180)
+                        except RuntimeError:
+                            pass
+                        status = remote(client, f"pct status {ctid}", timeout=30)
+                        if "status: stopped" not in status:
+                            remote(client, f"pct stop {ctid}", timeout=120)
+                    remote(client, f"pct destroy {ctid} --purge 1", timeout=600)
+                    still_present = remote(
+                        client,
+                        f"if pct status {ctid} >/dev/null 2>&1; then printf present; else printf absent; fi",
+                        timeout=30,
+                    )
+                    if still_present != "absent":
+                        raise RuntimeError(f"Proxmox still reports CTID {ctid} after destroy")
+                except Exception as exc:
+                    raise RuntimeError(f"Could not safely remove {role} CTID {ctid}; check its Proxmox status before retrying. {exc}") from None
+            else:
+                if "status: running" not in status:
+                    remote(client, f"pct start {ctid}", timeout=120)
+                print(f"Verified and reused {role} (CTID {ctid}).")
+                continue
+        elif role == recreate_role:
+            print(f"{role} (CTID {ctid}) is absent; creating it cleanly. No existing data will be deleted.")
+
         password_file = f"{stage}/{role}.root-password"
         profile = f"{stage}/{role}.profile.sh"
         command = f"HOMELAB_LXC_ROOT_PASSWORD_FILE={shlex.quote(password_file)} bash {shlex.quote(stage + '/create-lxc.sh')} {shlex.quote(profile)}"
-        remote(client, command, timeout=3600)
+        try:
+            remote(client, command, timeout=3600)
+        except Exception as exc:
+            if role == recreate_role:
+                raise RuntimeError(f"{role} recreation was selected, but its clean replacement could not be created after removal; check CTID {ctid} on Proxmox. {exc}") from None
+            raise
 
     # Wait for LXC service startup and verify the expected DHCP reservation is active.
     for role, (ctid, _mac, _profile) in PROFILES.items():
@@ -300,7 +337,7 @@ def provision(client, stage, values):
     remote(client, f"rm -f -- {shlex.quote(stage)}/*.root-password {shlex.quote(stage)}/*.json && rm -rf -- {shlex.quote(stage)}", timeout=60)
 
 
-def review_plan(client, values):
+def review_plan(client, values, recreate_role):
     """Show the DNS deployment operations without changing Proxmox or DNS."""
     remote(client, "command -v pct >/dev/null && command -v curl >/dev/null && command -v python3 >/dev/null", timeout=30)
     print("Read-only DNS deployment plan (no containers or DNS settings changed):")
@@ -312,9 +349,14 @@ def review_plan(client, values):
             if not matches_container_identity(config, role, mac):
                 raise RuntimeError(f"CTID {ctid} exists but does not match the {role} identity; refusing to approve deployment")
             state = remote(client, f"pct status {ctid}", timeout=30).replace("status: ", "").strip()
-            print(f"- {role}: reuse verified CTID {ctid} ({state}); verify its address is {expected_ip}")
+            if role == recreate_role:
+                other_role = "dns02" if role == "dns01" else "dns01"
+                print(f"- {role}: DESTRUCTIVE — permanently delete verified CTID {ctid} ({state}) and all DNS data, then create a clean replacement at {expected_ip}; no DNS-container backup; {other_role} remains in place")
+            else:
+                print(f"- {role}: reuse verified CTID {ctid} ({state}); verify its address is {expected_ip}")
         else:
-            print(f"- {role}: create CTID {ctid} with reserved address {expected_ip}")
+            suffix = " (selected for clean recreation; no existing container or data to delete)" if role == recreate_role else ""
+            print(f"- {role}: create CTID {ctid} with reserved address {expected_ip}{suffix}")
 
     hosted_zones = [item.strip().rstrip(".").lower() for item in values["DNS_HOSTED_ZONES"].split(",") if item.strip()]
     if len(hosted_zones) != len(set(hosted_zones)):
@@ -329,6 +371,7 @@ def main():
     arguments = sys.argv[1:]
     if arguments not in ([], ["--plan"]):
         raise RuntimeError("Usage: deploy-dns.py [--plan]")
+    recreate_role = selected_recreate_role()
     values = read_infisical()
     host = required("PROXMOX_HOST")
     if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
@@ -337,13 +380,13 @@ def main():
     stage = ""
     try:
         if arguments == ["--plan"]:
-            review_plan(client, values)
+            review_plan(client, values, recreate_role)
             return
         candidate_stage = remote(client, "umask 077; mktemp -d /tmp/homelab-dns-deploy.XXXXXX", timeout=30)
         if not re.fullmatch(r"/tmp/homelab-dns-deploy\.[A-Za-z0-9]{6}", candidate_stage):
             raise RuntimeError("Proxmox returned an unexpected temporary directory")
         stage = candidate_stage
-        provision(client, stage, values)
+        provision(client, stage, values, recreate_role)
     finally:
         if stage:
             try:

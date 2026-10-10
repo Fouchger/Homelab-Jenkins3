@@ -1,6 +1,14 @@
 pipeline {
     agent { label 'homelab-automation' }
 
+    parameters {
+        choice(
+            name: 'RECREATE_DNS_SERVER',
+            choices: ['none', 'dns01', 'dns02'],
+            description: 'Select at most one DNS server to replace with a clean container. Its existing DNS settings, zones, and records will be permanently deleted with no DNS-container backup; the other server will be reused. Default: none.'
+        )
+    }
+
     options {
         disableConcurrentBuilds()
         timestamps()
@@ -18,7 +26,10 @@ pipeline {
                     string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT'),
                     string(credentialsId: 'homelab-proxmox-host', variable: 'PROXMOX_HOST')
                 ]) {
-                    withEnv(['HOMELAB_REQUIRE_MIKROTIK_REVIEW=yes']) {
+                    withEnv([
+                        'HOMELAB_REQUIRE_MIKROTIK_REVIEW=yes',
+                        "HOMELAB_RECREATE_DNS_SERVER=${params.RECREATE_DNS_SERVER ?: 'none'}"
+                    ]) {
                         sh(label: 'Show read-only DNS deployment plan', script: '''#!/bin/sh
 set +x
 python3 jenkins/pipelines/dns-deploy/deploy-dns.py --plan
@@ -30,7 +41,7 @@ python3 jenkins/pipelines/network-settings/review-mikrotik-settings.py
         }
         stage('Approve DNS deployment') {
             steps {
-                input message: 'Review the DNS server plan and the MikroTik DNS/DHCP differences above. After approval, Jenkins creates or reuses both DNS servers and configures zone replication before backing up the router and syncing DHCP DNS. If the router backup or sync fails, DNS servers may already be updated while router DHCP remains unchanged. No services change before approval.', ok: 'Deploy DNS and sync router'
+                input message: "Review the DNS server plan and the MikroTik DNS/DHCP differences above. Recreate selection: ${params.RECREATE_DNS_SERVER ?: 'none'}. If dns01 or dns02 is selected, Jenkins will permanently delete that one matching managed container and all of its DNS data, with no DNS-container backup, then create a clean replacement; the other server stays in place. The normal encrypted MikroTik backup still runs before router changes. After recreation, Jenkins configures zone replication and syncs DHCP DNS. If recreation fails, the selected server may remain deleted; if the later router backup or sync fails, DNS servers may already be updated while router DHCP remains unchanged. No changes occur before approval.", ok: (params.RECREATE_DNS_SERVER == 'dns01' || params.RECREATE_DNS_SERVER == 'dns02') ? "Delete and recreate ${params.RECREATE_DNS_SERVER}" : 'Deploy DNS and sync router'
             }
         }
         stage('Create and configure DNS servers') {
@@ -42,10 +53,12 @@ python3 jenkins/pipelines/network-settings/review-mikrotik-settings.py
                     string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT'),
                     string(credentialsId: 'homelab-proxmox-host', variable: 'PROXMOX_HOST')
                 ]) {
-                    sh(label: 'Provision both DNS LXCs and configure Technitium', script: '''#!/bin/sh
+                    withEnv(["HOMELAB_RECREATE_DNS_SERVER=${params.RECREATE_DNS_SERVER ?: 'none'}"]) {
+                        sh(label: 'Provision both DNS LXCs and configure Technitium', script: '''#!/bin/sh
 set +x
 python3 jenkins/pipelines/dns-deploy/deploy-dns.py
 ''')
+                    }
                 }
             }
         }
