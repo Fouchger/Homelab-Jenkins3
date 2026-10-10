@@ -79,7 +79,14 @@ on the configuration script restoring SSH reachability over the Proxmox-linked
 private keys match, downloads the password-protected binary backup to a
 temporary agent file, verifies its size, and confirms the temporary router copy
 was removed. It also exports the current SSH server host key in encrypted form
-and imports that same key after reset, so the saved host-key pin remains valid.
+and imports that same key after reset. Before reset and again during recovery,
+Job 005 can verify the current SSH key through RouterOS REST over the saved
+`MIKROTIK_TLS_CERT_SHA256` pin, compare it with the key scanned at the router,
+and update `MIKROTIK_SSH_HOST_KEY` in Infisical. The saved SSH entry includes
+both the management hostname and recovery IP so the post-reset follow-up works
+through either address. This requires the existing Infisical writer credential
+and a RouterOS REST account with `sensitive`, `ftp`, and `write` policies. If
+the HTTPS certificate no longer matches its saved pin, Job 005 stops safely.
 A failed check stops before reset; the Jenkins artifact is retained when it was
 already downloaded. Job 006 provisions/configures dns01 and dns02
 before changing router DHCP DNS, so a router backup or sync failure can leave

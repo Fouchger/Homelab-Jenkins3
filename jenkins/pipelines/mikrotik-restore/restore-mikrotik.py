@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """Back up, reset, and restore RouterOS using the protected Infisical script."""
 
+import base64
+import hashlib
+import hmac
+import http.client
 import ipaddress
 import json
 import os
 import re
 import secrets
+import ssl
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -50,6 +56,218 @@ def api_json(url, method="GET", token=None, form=None, allow_404=False):
         raise RuntimeError("Infisical returned an invalid JSON response") from None
 
 
+def infisical_url(secret_path, name):
+    query = urllib.parse.urlencode({
+        "projectId": os.environ.get("INFISICAL_PROJECT_ID", "").strip(),
+        "environment": os.environ.get("INFISICAL_ENVIRONMENT", "").strip(),
+        "secretPath": secret_path,
+    })
+    base_url = os.environ.get("INFISICAL_URL", "").strip().rstrip("/")
+    return f"{base_url}/api/v4/secrets/{urllib.parse.quote(name)}?{query}"
+
+
+def save_verified_host_key(value, existed=True):
+    """Persist the host key only after matching SSH against the pinned HTTPS key."""
+    base_url = os.environ.get("INFISICAL_URL", "").strip().rstrip("/")
+    login = api_json(
+        f"{base_url}/api/v1/auth/universal-auth/login", method="POST",
+        form={
+            "clientId": os.environ.get("INFISICAL_WRITE_CLIENT_ID", ""),
+            "clientSecret": os.environ.get("INFISICAL_WRITE_CLIENT_SECRET", ""),
+        },
+    )
+    token = login.get("accessToken") if isinstance(login, dict) else None
+    if not isinstance(token, str) or not token:
+        raise RuntimeError("Infisical write identity did not authenticate to save the verified post-reset SSH host key")
+    url = infisical_url("/mikrotik/router01", "MIKROTIK_SSH_HOST_KEY")
+    body = json.dumps({
+        "projectId": os.environ.get("INFISICAL_PROJECT_ID", "").strip(),
+        "environment": os.environ.get("INFISICAL_ENVIRONMENT", "").strip(),
+        "secretPath": "/mikrotik/router01",
+        "secretValue": value,
+        "type": "shared",
+        "skipMultilineEncoding": True,
+    }).encode("utf-8")
+    request = urllib.request.Request(url, data=body, headers={
+        "Authorization": f"Bearer {token}", "Accept": "application/json",
+        "Content-Type": "application/json",
+    }, method="PATCH" if existed else "POST")
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            response.read()
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"Infisical could not save the verified post-reset SSH host key (HTTP {exc.code})") from None
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise RuntimeError(f"Infisical could not save the verified post-reset SSH host key ({type(exc).__name__})") from None
+    read_login = api_json(
+        f"{base_url}/api/v1/auth/universal-auth/login", method="POST",
+        form={
+            "clientId": os.environ.get("INFISICAL_READ_CLIENT_ID", ""),
+            "clientSecret": os.environ.get("INFISICAL_READ_CLIENT_SECRET", ""),
+        },
+    )
+    read_token = read_login.get("accessToken") if isinstance(read_login, dict) else None
+    if not isinstance(read_token, str) or not read_token:
+        raise RuntimeError("Infisical read identity did not authenticate to confirm the saved post-reset SSH host key")
+    saved = api_json(url, token=read_token)
+    saved_secret = saved.get("secret", {}) if isinstance(saved, dict) else {}
+    if not isinstance(saved_secret, dict) or saved_secret.get("secretValue") != value:
+        raise RuntimeError("Infisical did not confirm the verified post-reset SSH host key")
+
+
+def router_rest_request(host, tls_fingerprint, username, password, method, path, body=None):
+    """Call RouterOS REST only when the presented TLS certificate matches its saved pin."""
+    connection = http.client.HTTPSConnection(host, 443, timeout=12, context=ssl._create_unverified_context())
+    headers = {
+        "Authorization": "Basic " + base64.b64encode(f"{username}:{password}".encode()).decode("ascii"),
+        "Accept": "application/json",
+    }
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    try:
+        connection.connect()
+        peer = hashlib.sha256(connection.sock.getpeercert(binary_form=True)).hexdigest()
+        if not hmac.compare_digest(peer, tls_fingerprint):
+            raise RuntimeError("RouterOS HTTPS certificate does not match the saved TLS pin")
+        connection.request(method, "/rest/" + path, body=data, headers=headers)
+        response = connection.getresponse()
+        raw = response.read()
+        if response.status >= 400:
+            raise RuntimeError(f"RouterOS HTTPS REST request failed with HTTP {response.status}")
+        try:
+            return json.loads(raw.decode("utf-8")) if raw else {}
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise RuntimeError("RouterOS returned invalid JSON during post-reset SSH host-key verification") from None
+    except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+        raise RuntimeError(f"RouterOS HTTPS is not ready at the recovery address ({type(exc).__name__})") from None
+    finally:
+        connection.close()
+
+
+def router_ssh_host_key(host, tls_fingerprint, username, password, canonical_host, recovery_alias=""):
+    """Match the recovery address SSH scan with the public key from pinned REST."""
+    prefix = "jenkins_hostkey_" + secrets.token_hex(16)
+    files = []
+    export_completed = False
+    cleanup_error = False
+    try:
+        exported = router_rest_request(host, tls_fingerprint, username, password, "POST", "execute", {
+            "script": f"/ip/ssh/export-host-key key-file-prefix={prefix}", "as-string": "",
+        })
+        export_completed = True
+        for _ in range(8):
+            records = router_rest_request(host, tls_fingerprint, username, password, "GET", "file?.proplist=.id,name")
+            if not isinstance(records, list):
+                raise RuntimeError("RouterOS returned an invalid file list while verifying its SSH host key")
+            files = [item for item in records if isinstance(item, dict) and str(item.get("name", "")).startswith(prefix)]
+            if files:
+                break
+            time.sleep(1)
+        public_files = [item for item in files if str(item.get("name", "")).endswith("_pub.pem")]
+        if not public_files:
+            output = exported.get("ret", "") if isinstance(exported, dict) else ""
+            if re.search(r"permission|policy|not enough rights", str(output), re.IGNORECASE):
+                raise RuntimeError("RouterOS REST account lacks the sensitive policy needed to export the SSH host key")
+            raise RuntimeError("RouterOS did not provide its post-reset SSH public host key")
+        public_fingerprints = set()
+        for item in public_files:
+            file_id = item.get(".id")
+            if not file_id:
+                raise RuntimeError("RouterOS did not identify its post-reset SSH public host-key file")
+            record = router_rest_request(
+                host, tls_fingerprint, username, password, "GET",
+                "file/" + urllib.parse.quote(str(file_id), safe="*") + "?.proplist=contents",
+            )
+            contents = record.get("contents") if isinstance(record, dict) else None
+            if not isinstance(contents, str) or "BEGIN PUBLIC KEY" not in contents:
+                raise RuntimeError("RouterOS returned an unreadable post-reset SSH public host key")
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".pem", delete=True) as key_file:
+                key_file.write(contents)
+                key_file.flush()
+                converted = subprocess.run(
+                    ["ssh-keygen", "-i", "-m", "PKCS8", "-f", key_file.name],
+                    check=True, capture_output=True, text=True, timeout=20,
+                ).stdout.strip()
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".pub", delete=True) as key_file:
+                key_file.write(converted + "\n")
+                key_file.flush()
+                public_fingerprints.add(subprocess.run(
+                    ["ssh-keygen", "-lf", key_file.name, "-E", "sha256"],
+                    check=True, capture_output=True, text=True, timeout=20,
+                ).stdout.split()[1])
+
+        scanned = subprocess.run(
+            ["ssh-keyscan", "-T", "8", "-t", "ed25519,rsa,ecdsa", host],
+            check=False, capture_output=True, text=True, timeout=20,
+        )
+        if not any(line.strip() and not line.lstrip().startswith("#") for line in scanned.stdout.splitlines()):
+            raise RuntimeError("RouterOS SSH service is not ready at the recovery address")
+        for candidate in scanned.stdout.splitlines():
+            fields = candidate.strip().split(None, 2)
+            if len(fields) < 3 or fields[0].startswith("#"):
+                continue
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".pub", delete=True) as key_file:
+                key_file.write(candidate.strip() + "\n")
+                key_file.flush()
+                fingerprint = subprocess.run(
+                    ["ssh-keygen", "-lf", key_file.name, "-E", "sha256"],
+                    check=True, capture_output=True, text=True, timeout=20,
+                ).stdout.split()[1]
+            if fingerprint in public_fingerprints:
+                aliases = [canonical_host]
+                if recovery_alias and recovery_alias not in aliases:
+                    aliases.append(recovery_alias)
+                return f"{','.join(aliases)} {fields[1]} {fields[2]}"
+        raise RuntimeError("SSH key at the recovery address did not match the public key returned over pinned HTTPS")
+    finally:
+        if export_completed and not files:
+            try:
+                records = router_rest_request(host, tls_fingerprint, username, password, "GET", "file?.proplist=.id,name")
+                files = [item for item in records if isinstance(item, dict) and str(item.get("name", "")).startswith(prefix)] if isinstance(records, list) else []
+            except Exception:
+                cleanup_error = True
+        for item in files:
+            file_id = item.get(".id")
+            name = str(item.get("name", ""))
+            if not re.fullmatch(re.escape(prefix) + r"_[A-Za-z0-9_.-]+", name):
+                cleanup_error = True
+                continue
+            if file_id:
+                try:
+                    router_rest_request(host, tls_fingerprint, username, password, "DELETE", "file/" + urllib.parse.quote(str(file_id), safe="*"))
+                except Exception:
+                    try:
+                        router_rest_request(host, tls_fingerprint, username, password, "POST", "execute", {
+                            "script": f'/file/remove [find where name="{name}"]', "as-string": "",
+                        })
+                    except Exception:
+                        cleanup_error = True
+        if export_completed or files:
+            try:
+                remaining = router_rest_request(host, tls_fingerprint, username, password, "GET", "file?.proplist=.id,name")
+                if not isinstance(remaining, list) or any(
+                    isinstance(item, dict) and str(item.get("name", "")).startswith(prefix) for item in remaining
+                ):
+                    cleanup_error = True
+            except Exception:
+                cleanup_error = True
+        if cleanup_error:
+            raise RuntimeError("Could not remove and verify removal of temporary post-reset SSH host-key export files")
+
+
+def fetch_verified_host_key(primary_host, recovery_host, tls_fingerprint, username, password, canonical_host):
+    """Use the recovery IP only if the normal REST endpoint refuses port 443."""
+    try:
+        return router_ssh_host_key(primary_host, tls_fingerprint, username, password, canonical_host, recovery_host)
+    except RuntimeError as exc:
+        if (not recovery_host or recovery_host == primary_host
+                or "ConnectionRefusedError" not in str(exc)):
+            raise
+        print(f"HTTPS on MIKROTIK_HOST={primary_host} refused the connection; trying MIKROTIK_IP={recovery_host} with the same saved TLS pin.")
+        return router_ssh_host_key(recovery_host, tls_fingerprint, username, password, canonical_host, recovery_host)
+
+
 def load_settings():
     base_url = os.environ.get("INFISICAL_URL", "").strip().rstrip("/")
     if not base_url.startswith("https://"):
@@ -76,6 +294,7 @@ def load_settings():
             "MIKROTIK_HOST", "MIKROTIK_IP", "MIKROTIK_USERNAME", "MIKROTIK_PASSWORD",
             "MIKROTIK_BOOTSTRAP_USERNAME", "MIKROTIK_BOOTSTRAP_PASSWORD", "MIKROTIK_SSH_USER",
             "MIKROTIK_SSH_PRIVATE_KEY", "MIKROTIK_SSH_PUBLIC_KEY", "MIKROTIK_SSH_HOST_KEY",
+            "MIKROTIK_TLS_CERT_SHA256",
         ),
         "/mikrotik/backup": ("BINARY_BACKUP_PASSWORD",),
     }.items():
@@ -142,7 +361,8 @@ def known_host_key(value, host):
     if len(lines) != 1:
         raise RuntimeError("MIKROTIK_SSH_HOST_KEY must contain one independently verified known_hosts entry")
     fields = lines[0].split()
-    if len(fields) < 3 or fields[0] != host or not fields[1].startswith("ssh-"):
+    aliases = fields[0].split(",") if fields else []
+    if len(fields) < 3 or host not in aliases or not fields[1].startswith("ssh-"):
         raise RuntimeError("MIKROTIK_SSH_HOST_KEY does not match MIKROTIK_HOST")
     entry = HostKeyEntry.from_line(" ".join(fields))
     if entry is None:
@@ -180,6 +400,25 @@ def connect(host, user, host_key, *, password=None, key_filename=None, timeout=1
         client.close()
         raise RuntimeError("MikroTik SSH is not reachable or its SSH handshake did not complete") from None
     return client
+
+
+def connect_router(primary_host, recovery_host, user, host_key, *, password=None, key_filename=None, timeout=15):
+    """Try the normal management name, then the configured recovery address for reachability."""
+    hosts = [primary_host]
+    if recovery_host and recovery_host != primary_host:
+        hosts.append(recovery_host)
+    last_error = None
+    for index, host in enumerate(hosts):
+        try:
+            return connect(host, user, host_key, password=password, key_filename=key_filename, timeout=timeout)
+        except RuntimeError as exc:
+            last_error = exc
+            detail = str(exc).lower()
+            if "host key did not match" in detail or "rejected the configured ssh username" in detail:
+                raise
+            if index == len(hosts) - 1:
+                raise
+    raise last_error or RuntimeError("MikroTik SSH is not reachable")
 
 
 def command(client, value, *, allow_disconnect=False):
@@ -341,8 +580,7 @@ def preserve_router_host_key(client, remote_dir, build_number, key_type):
     return target_name, passphrase
 
 
-def verify_and_reconnect(address, ssh_user, key_file, host_key, marker, deadline):
-    pin = (host_key[0], host_key[1])
+def verify_and_reconnect(address, canonical_host, ssh_user, key_file, tls_fingerprint, rest_user, rest_password, marker, deadline):
     last_error = "Router has not returned yet"
     next_status = time.monotonic()
     attempts = 0
@@ -350,7 +588,14 @@ def verify_and_reconnect(address, ssh_user, key_file, host_key, marker, deadline
         attempts += 1
         client = None
         try:
-            client = connect(address, ssh_user, pin, key_filename=key_file, timeout=8)
+            host_key_line = router_ssh_host_key(
+                address, tls_fingerprint, rest_user, rest_password, canonical_host, address,
+            )
+            save_verified_host_key(host_key_line, bool(values.get("MIKROTIK_SSH_HOST_KEY", "")))
+            values["MIKROTIK_SSH_HOST_KEY"] = host_key_line
+            host_key = known_host_key(host_key_line, canonical_host)
+            print("Post-reset SSH host key matched the key returned over the pinned HTTPS connection and was saved to Infisical.")
+            client = connect(address, ssh_user, host_key, key_filename=key_file, timeout=8)
             command(client, "/system/resource/get version")
             command(client, "/ip/address/print")
             marker_count = command(client, f"/log/print count-only where message={ros_quote(marker)}").strip()
@@ -368,11 +613,20 @@ def verify_and_reconnect(address, ssh_user, key_file, host_key, marker, deadline
                     client.close()
                 except Exception:
                     pass
+            if any(marker in last_error.lower() for marker in (
+                "does not match the saved tls pin",
+                "did not match the public key returned over pinned https",
+                "http 401",
+                "http 403",
+                "infisical could not save",
+                "infisical did not confirm",
+            )):
+                raise RuntimeError(f"Post-reset SSH host-key trust update stopped safely: {last_error}") from None
             time.sleep(15)
         if time.monotonic() >= next_status:
             print(f"Waiting for MikroTik recovery at {address}: SSH not ready yet (attempt {attempts}; last status: {last_error}).")
             next_status = time.monotonic() + 60
-    raise RuntimeError(f"Reset was initiated but the router did not return with verified key access at MIKROTIK_IP={address} before the recovery timeout. Check the Proxmox-connected ether2 link, script log on the router, and pinned host key. Last safe status: {last_error}")
+    raise RuntimeError(f"Reset was initiated but the router did not return with verified HTTPS and SSH access at MIKROTIK_IP={address} before the recovery timeout. Check the Proxmox-connected ether2 link, ensure www-ssl serves the saved TLS certificate, and check the script log on the router. Last safe status: {last_error}")
 
 
 def main():
@@ -390,6 +644,9 @@ def main():
         raise RuntimeError("MikroTik usernames must contain only letters, digits, underscore, period, or hyphen")
     bootstrap_password = required(values, "MIKROTIK_BOOTSTRAP_PASSWORD")
     admin_password = required(values, "MIKROTIK_PASSWORD")
+    tls_fingerprint = required(values, "MIKROTIK_TLS_CERT_SHA256").lower().replace(":", "").strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", tls_fingerprint):
+        raise RuntimeError("MIKROTIK_TLS_CERT_SHA256 must be a 64-character SHA-256 fingerprint before Job 005 can verify or update SSH host keys")
     backup_password = required(values, "BINARY_BACKUP_PASSWORD")
     if any(len(value) < 8 for value in (bootstrap_password, admin_password, backup_password)):
         raise RuntimeError("MikroTik bootstrap, admin, and backup passwords must each be at least 8 characters")
@@ -398,7 +655,11 @@ def main():
     script = verify_config_script(required(values, "MIKROTIK_SCRIPT"), address)
     if not private_key.startswith("-----BEGIN OPENSSH PRIVATE KEY-----") or not public_key.startswith("ssh-ed25519 "):
         raise RuntimeError("Run Job 003 first to generate the MikroTik Ed25519 SSH client key pair")
-    host_key = known_host_key(required(values, "MIKROTIK_SSH_HOST_KEY"), current_host)
+    saved_host_key = values.get("MIKROTIK_SSH_HOST_KEY", "").strip()
+    try:
+        host_key = known_host_key(saved_host_key, current_host) if saved_host_key else None
+    except RuntimeError:
+        host_key = None
     if any(char in value for value in (backup_password, admin_password, bootstrap_password) for char in "\r\n\0"):
         raise RuntimeError("MikroTik passwords must not contain line breaks or NUL characters")
 
@@ -419,7 +680,28 @@ def main():
             or saved_private_key.get_base64() != public_key_fields[1]
         ):
             raise RuntimeError("Saved MikroTik SSH public and private keys do not match; reset was not started")
-        client = connect(current_host, bootstrap_user, host_key, password=bootstrap_password)
+        stale_host_key = host_key is None
+        if host_key is not None:
+            try:
+                client = connect_router(current_host, address, bootstrap_user, host_key, password=bootstrap_password)
+            except RuntimeError as exc:
+                if "host key did not match" not in str(exc).lower():
+                    raise
+                stale_host_key = True
+        if stale_host_key:
+            current_host_key = fetch_verified_host_key(
+                current_host, address, tls_fingerprint, admin_user, admin_password, current_host,
+            )
+            host_key = known_host_key(current_host_key, current_host)
+            if check_only:
+                print("Readiness check passed: HTTPS verified the current SSH host key against the saved TLS certificate pin.")
+                print("After approval, Job 005 will save this verified key to Infisical and confirm SSH access before creating the backup or resetting the router.")
+                print(f"Recovery address: {address} over the configured Proxmox-connected ether2 path.")
+                return
+            save_verified_host_key(current_host_key, bool(saved_host_key))
+            values["MIKROTIK_SSH_HOST_KEY"] = current_host_key
+            print("Updated the saved MikroTik SSH host key in Infisical after verifying it through the pinned HTTPS connection.")
+            client = connect_router(current_host, address, bootstrap_user, host_key, password=bootstrap_password)
         if check_only:
             resource = command(client, "/system/resource print")
             version = re.search(r"(?im)^version:\s*(\S+)", resource)
@@ -468,7 +750,10 @@ def main():
         # RouterOS reset, first boot, and configuration import can take
         # several minutes. Keep polling well beyond the usual restart window.
         deadline = time.monotonic() + 30 * 60
-        verify_and_reconnect(address, ssh_user, str(key_path), host_key, marker, deadline)
+        verify_and_reconnect(
+            address, current_host, ssh_user, str(key_path), tls_fingerprint,
+            admin_user, admin_password, marker, deadline,
+        )
         # Apply Infisical-managed DNS/DHCP mode and Wi-Fi passphrases over the
         # restored key-authenticated connection, with its own encrypted backup.
         followup_env = os.environ.copy()

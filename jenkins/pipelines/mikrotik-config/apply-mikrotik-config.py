@@ -273,7 +273,8 @@ def ssh_host_key(value, host):
     if len(lines) != 1:
         raise RuntimeError("MIKROTIK_SSH_HOST_KEY must contain one pinned known_hosts entry")
     fields = lines[0].split()
-    if len(fields) < 3 or fields[0] != host or not fields[1].startswith("ssh-"):
+    aliases = fields[0].split(",") if fields else []
+    if len(fields) < 3 or host not in aliases or not fields[1].startswith("ssh-"):
         raise RuntimeError("MIKROTIK_SSH_HOST_KEY does not match MIKROTIK_HOST")
     entry = HostKeyEntry.from_line(" ".join(fields))
     if entry is None:
