@@ -78,8 +78,10 @@ on the configuration script restoring SSH reachability over the Proxmox-linked
 `ether2` path. Before reset, Job 005 checks that the saved Ed25519 public and
 private keys match, downloads the password-protected binary backup to a
 temporary agent file, verifies its size, and confirms the temporary router copy
-was removed. It also exports the current SSH server host key in encrypted form
-and imports that same key after reset. Before reset and again during recovery,
+was removed. It also exports the current SSH server host key and the certificate
+assigned to `www-ssl` in encrypted form, then restores both after reset and
+enables `www-ssl` on port 443 while retaining its source address restrictions.
+Before reset and again during recovery,
 Job 005 can verify the current SSH key through RouterOS REST over the saved
 `MIKROTIK_TLS_CERT_SHA256` pin, compare it with the key scanned at the router,
 and update `MIKROTIK_SSH_HOST_KEY` in Infisical. The saved SSH entry includes

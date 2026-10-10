@@ -268,6 +268,20 @@ def fetch_verified_host_key(primary_host, recovery_host, tls_fingerprint, userna
         return router_ssh_host_key(recovery_host, tls_fingerprint, username, password, canonical_host, recovery_host)
 
 
+def verify_router_rest(primary_host, recovery_host, tls_fingerprint, username, password):
+    """Require live REST on the pinned identity before starting a destructive reset."""
+    try:
+        router_rest_request(primary_host, tls_fingerprint, username, password, "GET", "system/resource")
+        return primary_host
+    except RuntimeError as exc:
+        if (not recovery_host or recovery_host == primary_host
+                or "ConnectionRefusedError" not in str(exc)):
+            raise
+        print(f"HTTPS on MIKROTIK_HOST={primary_host} refused the connection; checking MIKROTIK_IP={recovery_host} with the same saved TLS pin.")
+        router_rest_request(recovery_host, tls_fingerprint, username, password, "GET", "system/resource")
+        return recovery_host
+
+
 def load_settings():
     base_url = os.environ.get("INFISICAL_URL", "").strip().rstrip("/")
     if not base_url.startswith("https://"):
@@ -512,7 +526,7 @@ def upload_text(client, remote_name, content):
         sftp.close()
 
 
-def build_wrapper(config_path, wrapper_path, host_key_path, host_key_passphrase, marker, admin_user, admin_password, ssh_user, ssh_public_key):
+def build_wrapper(config_path, wrapper_path, host_key_path, host_key_passphrase, https_cert_path, https_cert_passphrase, https_cert_name, https_allowed_addresses, marker, admin_user, admin_password, ssh_user, ssh_public_key):
     lines = [":delay 10s"]
     user = ros_quote(admin_user)
     password = ros_quote(admin_password)
@@ -523,6 +537,9 @@ def build_wrapper(config_path, wrapper_path, host_key_path, host_key_passphrase,
     lines.extend((
         f"/user ssh-keys add user={ros_quote(ssh_user)} key={ros_quote(ssh_public_key)}",
         f"/import file-name={config_path} verbose=yes",
+        f"/certificate import file-name={https_cert_path} name={ros_quote(https_cert_name)} passphrase={ros_quote(https_cert_passphrase)}",
+        f"/file/remove [find where name={ros_quote(https_cert_path.rsplit('/', 1)[-1])}]",
+        f"/ip/service/set [find where name=\"www-ssl\"] certificate={ros_quote(https_cert_name)} port=443 address={ros_quote(https_allowed_addresses)} disabled=no",
         f"/ip/ssh/import-host-key private-key-file={ros_quote(host_key_path)} passphrase={ros_quote(host_key_passphrase)}",
         f"/file/remove [find where name={ros_quote(host_key_path)}]",
         *(['/user disable [find where name="admin"]'] if admin_user != "admin" else []),
@@ -580,6 +597,70 @@ def preserve_router_host_key(client, remote_dir, build_number, key_type):
     return target_name, passphrase
 
 
+def preserve_router_https_certificate(client, remote_dir, build_number):
+    """Stage the current www-ssl certificate and private key for the post-reset REST recovery."""
+    details = command(client, "/ip/service/print detail where name=www-ssl")
+
+    def property_value(name):
+        match = re.search(rf'(?m)(?:^|\s){re.escape(name)}=(?:"((?:\\.|[^"])*)"|(\S+))', details)
+        if not match:
+            return ""
+        return (match.group(1) if match.group(1) is not None else match.group(2)).replace('\\"', '"').replace('\\\\', '\\')
+
+    certificate_name = property_value("certificate")
+    if certificate_name.lower() in ("", "none"):
+        raise RuntimeError("www-ssl has no assigned certificate; Job 005 cannot preserve the pinned HTTPS identity, so reset was not started")
+    allowed_addresses = property_value("address")
+    prefix = f"homelab-restore-https-{build_number}-{secrets.token_hex(4)}"
+    exported_name = prefix + ".p12"
+    passphrase = secrets.token_urlsafe(32)
+    local_path = None
+    remote_path = remote_dir + exported_name
+    try:
+        command(
+            client,
+            f"/certificate/export-certificate {ros_quote(certificate_name)} type=pkcs12 export-passphrase={ros_quote(passphrase)} file-name={ros_quote(prefix)}",
+        )
+        sftp = client.open_sftp()
+        try:
+            entries = set(sftp.listdir("."))
+            if exported_name not in entries:
+                raise RuntimeError("RouterOS did not create the encrypted www-ssl certificate export")
+            remote_stat = sftp.stat(exported_name)
+            if remote_stat.st_size <= 0:
+                raise RuntimeError("RouterOS created an empty www-ssl certificate export")
+            with tempfile.NamedTemporaryFile(prefix="mikrotik-https-cert-", suffix=".p12", delete=False) as temp_file:
+                local_path = Path(temp_file.name)
+            os.chmod(local_path, 0o600)
+            sftp.get(exported_name, str(local_path))
+            if local_path.stat().st_size != remote_stat.st_size:
+                raise RuntimeError("Downloaded www-ssl certificate export did not match the RouterOS file size")
+            command(client, f"/file/remove [find where name={ros_quote(exported_name)}]")
+            if exported_name in set(sftp.listdir(".")):
+                raise RuntimeError("RouterOS did not remove the temporary www-ssl certificate export")
+            with sftp.file(remote_path, "wb") as target, local_path.open("rb") as source:
+                target.write(source.read())
+                target.flush()
+            sftp.chmod(remote_path, 0o600)
+            if sftp.stat(remote_path).st_size != remote_stat.st_size:
+                raise RuntimeError("Staged www-ssl certificate size did not match the encrypted export")
+        finally:
+            sftp.close()
+    except Exception:
+        try:
+            command(client, f"/file/remove [find where name={ros_quote(exported_name)}]")
+        except Exception:
+            pass
+        raise RuntimeError("Could not securely preserve the www-ssl certificate; reset was not started") from None
+    finally:
+        if local_path:
+            try:
+                local_path.unlink()
+            except OSError:
+                pass
+    return remote_path, passphrase, f"homelab-restore-https-{build_number}", allowed_addresses
+
+
 def verify_and_reconnect(address, canonical_host, ssh_user, key_file, tls_fingerprint, rest_user, rest_password, marker, deadline):
     last_error = "Router has not returned yet"
     next_status = time.monotonic()
@@ -591,8 +672,7 @@ def verify_and_reconnect(address, canonical_host, ssh_user, key_file, tls_finger
             host_key_line = router_ssh_host_key(
                 address, tls_fingerprint, rest_user, rest_password, canonical_host, address,
             )
-            save_verified_host_key(host_key_line, bool(values.get("MIKROTIK_SSH_HOST_KEY", "")))
-            values["MIKROTIK_SSH_HOST_KEY"] = host_key_line
+            save_verified_host_key(host_key_line, existed=True)
             host_key = known_host_key(host_key_line, canonical_host)
             print("Post-reset SSH host key matched the key returned over the pinned HTTPS connection and was saved to Infisical.")
             client = connect(address, ssh_user, host_key, key_filename=key_file, timeout=8)
@@ -702,6 +782,8 @@ def main():
             values["MIKROTIK_SSH_HOST_KEY"] = current_host_key
             print("Updated the saved MikroTik SSH host key in Infisical after verifying it through the pinned HTTPS connection.")
             client = connect_router(current_host, address, bootstrap_user, host_key, password=bootstrap_password)
+        https_endpoint = verify_router_rest(current_host, address, tls_fingerprint, admin_user, admin_password)
+        print(f"RouterOS HTTPS REST is available at {https_endpoint} and matches the saved TLS certificate pin.")
         if check_only:
             resource = command(client, "/system/resource print")
             version = re.search(r"(?im)^version:\s*(\S+)", resource)
@@ -726,17 +808,22 @@ def main():
             sftp.close()
         config_path = remote_dir + config_name
         wrapper_path = remote_dir + wrapper_name
+        upload_text(client, config_path, script)
+        command(client, f"/import file-name={config_path} verbose=yes dry-run")
+        print("RouterOS dry-run accepted the complete configuration script.")
         host_key_path, host_key_passphrase = preserve_router_host_key(
             client, remote_dir, build_number, host_key[0]
         )
+        https_cert_path, https_cert_passphrase, https_cert_name, https_allowed_addresses = preserve_router_https_certificate(
+            client, remote_dir, build_number,
+        )
+        print("Encrypted www-ssl certificate staged for recovery; Job 005 will restore HTTPS before refreshing the SSH host-key pin.")
         wrapper = build_wrapper(
             config_path, wrapper_path, host_key_path, host_key_passphrase,
+            https_cert_path, https_cert_passphrase, https_cert_name, https_allowed_addresses,
             marker, admin_user, admin_password, ssh_user, public_key,
         )
-        upload_text(client, config_path, script)
         upload_text(client, wrapper_path, wrapper)
-        command(client, f"/import file-name={config_path} verbose=yes dry-run")
-        print("RouterOS dry-run accepted the complete configuration script.")
 
         # Save a one-shot RouterOS script which performs the reset from script
         # context (avoids an interactive confirmation prompt on SSH exec).

@@ -26,7 +26,7 @@ python3 jenkins/pipelines/mikrotik-restore/restore-mikrotik.py --check
         }
         stage('Approve destructive full reset') {
             steps {
-                input message: 'DESTRUCTIVE RECOVERY: this erases the MikroTik configuration and interrupts the router connection. Jenkins checked the saved script and verified SSH access or verified the current SSH key through the pinned HTTPS certificate. After approval, it will save an encrypted backup, preserve the SSH key, run a RouterOS dry-run, reset the router, then refresh the SSH host-key pin in Infisical over the same pinned HTTPS identity before verifying recovery at MIKROTIK_IP over ether2. Use only when the separate recovery action is intended.', ok: 'I understand — back up, reset, and restore'
+                input message: 'DESTRUCTIVE RECOVERY: this erases the MikroTik configuration and interrupts the router connection. Jenkins checked the saved script, verified HTTPS against its saved certificate pin, and verified SSH access or the current SSH key through pinned HTTPS. After approval, it will save an encrypted backup, preserve the HTTPS certificate and SSH key, run a RouterOS dry-run, reset the router, restore www-ssl, then refresh the SSH host-key pin in Infisical over the same pinned HTTPS identity before verifying recovery at MIKROTIK_IP over ether2. Use only when the separate recovery action is intended.', ok: 'I understand — back up, reset, and restore'
             }
         }
         stage('Back up, reset, and restore MikroTik') {
