@@ -186,18 +186,45 @@ def rest_record_id(record):
     return urllib.parse.quote(identifier, safe="*")
 
 
+def normalize_ssh_fingerprint(value):
+    fingerprint = str(value or "").strip().rstrip("=")
+    return fingerprint if fingerprint.startswith("SHA256:") else "SHA256:" + fingerprint
+
+
 def ensure_ssh_key(router, username, public_key):
     fields = public_key.strip().split()
     if len(fields) < 3 or fields[0] != "ssh-ed25519":
         raise RuntimeError("MIKROTIK_SSH_PUBLIC_KEY must be the generated Ed25519 public key from Job 003")
+    try:
+        key_blob = base64.b64decode(fields[1], validate=True)
+    except (ValueError, base64.binascii.Error):
+        raise RuntimeError("MIKROTIK_SSH_PUBLIC_KEY is not a valid OpenSSH public key") from None
+    fingerprint = "SHA256:" + base64.b64encode(hashlib.sha256(key_blob).digest()).decode("ascii").rstrip("=")
     comment = " ".join(fields[2:])
-    path = "user/ssh-keys?.proplist=.id,user,info,key-type,bits"
+    users = router.call("user?.proplist=name,group,disabled")
+    if not isinstance(users, list):
+        raise RuntimeError("RouterOS returned an invalid user list while checking the SSH backup account")
+    account = next((row for row in users if isinstance(row, dict) and row.get("name") == username), None)
+    if not account:
+        raise RuntimeError("MIKROTIK_SSH_USER does not exist on RouterOS; create a dedicated backup user before running Job 004")
+    if account.get("disabled") == "true":
+        raise RuntimeError("MIKROTIK_SSH_USER is disabled on RouterOS")
+    group_name = account.get("group", "")
+    groups = router.call("user/group?.proplist=name,policy")
+    group = next((row for row in groups if isinstance(row, dict) and row.get("name") == group_name), None) if isinstance(groups, list) else None
+    policies = {item.strip().lower() for item in str(group.get("policy", "")).split(",")
+                if item.strip() and not item.strip().startswith("!")} if group else set()
+    if "ssh" not in policies:
+        raise RuntimeError(f"MIKROTIK_SSH_USER group '{group_name}' does not allow SSH login; enable the ssh policy or assign a dedicated SSH backup group")
+
+    path = "user/ssh-keys?.proplist=.id,user,info,key-type,bits,fingerprint"
     rows = router.call(path)
     if not isinstance(rows, list):
         raise RuntimeError("RouterOS returned an invalid SSH key list")
     matches = [row for row in rows if isinstance(row, dict)
                and row.get("user") == username and row.get("info") == comment
-               and row.get("key-type") == "ed25519" and row.get("bits") == "256"]
+               and row.get("key-type") == "ed25519" and row.get("bits") == "256"
+               and normalize_ssh_fingerprint(row.get("fingerprint")) == fingerprint]
     if matches:
         return
     try:
@@ -213,9 +240,10 @@ def ensure_ssh_key(router, username, public_key):
     if not isinstance(rows, list) or not any(
         isinstance(row, dict) and row.get("user") == username and row.get("info") == comment
         and row.get("key-type") == "ed25519" and row.get("bits") == "256"
+        and normalize_ssh_fingerprint(row.get("fingerprint")) == fingerprint
         for row in rows
     ):
-        raise RuntimeError("RouterOS did not confirm Jenkins SSH key authorization")
+        raise RuntimeError("RouterOS did not confirm the exact Jenkins SSH key fingerprint for the backup user")
 
 
 def ssh_host_key(value, host):
@@ -249,9 +277,15 @@ def connect_ssh(host, username, host_key, private_key):
             banner_timeout=15, auth_timeout=15,
         )
         return client
+    except paramiko.AuthenticationException:
+        client.close()
+        raise RuntimeError("RouterOS rejected the Jenkins SSH key; verify the key fingerprint is authorized for MIKROTIK_SSH_USER and the user's group allows SSH login") from None
+    except paramiko.BadHostKeyException:
+        client.close()
+        raise RuntimeError("RouterOS SSH host key does not match the saved MIKROTIK_SSH_HOST_KEY pin") from None
     except Exception:
         client.close()
-        raise RuntimeError("Could not authenticate to MikroTik over SSH using the pinned host key and saved Jenkins key") from None
+        raise RuntimeError("Could not connect to MikroTik over SSH; check port 22 reachability and RouterOS SSH service settings") from None
     finally:
         if key_path:
             try:
