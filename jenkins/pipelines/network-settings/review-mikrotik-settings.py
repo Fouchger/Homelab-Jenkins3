@@ -62,7 +62,7 @@ def infisical_values():
     result = {}
     paths = {
         "/mikrotik/router01": (
-            "MIKROTIK_HOST", "MIKROTIK_USERNAME", "MIKROTIK_PASSWORD",
+            "MIKROTIK_HOST", "MIKROTIK_IP", "MIKROTIK_USERNAME", "MIKROTIK_PASSWORD",
             "MIKROTIK_BOOTSTRAP_USERNAME", "MIKROTIK_BOOTSTRAP_PASSWORD",
             "MIKROTIK_TLS_CERT_SHA256", "MIKROTIK_SSH_USER", "MIKROTIK_SSH_PRIVATE_KEY",
             "MIKROTIK_SSH_PUBLIC_KEY", "MIKROTIK_SSH_HOST_KEY",
@@ -96,6 +96,7 @@ def infisical_values():
 class RouterREST:
     def __init__(self, values):
         self.host = values.get("MIKROTIK_HOST", "").strip()
+        self.fallback_host = values.get("MIKROTIK_IP", "").strip()
         self.fingerprint = values.get("MIKROTIK_TLS_CERT_SHA256", "").lower().replace(":", "").strip()
         self.username = values.get("MIKROTIK_USERNAME", "").strip()
         self.password = values.get("MIKROTIK_PASSWORD", "")
@@ -111,29 +112,37 @@ class RouterREST:
         self.auth = "Basic " + base64.b64encode(f"{self.username}:{self.password}".encode()).decode("ascii")
 
     def get(self, path):
-        connection = http.client.HTTPSConnection(
-            self.host, 443, timeout=20, context=ssl._create_unverified_context(),
-        )
-        try:
-            connection.connect()
-            peer = hashlib.sha256(connection.sock.getpeercert(binary_form=True)).hexdigest()
-            if not hmac.compare_digest(peer, self.fingerprint):
-                raise RuntimeError("Router HTTPS certificate does not match the saved trust pin")
-            connection.request("GET", "/rest/" + path, headers={
-                "Authorization": self.auth, "Accept": "application/json",
-            })
-            response = connection.getresponse()
-            raw = response.read()
-            if response.status >= 400:
-                raise RuntimeError(f"RouterOS read request failed with HTTP {response.status}; response was suppressed")
+        endpoints = [self.host]
+        if self.fallback_host and self.fallback_host != self.host:
+            endpoints.append(self.fallback_host)
+        for index, endpoint in enumerate(endpoints):
+            connection = http.client.HTTPSConnection(
+                endpoint, 443, timeout=20, context=ssl._create_unverified_context(),
+            )
             try:
-                return json.loads(raw.decode("utf-8")) if raw else {}
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                raise RuntimeError("RouterOS returned invalid JSON") from None
-        except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
-            raise RuntimeError(f"Router HTTPS connection failed ({type(exc).__name__})") from None
-        finally:
-            connection.close()
+                connection.connect()
+                peer = hashlib.sha256(connection.sock.getpeercert(binary_form=True)).hexdigest()
+                if not hmac.compare_digest(peer, self.fingerprint):
+                    raise RuntimeError("Router HTTPS certificate does not match the saved trust pin")
+                connection.request("GET", "/rest/" + path, headers={
+                    "Authorization": self.auth, "Accept": "application/json",
+                })
+                response = connection.getresponse()
+                raw = response.read()
+                if response.status >= 400:
+                    raise RuntimeError(f"RouterOS read request failed with HTTP {response.status}; response was suppressed")
+                try:
+                    return json.loads(raw.decode("utf-8")) if raw else {}
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    raise RuntimeError("RouterOS returned invalid JSON") from None
+            except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+                if index == 0 and len(endpoints) > 1 and isinstance(exc, ConnectionRefusedError):
+                    print(f"HTTPS on MIKROTIK_HOST={self.host} refused the connection; trying MIKROTIK_IP={self.fallback_host} with the same saved certificate pin.")
+                    continue
+                raise RuntimeError(f"Router HTTPS connection failed at {endpoint} ({type(exc).__name__})") from None
+            finally:
+                connection.close()
+        raise RuntimeError(f"Router HTTPS connection failed at MIKROTIK_HOST={self.host} and MIKROTIK_IP={self.fallback_host}; no router changes were made")
 
 
 def valid_ipv4(value, name):

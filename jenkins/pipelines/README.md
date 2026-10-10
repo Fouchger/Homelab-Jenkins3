@@ -12,8 +12,8 @@ Proxmox host-side LXC creation/profile scripts remain in `../../proxmox_helper_s
 | `proxmox-access/Jenkinsfile` | Job `002 - Proxmox Access Setup`: manually rotates the Proxmox API token and writes it to Infisical. |
 | `proxmox-access/provision-proxmox-access.py` | Infisical API and SSH helper called by the Proxmox access pipeline. |
 | `network-settings/Jenkinsfile` | Job `003 - DNS and Cloudflare Settings`: collects editable settings, stores them in Infisical, verifies the saved pinned RouterOS connection, and reviews managed router settings without applying changes. |
-| `network-settings/save-network-settings.py` | Validates, writes, verifies, and rolls back operator-entered DNS, MikroTik, Cloudflare, and DockFlare settings. It generates a missing MikroTik Ed25519 client key and saves a scanned RouterOS host key only after its fingerprint matches the operator-supplied pin. |
-| `network-settings/review-mikrotik-settings.py` | Reads router settings from Infisical, checks the RouterOS HTTPS certificate pin and REST login, verifies SSH backup prerequisites are present, and compares current DNS/DHCP/Wi-Fi configuration with saved settings. It is read-only and reports missing prerequisites and planned differences. |
+| `network-settings/save-network-settings.py` | Validates, writes, verifies, and rolls back operator-entered DNS, MikroTik, Cloudflare, and DockFlare settings. It can use the saved `MIKROTIK_IP` as a fallback only when `MIKROTIK_HOST:443` refuses connections, still requiring the same HTTPS certificate pin. It saves a scanned RouterOS host key only after it matches the public key fetched over pinned HTTPS and all temporary export files are removed. |
+| `network-settings/review-mikrotik-settings.py` | Reads router settings from Infisical, checks the RouterOS HTTPS certificate pin and REST login, verifies SSH backup prerequisites are present, and compares current DNS/DHCP/Wi-Fi configuration with saved settings. If `MIKROTIK_HOST:443` refuses, it can try `MIKROTIK_IP` with the same pin. It is read-only and reports missing prerequisites and planned differences. |
 | `mikrotik-config/Jenkinsfile` | Job `004 - MikroTik Configuration`: verifies the router and displays the planned DNS, DHCP, and supplied Wi-Fi changes before approval; then backs up the router and applies the approved routine changes. |
 | `mikrotik-config/apply-mikrotik-config.py` | Reads router settings from Infisical, creates text and binary pre-change backups over pinned SSH/SFTP, encrypts the combined archive on the agent, removes router-side temporary files, then applies and verifies DNS/DHCP/Wi-Fi changes through pinned HTTPS REST. |
 | `mikrotik-restore/Jenkinsfile` | Job `005 - MikroTik Full Reset and Restore`: a separate destructive recovery action; verifies saved settings and pinned SSH access before asking for approval. |
@@ -47,8 +47,12 @@ emails, and DockFlare management CIDRs have no repository defaults.
 Routine RouterOS changes require `MIKROTIK_TLS_CERT_SHA256` in
 `/mikrotik/router01`, plus the dedicated REST account in `MIKROTIK_USERNAME`
 and `MIKROTIK_PASSWORD`. Job 003 checks the entered certificate fingerprint
-against the live certificate before saving it. `www-ssl` must be enabled on
-RouterOS. Job 004 also uses `MIKROTIK_SSH_USER`, `MIKROTIK_SSH_PRIVATE_KEY`, and
+against the live certificate before saving it and requires the REST account's
+`ftp` and `write` policies to remove and verify removal of temporary host-key
+export files. RouterOS REST requires `www-ssl` or `www` to be enabled; Job 003
+can fall back to the configured `MIKROTIK_IP` only when the management host
+refuses port 443 and only when the same saved HTTPS certificate pin matches.
+Job 004 also uses `MIKROTIK_SSH_USER`, `MIKROTIK_SSH_PRIVATE_KEY`, and
 the independently verified `MIKROTIK_SSH_HOST_KEY` for the pre-change backup.
 Its SSH account must have `ssh`, `read`, `write`, `ftp`, and `sensitive`
 permissions. After approval, Job 004 enables `ssh` for the account's group only
