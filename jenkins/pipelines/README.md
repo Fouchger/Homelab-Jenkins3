@@ -57,7 +57,12 @@ protected binary backup and a sensitive text export, downloads both over SFTP,
 encrypts them together on the Jenkins agent with `BINARY_BACKUP_PASSWORD`, and
 removes their temporary router copies before applying settings. The resulting
 `.tar.enc` build artifact contains both backup formats; protect it and its
-password. The REST account needs `api`, `rest-api`, `read`, and `write` for
+password. Jenkins archives the file on the controlplane under
+`/var/lib/jenkins/jobs/<job-name>/builds/<build-number>/archive/artifacts/<build-number>/`;
+it is also downloadable from the build's **Artifacts** section. Jobs 004 and
+006 currently retain the latest 20 builds, so older archived backups are
+removed when Jenkins discards those builds. The REST account needs `api`,
+`rest-api`, `read`, and `write` for
 router review and configuration operations; it also needs `policy` to authorize
 the SSH key for its RouterOS user. Update saved pins after certificate or SSH
 host-key rotation.
