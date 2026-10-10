@@ -5,6 +5,7 @@ import ipaddress
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import time
@@ -197,24 +198,60 @@ def save_backup(client, password):
     artifact_dir = Path("artifacts") / build_number
     artifact_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(artifact_dir, 0o700)
-    name = f"homelab-router-before-reset-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.backup"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    name = f"homelab-router-before-reset-{build_number}-{stamp}-{secrets.token_hex(4)}.backup"
+    final_path = artifact_dir / name
+    temporary_path = artifact_dir / (name + ".part")
     command(client, f"/system/backup/save name={name} password={ros_quote(password)}")
+    download_failed = False
     try:
         sftp = client.open_sftp()
         try:
             try:
-                sftp.get("/" + name, str(artifact_dir / name))
+                remote_path = "/" + name
+                remote_stat = sftp.stat(remote_path)
             except OSError:
-                sftp.get(name, str(artifact_dir / name))
+                remote_path = name
+                remote_stat = sftp.stat(remote_path)
+            if remote_stat.st_size <= 0:
+                raise RuntimeError("RouterOS created an empty encrypted pre-reset backup")
+            sftp.get(remote_path, str(temporary_path))
         finally:
             sftp.close()
+        if not temporary_path.is_file() or temporary_path.stat().st_size != remote_stat.st_size:
+            raise RuntimeError("Downloaded pre-reset backup did not match the RouterOS file size")
+        os.chmod(temporary_path, 0o600)
+        os.replace(temporary_path, final_path)
     except Exception:
-        raise RuntimeError("Encrypted router backup was created but could not be downloaded; reset was not started") from None
-    local_backup = artifact_dir / name
-    if not local_backup.is_file() or local_backup.stat().st_size == 0:
-        raise RuntimeError("Encrypted router backup download was empty; reset was not started")
-    os.chmod(local_backup, 0o600)
-    command(client, f"/file/remove [find where name={ros_quote(name)}]", allow_disconnect=False)
+        download_failed = True
+        try:
+            temporary_path.unlink()
+        except OSError:
+            pass
+
+    cleanup_failed = False
+    try:
+        command(client, f"/file/remove [find where name={ros_quote(name)}]", allow_disconnect=False)
+        sftp = client.open_sftp()
+        try:
+            remaining = {entry.rsplit("/", 1)[-1] for entry in sftp.listdir(".")}
+        finally:
+            sftp.close()
+        if name in remaining:
+            raise RuntimeError("RouterOS still lists the temporary backup file")
+    except Exception:
+        cleanup_failed = True
+
+    if download_failed and cleanup_failed:
+        raise RuntimeError(
+            "Encrypted router backup could not be downloaded and removal of its temporary router copy could not be verified; reset was not started"
+        ) from None
+    if download_failed:
+        raise RuntimeError("Encrypted router backup could not be downloaded and verified; reset was not started") from None
+    if cleanup_failed:
+        raise RuntimeError(
+            "Could not verify removal of the temporary RouterOS backup; reset was not started and the encrypted Jenkins artifact was retained"
+        ) from None
     print(f"Downloaded encrypted pre-reset backup as Jenkins artifact {name}.")
 
 
@@ -304,6 +341,18 @@ def main():
     os.chmod(key_path, 0o600)
     client = None
     try:
+        try:
+            saved_private_key = paramiko.Ed25519Key.from_private_key_file(str(key_path))
+        except Exception:
+            raise RuntimeError("MIKROTIK_SSH_PRIVATE_KEY is not a valid Ed25519 private key; reset was not started") from None
+        public_key_lines = public_key.splitlines()
+        public_key_fields = public_key_lines[0].split() if len(public_key_lines) == 1 else []
+        if (
+            len(public_key_fields) < 2
+            or public_key_fields[0] != "ssh-ed25519"
+            or saved_private_key.get_base64() != public_key_fields[1]
+        ):
+            raise RuntimeError("Saved MikroTik SSH public and private keys do not match; reset was not started")
         client = connect(current_host, bootstrap_user, host_key, password=bootstrap_password)
         if check_only:
             resource = command(client, "/system/resource print")

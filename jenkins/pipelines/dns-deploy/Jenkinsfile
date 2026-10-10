@@ -30,7 +30,7 @@ python3 jenkins/pipelines/network-settings/review-mikrotik-settings.py
         }
         stage('Approve DNS deployment') {
             steps {
-                input message: 'Review the DNS server plan and the MikroTik DNS/DHCP differences above. Approval creates or reuses the two verified DNS servers, configures Technitium zone replication, then authorizes Jenkins SSH access if needed, backs up the router, and syncs DHCP DNS. No services change before approval.', ok: 'Deploy DNS and sync router'
+                input message: 'Review the DNS server plan and the MikroTik DNS/DHCP differences above. After approval, Jenkins creates or reuses both DNS servers and configures zone replication before backing up the router and syncing DHCP DNS. If the router backup or sync fails, DNS servers may already be updated while router DHCP remains unchanged. No services change before approval.', ok: 'Deploy DNS and sync router'
             }
         }
         stage('Create and configure DNS servers') {

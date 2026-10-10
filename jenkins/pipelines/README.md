@@ -71,4 +71,10 @@ The full reset job is intentionally separate from routine router configuration.
 It reads the multiline `MIKROTIK_SCRIPT` secret and post-reset address
 `MIKROTIK_IP` from `/mikrotik/router01`, requires explicit approval, and relies
 on the configuration script restoring SSH reachability over the Proxmox-linked
-`ether2` path.
+`ether2` path. Before reset, Job 005 checks that the saved Ed25519 public and
+private keys match, downloads the password-protected binary backup to a
+temporary agent file, verifies its size, and confirms the temporary router copy
+was removed. A failed check stops before reset; the Jenkins artifact is retained
+when it was already downloaded. Job 006 provisions/configures dns01 and dns02
+before changing router DHCP DNS, so a router backup or sync failure can leave
+the DNS servers updated while DHCP continues using its previous settings.
