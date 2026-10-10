@@ -186,7 +186,7 @@ def create_encrypted_export(router, backup_password):
         created = router.call("export", "POST", {"show-sensitive": "", "file": export_name})
         if isinstance(created, dict) and created.get("error"):
             raise RuntimeError("RouterOS could not create the pre-change export; no router settings were changed")
-        files = router.call("file")
+        files = router.call("file?.proplist=.id,name")
         matches = [item for item in files if isinstance(item, dict) and item.get("name") == export_name]
         if len(matches) != 1:
             raise RuntimeError("RouterOS did not create exactly one pre-change export; no router settings were changed")
@@ -276,7 +276,7 @@ def delete_router_file(router, record):
 
 
 def delete_sensitive_export(router, name):
-    records = router.call("file")
+    records = router.call("file?.proplist=.id,name")
     if not isinstance(records, list):
         raise RuntimeError("RouterOS returned an invalid file list during temporary export cleanup")
     matches = [record for record in records if isinstance(record, dict) and record.get("name") == name]
@@ -288,7 +288,7 @@ def delete_sensitive_export(router, name):
 
 def cleanup_orphaned_sensitive_exports(router):
     """Remove only leftover sensitive exports created by this automation."""
-    records = router.call("file")
+    records = router.call("file?.proplist=.id,name")
     if not isinstance(records, list):
         raise RuntimeError("RouterOS returned an invalid file list before creating the backup")
     pattern = re.compile(r"(?:flash/)?homelab-router-before-dns-[0-9]{8}T[0-9]{6}Z\.rsc\Z")
