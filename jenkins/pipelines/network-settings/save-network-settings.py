@@ -551,9 +551,15 @@ def main():
             for name, value in generated.items():
                 updates[(router_path, name)] = value
         except Exception as exc:
+            # Always report the actual host-key verification failure. If the
+            # failure happens before generated values are added to `updates`,
+            # the old fallback only reported that no pin was saved and hid
+            # the reason (for example a RouterOS permission or HTTPS error).
+            results[host_key_result] = ("FAILED", str(exc))
             for key in list(updates):
                 if key[0] == router_path:
-                    results[key] = ("FAILED", str(exc))
+                    if key != host_key_result:
+                        results[key] = ("FAILED", str(exc))
                     updates.pop(key)
     elif not router_host:
         results[host_key_result] = (
