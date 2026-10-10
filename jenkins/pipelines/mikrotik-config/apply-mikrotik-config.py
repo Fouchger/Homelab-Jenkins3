@@ -168,6 +168,14 @@ class RouterREST:
             connection.close()
 
 
+def rest_record_id(record):
+    """Return a validated RouterOS REST record ID for use in a resource path."""
+    identifier = record.get(".id") if isinstance(record, dict) else None
+    if not isinstance(identifier, str) or not re.fullmatch(r"\*[A-Za-z0-9]+", identifier):
+        raise RuntimeError("RouterOS REST record did not include a valid .id")
+    return urllib.parse.quote(identifier, safe="*")
+
+
 def ensure_ssh_key(router, username, public_key):
     fields = public_key.strip().split()
     if len(fields) < 3 or fields[0] != "ssh-ed25519":
