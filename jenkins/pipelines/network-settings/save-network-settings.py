@@ -14,6 +14,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -298,21 +299,34 @@ def router_host_key_fingerprints(host, tls_fingerprint, username, password):
     prefix = "jenkins_hostkey_" + uuid.uuid4().hex
     files = []
     try:
-        router_rest_request(
+        export_result = router_rest_request(
             host, tls_fingerprint, username, password, "POST", "execute",
             {"script": f"/ip/ssh/export-host-key key-file-prefix={prefix}", "as-string": ""},
         )
-        records = router_rest_request(
-            host, tls_fingerprint, username, password, "GET",
-            "file?.proplist=.id,name",
-        )
-        if not isinstance(records, list):
-            raise RuntimeError("RouterOS did not return its temporary SSH key export files")
-        files = [item for item in records if isinstance(item, dict) and str(item.get("name", "")).startswith(prefix)]
+        # RouterOS creates the export files as part of the command, but allow
+        # a short delay for the file list to reflect them on slower devices.
+        records = []
+        for attempt in range(5):
+            records = router_rest_request(
+                host, tls_fingerprint, username, password, "GET",
+                "file?.proplist=.id,name",
+            )
+            if not isinstance(records, list):
+                raise RuntimeError("RouterOS did not return its temporary SSH key export files")
+            files = [item for item in records if isinstance(item, dict) and str(item.get("name", "")).startswith(prefix)]
+            if files:
+                break
+            if attempt < 4:
+                time.sleep(1)
         public_keys = [item for item in files if str(item.get("name", "")).endswith("_pub.pem")]
         fingerprints = []
         if not public_keys:
-            raise RuntimeError("RouterOS did not provide an exported SSH public host key")
+            command_output = export_result.get("ret", "") if isinstance(export_result, dict) else ""
+            command_output = " ".join(str(command_output).split())[:300]
+            if re.search(r"permission|policy|not enough rights", command_output, re.IGNORECASE):
+                raise RuntimeError("RouterOS did not export its SSH host key: the REST account needs the sensitive policy (MikroTik requires this for /ip/ssh/export-host-key)")
+            detail = f" RouterOS response: {command_output}" if command_output else ""
+            raise RuntimeError("RouterOS did not provide an exported SSH public host key; confirm the REST account has the sensitive policy and check the RouterOS log for the export command." + detail)
         for item in public_keys:
             file_id = item.get(".id")
             if not file_id:
