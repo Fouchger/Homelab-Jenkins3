@@ -273,6 +273,10 @@ def verify_and_reconnect(address, ssh_user, key_file, host_key, marker, deadline
 
 
 def main():
+    arguments = sys.argv[1:]
+    if arguments not in ([], ["--check"]):
+        raise RuntimeError("Usage: restore-mikrotik.py [--check]")
+    check_only = arguments == ["--check"]
     values = load_settings()
     current_host = required(values, "MIKROTIK_HOST")
     address = str(ipaddress.IPv4Address(required(values, "MIKROTIK_IP")))
@@ -301,6 +305,14 @@ def main():
     client = None
     try:
         client = connect(current_host, bootstrap_user, host_key, password=bootstrap_password)
+        if check_only:
+            resource = command(client, "/system/resource print")
+            version = re.search(r"(?im)^version:\s*(\S+)", resource)
+            print("Readiness check passed: pinned SSH connection and reset/restore settings are valid.")
+            print(f"RouterOS: {version.group(1) if version else 'version unavailable'}")
+            print(f"Recovery address: {address} over the configured Proxmox-connected ether2 path.")
+            print("No backup or router changes were made. The encrypted backup and RouterOS dry-run happen after approval.")
+            return
         save_backup(client, backup_password)
 
         build_number = os.environ.get("BUILD_NUMBER", "")

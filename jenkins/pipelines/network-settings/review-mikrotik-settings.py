@@ -224,6 +224,15 @@ def review(values, router):
         print("Wi-Fi: password updates configured for " + ", ".join(requested) + " (current passwords are not readable for comparison)")
     else:
         print("Wi-Fi: no password updates configured")
+    if os.environ.get("HOMELAB_REQUIRE_MIKROTIK_REVIEW", "").strip().lower() in ("1", "yes", "true"):
+        if missing_dns:
+            raise RuntimeError("Set both DNS_IPV4 values in Settings before approving router changes")
+        if mode not in ("router", "direct"):
+            raise RuntimeError("Set MIKROTIK_DHCP_DNS_MODE to router or direct in Settings before approving router changes")
+        for key in profiles:
+            password = values.get(key, "")
+            if password and (len(password) < 8 or any(char in password for char in "\r\n\0")):
+                raise RuntimeError(f"{key} must be at least 8 characters and contain no line breaks")
     print("Review is read-only; no router settings were changed.")
 
 
@@ -242,6 +251,8 @@ if __name__ == "__main__":
         if missing:
             print("Router connection: not ready; missing " + ", ".join(missing))
             print("No router connection was attempted and no settings were changed.")
+            if os.environ.get("HOMELAB_REQUIRE_MIKROTIK_REVIEW", "").strip().lower() in ("1", "yes", "true"):
+                raise RuntimeError("Complete Settings before approving router changes")
             sys.exit(0)
         review(secrets, RouterREST(secrets))
     except Exception as exc:

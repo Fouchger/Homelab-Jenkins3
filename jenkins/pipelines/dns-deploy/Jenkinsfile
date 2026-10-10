@@ -9,9 +9,28 @@ pipeline {
     }
 
     stages {
+        stage('Review DNS deployment and router changes') {
+            steps {
+                withCredentials([
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                    string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
+                    string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
+                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT'),
+                    string(credentialsId: 'homelab-proxmox-host', variable: 'PROXMOX_HOST')
+                ]) {
+                    withEnv(['HOMELAB_REQUIRE_MIKROTIK_REVIEW=yes']) {
+                        sh(label: 'Show read-only DNS deployment plan', script: '''#!/bin/sh
+set +x
+python3 jenkins/pipelines/dns-deploy/deploy-dns.py --plan
+python3 jenkins/pipelines/network-settings/review-mikrotik-settings.py
+''')
+                    }
+                }
+            }
+        }
         stage('Approve DNS deployment') {
             steps {
-                input message: 'Create missing dns01/dns02 LXCs, configure Technitium, establish primary-to-secondary zone transfers, then back up and sync MikroTik DHCP DNS settings? Existing containers will only be reused after identity checks; none will be deleted.', ok: 'Deploy DNS and sync router'
+                input message: 'Review the DNS server plan and the MikroTik DNS/DHCP differences above. Approval creates or reuses the two verified DNS servers, configures Technitium zone replication, then backs up the router before syncing DHCP DNS. No services change before approval.', ok: 'Deploy DNS and sync router'
             }
         }
         stage('Create and configure DNS servers') {

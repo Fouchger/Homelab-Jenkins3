@@ -179,6 +179,7 @@ def create_encrypted_export(router, backup_password):
     plaintext_path = None
     export_attempted = False
     try:
+        cleanup_orphaned_sensitive_exports(router)
         # The request can time out after RouterOS has already created the file.
         # Always try deleting this unique name, even when the request errors.
         export_attempted = True
@@ -256,7 +257,7 @@ def create_encrypted_export(router, backup_password):
             pass
         if export_attempted:
             try:
-                router.call(f"file/{urllib.parse.quote(export_name, safe='')}", "DELETE", allow_404=True)
+                delete_sensitive_export(router, export_name)
             except RuntimeError as exc:
                 raise RuntimeError(f"Could not remove the temporary sensitive export from the MikroTik: {exc}") from None
 
@@ -266,6 +267,37 @@ def rest_record_id(record):
     if not isinstance(identifier, str) or not re.fullmatch(r"\*[0-9A-Fa-f]+", identifier):
         raise RuntimeError("RouterOS REST returned an invalid record ID")
     return identifier
+
+
+def delete_router_file(router, record):
+    """RouterOS REST deletes a file resource by its returned .id, not its name."""
+    identifier = rest_record_id(record)
+    router.call(f"file/{identifier}", "DELETE", allow_404=True)
+
+
+def delete_sensitive_export(router, name):
+    records = router.call("file")
+    if not isinstance(records, list):
+        raise RuntimeError("RouterOS returned an invalid file list during temporary export cleanup")
+    matches = [record for record in records if isinstance(record, dict) and record.get("name") == name]
+    if len(matches) > 1:
+        raise RuntimeError("RouterOS returned duplicate temporary export names; refusing ambiguous cleanup")
+    if matches:
+        delete_router_file(router, matches[0])
+
+
+def cleanup_orphaned_sensitive_exports(router):
+    """Remove only leftover sensitive exports created by this automation."""
+    records = router.call("file")
+    if not isinstance(records, list):
+        raise RuntimeError("RouterOS returned an invalid file list before creating the backup")
+    pattern = re.compile(r"(?:flash/)?homelab-router-before-dns-[0-9]{8}T[0-9]{6}Z\.rsc\Z")
+    stale = [record for record in records if isinstance(record, dict)
+             and isinstance(record.get("name"), str) and pattern.fullmatch(record["name"])]
+    for record in stale:
+        delete_router_file(router, record)
+    if stale:
+        print(f"Removed {len(stale)} abandoned temporary sensitive export(s) from earlier runs.")
 
 
 def rest_networks(router):

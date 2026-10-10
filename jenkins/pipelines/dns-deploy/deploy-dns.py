@@ -300,7 +300,35 @@ def provision(client, stage, values):
     remote(client, f"rm -f -- {shlex.quote(stage)}/*.root-password {shlex.quote(stage)}/*.json && rm -rf -- {shlex.quote(stage)}", timeout=60)
 
 
+def review_plan(client, values):
+    """Show the DNS deployment operations without changing Proxmox or DNS."""
+    remote(client, "command -v pct >/dev/null && command -v curl >/dev/null && command -v python3 >/dev/null", timeout=30)
+    print("Read-only DNS deployment plan (no containers or DNS settings changed):")
+    for role, (ctid, mac, _profile) in PROFILES.items():
+        expected_ip = values[f"{role.upper()}_IPV4"]
+        present = remote(client, f"if pct status {ctid} >/dev/null 2>&1; then printf yes; else printf no; fi", timeout=30)
+        if present == "yes":
+            config = remote(client, f"pct config {ctid}", timeout=30)
+            if not matches_container_identity(config, role, mac):
+                raise RuntimeError(f"CTID {ctid} exists but does not match the {role} identity; refusing to approve deployment")
+            state = remote(client, f"pct status {ctid}", timeout=30).replace("status: ", "").strip()
+            print(f"- {role}: reuse verified CTID {ctid} ({state}); verify its address is {expected_ip}")
+        else:
+            print(f"- {role}: create CTID {ctid} with reserved address {expected_ip}")
+
+    hosted_zones = [item.strip().rstrip(".").lower() for item in values["DNS_HOSTED_ZONES"].split(",") if item.strip()]
+    if len(hosted_zones) != len(set(hosted_zones)):
+        raise RuntimeError("DNS_HOSTED_ZONES contains duplicate names")
+    print(f"- Technitium dns01 ({values['DNS01_IPV4']}): verify admin access and ensure configured primary zones")
+    print(f"- Technitium dns02 ({values['DNS02_IPV4']}): verify admin access and configure secondary copies of dns01 primary zones")
+    print(f"- Configured hosted zones to ensure on dns01: {', '.join(hosted_zones) if hosted_zones else '(none; existing primary zones will be synced)'}")
+    print("- Router DNS and DHCP settings: reviewed separately below; the apply stage creates an encrypted backup before changes.")
+
+
 def main():
+    arguments = sys.argv[1:]
+    if arguments not in ([], ["--plan"]):
+        raise RuntimeError("Usage: deploy-dns.py [--plan]")
     values = read_infisical()
     host = required("PROXMOX_HOST")
     if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
@@ -308,6 +336,9 @@ def main():
     client, key_file = ssh_settings(host, values)
     stage = ""
     try:
+        if arguments == ["--plan"]:
+            review_plan(client, values)
+            return
         candidate_stage = remote(client, "umask 077; mktemp -d /tmp/homelab-dns-deploy.XXXXXX", timeout=30)
         if not re.fullmatch(r"/tmp/homelab-dns-deploy\.[A-Za-z0-9]{6}", candidate_stage):
             raise RuntimeError("Proxmox returned an unexpected temporary directory")

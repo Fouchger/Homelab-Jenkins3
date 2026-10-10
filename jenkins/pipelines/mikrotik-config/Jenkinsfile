@@ -4,14 +4,31 @@ pipeline {
     options {
         disableConcurrentBuilds()
         timestamps()
-        timeout(time: 15, unit: 'MINUTES')
+        timeout(time: 25, unit: 'MINUTES')
         buildDiscarder(logRotator(numToKeepStr: '20'))
     }
 
     stages {
-        stage('Confirm MikroTik changes') {
+        stage('Review planned MikroTik changes') {
             steps {
-                input message: 'Create and encrypt a sensitive RouterOS configuration export through the pinned HTTPS REST connection, then apply DNS/DHCP and configured Wi-Fi settings? Job 003 must have saved the independently verified HTTPS certificate fingerprint.', ok: 'Create encrypted export and apply'
+                withCredentials([
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                    string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
+                    string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
+                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT')
+                ]) {
+                    withEnv(['HOMELAB_REQUIRE_MIKROTIK_REVIEW=yes']) {
+                    sh(label: 'Verify router and show routine change plan', script: '''#!/bin/sh
+set +x
+python3 jenkins/pipelines/network-settings/review-mikrotik-settings.py
+''')
+                    }
+                }
+            }
+        }
+        stage('Approve routine changes') {
+            steps {
+                input message: 'Review the router and planned DNS, DHCP, and Wi-Fi changes above. If they are correct, Jenkins will create and encrypt a pre-change router export, then apply them. No changes are made before approval.', ok: 'Back up and apply changes'
             }
         }
         stage('Back up and configure MikroTik') {

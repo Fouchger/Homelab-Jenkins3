@@ -9,9 +9,24 @@ pipeline {
     }
 
     stages {
-        stage('Confirm destructive full reset') {
+        stage('Check reset and restore readiness') {
             steps {
-                input message: 'This will erase the MikroTik configuration, run MIKROTIK_SCRIPT from Infisical, and interrupt the router connection. An encrypted backup will be saved first. Continue only if the script restores access on MIKROTIK_IP through the Proxmox-connected ether2 link.', ok: 'Back up, reset, and restore router'
+                withCredentials([
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                    string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
+                    string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
+                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT')
+                ]) {
+                    sh(label: 'Verify reset prerequisites without changing the router', script: '''#!/bin/sh
+set +x
+python3 jenkins/pipelines/mikrotik-restore/restore-mikrotik.py --check
+''')
+                }
+            }
+        }
+        stage('Approve destructive full reset') {
+            steps {
+                input message: 'DESTRUCTIVE RECOVERY: this erases the MikroTik configuration and interrupts the router connection. Jenkins checked the saved script and verified SSH access. After approval, it will save an encrypted backup, run a RouterOS dry-run, reset the router, and restore access at the displayed MIKROTIK_IP over ether2. Use only when the separate recovery action is intended.', ok: 'I understand — back up, reset, and restore'
             }
         }
         stage('Back up, reset, and restore MikroTik') {
