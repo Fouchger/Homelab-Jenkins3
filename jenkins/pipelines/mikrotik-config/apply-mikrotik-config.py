@@ -528,9 +528,11 @@ def apply(values):
 
     rest_user = values.get("MIKROTIK_USERNAME", "").strip()
     rest_password = values.get("MIKROTIK_PASSWORD", "")
+    bootstrap_user = values.get("MIKROTIK_BOOTSTRAP_USERNAME", "").strip()
+    bootstrap_password = values.get("MIKROTIK_BOOTSTRAP_PASSWORD", "")
     if not rest_user or not rest_password:
-        rest_user = values.get("MIKROTIK_BOOTSTRAP_USERNAME", "").strip()
-        rest_password = values.get("MIKROTIK_BOOTSTRAP_PASSWORD", "")
+        rest_user = bootstrap_user
+        rest_password = bootstrap_password
     rest = RouterREST(host, rest_user, rest_password, values.get("MIKROTIK_TLS_CERT_SHA256", ""))
     networks = rest_networks(rest)
     rest.call("system/resource")  # Authenticate before creating the backup.
@@ -541,7 +543,16 @@ def apply(values):
     if not private_key.startswith("-----BEGIN OPENSSH PRIVATE KEY-----"):
         raise RuntimeError("Run Job 003 first to generate MIKROTIK_SSH_PRIVATE_KEY")
     pinned_ssh_key = ssh_host_key(values.get("MIKROTIK_SSH_HOST_KEY", ""), host)
-    ensure_ssh_key(rest, ssh_user, values.get("MIKROTIK_SSH_PUBLIC_KEY", ""))
+    # Key authorization changes a RouterOS user's SSH credentials and needs
+    # user-management rights. Keep routine settings on the limited REST
+    # account, and use the stored bootstrap administrator only for this step.
+    key_authorizer = rest
+    if bootstrap_user and bootstrap_password and (bootstrap_user != rest_user or bootstrap_password != rest_password):
+        key_authorizer = RouterREST(
+            host, bootstrap_user, bootstrap_password,
+            values.get("MIKROTIK_TLS_CERT_SHA256", ""),
+        )
+    ensure_ssh_key(key_authorizer, ssh_user, values.get("MIKROTIK_SSH_PUBLIC_KEY", ""))
     ssh = connect_ssh(host, ssh_user, pinned_ssh_key, private_key)
     try:
         create_encrypted_backup(ssh, backup_password)
