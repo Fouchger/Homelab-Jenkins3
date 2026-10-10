@@ -17,7 +17,7 @@ Proxmox host-side LXC creation/profile scripts remain in `../../proxmox_helper_s
 | `mikrotik-config/Jenkinsfile` | Job `004 - MikroTik Configuration`: verifies the router and displays the planned DNS, DHCP, and supplied Wi-Fi changes before approval; then backs up the router and applies the approved routine changes. |
 | `mikrotik-config/apply-mikrotik-config.py` | Reads router settings from Infisical, creates text and binary pre-change backups over pinned SSH/SFTP, encrypts the combined archive on the agent, removes router-side temporary files, then applies and verifies DNS/DHCP/Wi-Fi changes through pinned HTTPS REST. |
 | `mikrotik-restore/Jenkinsfile` | Job `005 - MikroTik Full Reset and Restore`: a separate destructive recovery action; verifies saved settings and pinned SSH access before asking for approval. |
-| `mikrotik-restore/restore-mikrotik.py` | `--check` validates settings and SSH access without changing the router. The approved run downloads an encrypted pre-reset backup, dry-runs the Infisical script, resets with a generated account/bootstrap wrapper, then waits for pinned SSH recovery at `MIKROTIK_IP`. |
+| `mikrotik-restore/restore-mikrotik.py` | `--check` validates settings and SSH access without changing the router. The approved run downloads an encrypted pre-reset backup, preserves the pinned SSH server key for import after reset, dry-runs the Infisical script, then waits up to 30 minutes for verified SSH recovery at `MIKROTIK_IP`, reporting progress and distinguishing key mismatch, login rejection, and unavailable SSH. |
 | `dns-deploy/Jenkinsfile` | Job `006 - DNS Deployment and Router Sync`: shows a read-only plan for dns01/dns02 and reviews the router's DNS/DHCP differences before one approval. `RECREATE_DNS_SERVER` defaults to `none` and can select only `dns01` or `dns02` for clean replacement; its existing DNS data is permanently deleted without a DNS-container backup, and the other server is reused. Shared policy is read from `/dns`; each server's `DNS_IPV4` and `DNS_SERVER_ADMIN_PASSWORD` are read from its `/dns/<server>` folder. |
 | `dns-deploy/deploy-dns.py` | `--plan` checks the pinned Proxmox connection and existing LXC identities without changes, then lists the intended DNS operations, including any selected destructive replacement. The normal run replaces at most one identity-verified CTID through pinned Proxmox SSH and runs DNS management locally inside each guest so passwords do not cross the network in clear text. |
 | `dns-deploy/manage-technitium.py` | Uses Technitium's local HTTP API over loopback to secure the admin login, create configured primary zones, permit zone transfers only from dns02, and create/resync secondary zones on dns02. |
@@ -74,7 +74,9 @@ on the configuration script restoring SSH reachability over the Proxmox-linked
 `ether2` path. Before reset, Job 005 checks that the saved Ed25519 public and
 private keys match, downloads the password-protected binary backup to a
 temporary agent file, verifies its size, and confirms the temporary router copy
-was removed. A failed check stops before reset; the Jenkins artifact is retained
-when it was already downloaded. Job 006 provisions/configures dns01 and dns02
+was removed. It also exports the current SSH server host key in encrypted form
+and imports that same key after reset, so the saved host-key pin remains valid.
+A failed check stops before reset; the Jenkins artifact is retained when it was
+already downloaded. Job 006 provisions/configures dns01 and dns02
 before changing router DHCP DNS, so a router backup or sync failure can leave
 the DNS servers updated while DHCP continues using its previous settings.

@@ -170,9 +170,15 @@ def connect(host, user, host_key, *, password=None, key_filename=None, timeout=1
         options["key_filename"] = key_filename
     try:
         client.connect(**options)
+    except paramiko.BadHostKeyException:
+        client.close()
+        raise RuntimeError("MikroTik SSH host key did not match the independently saved pin") from None
+    except paramiko.AuthenticationException:
+        client.close()
+        raise RuntimeError("MikroTik rejected the configured SSH username or credentials") from None
     except Exception:
         client.close()
-        raise RuntimeError("Could not authenticate to the MikroTik using the pinned SSH host key") from None
+        raise RuntimeError("MikroTik SSH is not reachable or its SSH handshake did not complete") from None
     return client
 
 
@@ -267,7 +273,7 @@ def upload_text(client, remote_name, content):
         sftp.close()
 
 
-def build_wrapper(config_path, wrapper_path, marker, admin_user, admin_password, ssh_user, ssh_public_key):
+def build_wrapper(config_path, wrapper_path, host_key_path, host_key_passphrase, marker, admin_user, admin_password, ssh_user, ssh_public_key):
     lines = [":delay 10s"]
     user = ros_quote(admin_user)
     password = ros_quote(admin_password)
@@ -278,12 +284,61 @@ def build_wrapper(config_path, wrapper_path, marker, admin_user, admin_password,
     lines.extend((
         f"/user ssh-keys add user={ros_quote(ssh_user)} key={ros_quote(ssh_public_key)}",
         f"/import file-name={config_path} verbose=yes",
+        f"/ip/ssh/import-host-key private-key-file={ros_quote(host_key_path)} passphrase={ros_quote(host_key_passphrase)}",
+        f"/file/remove [find where name={ros_quote(host_key_path)}]",
         *(['/user disable [find where name="admin"]'] if admin_user != "admin" else []),
         f':log info "{marker}"',
         f"/file/remove [find where name={ros_quote(config_path)}]",
         f"/file/remove [find where name={ros_quote(wrapper_path)}]",
     ))
     return "\n".join(lines) + "\n"
+
+
+def preserve_router_host_key(client, remote_dir, build_number, key_type):
+    """Export the currently pinned router host key and stage an encrypted copy for run-after-reset."""
+    suffix = {"ssh-rsa": "rsa", "ssh-ed25519": "ed25519"}.get(key_type)
+    if not suffix:
+        raise RuntimeError(f"Unsupported saved MikroTik SSH host-key type: {key_type}")
+    prefix = f"homelab-preserved-hostkey-{build_number}"
+    passphrase = secrets.token_urlsafe(32)
+    command(client, f"/ip/ssh/export-host-key key-file-prefix={prefix} passphrase={ros_quote(passphrase)}")
+
+    exported_names = []
+    sftp = client.open_sftp()
+    try:
+        names = sftp.listdir(".")
+        exported_names = [name for name in names if name == prefix or name.startswith(prefix + "_")]
+        candidates = [
+            name for name in exported_names
+            if name in (f"{prefix}_{suffix}", f"{prefix}_{suffix}.pem")
+        ]
+        if len(candidates) != 1:
+            raise RuntimeError("RouterOS did not produce exactly one private host-key file matching the saved pin")
+
+        source_name = candidates[0]
+        with sftp.file(source_name, "rb") as source:
+            private_key = source.read()
+        if not private_key:
+            raise RuntimeError("RouterOS exported an empty SSH host-key file")
+
+        target_name = f"{remote_dir}homelab-restore-hostkey-{build_number}-{suffix}.pem"
+        with sftp.file(target_name, "wb") as target:
+            target.write(private_key)
+            target.flush()
+        sftp.chmod(target_name, 0o600)
+        if sftp.stat(target_name).st_size != len(private_key):
+            raise RuntimeError("Staged encrypted SSH host-key size did not match the export")
+    except Exception:
+        raise RuntimeError("Could not securely preserve the pinned MikroTik SSH host key; reset was not started") from None
+    finally:
+        for name in exported_names:
+            try:
+                sftp.remove(name)
+            except OSError:
+                pass
+        sftp.close()
+
+    return target_name, passphrase
 
 
 def verify_and_reconnect(address, ssh_user, key_file, host_key, marker, deadline):
@@ -389,7 +444,13 @@ def main():
             sftp.close()
         config_path = remote_dir + config_name
         wrapper_path = remote_dir + wrapper_name
-        wrapper = build_wrapper(config_path, wrapper_path, marker, admin_user, admin_password, ssh_user, public_key)
+        host_key_path, host_key_passphrase = preserve_router_host_key(
+            client, remote_dir, build_number, host_key[0]
+        )
+        wrapper = build_wrapper(
+            config_path, wrapper_path, host_key_path, host_key_passphrase,
+            marker, admin_user, admin_password, ssh_user, public_key,
+        )
         upload_text(client, config_path, script)
         upload_text(client, wrapper_path, wrapper)
         command(client, f"/import file-name={config_path} verbose=yes dry-run")
