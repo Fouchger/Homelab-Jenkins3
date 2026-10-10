@@ -428,24 +428,28 @@ def create_encrypted_backup(client, backup_password):
     except subprocess.TimeoutExpired:
         raise RuntimeError("Encrypting the RouterOS pre-change backup timed out; no router settings were changed") from None
     finally:
+        operation_failed = sys.exc_info()[0] is not None
+        cleanup_failed = False
         try:
             remove_router_files(client, remote_files)
         except Exception:
-            if backup_complete:
-                raise RuntimeError(
-                    "Could not remove temporary sensitive backup files from RouterOS; "
-                    "no router settings were applied and the encrypted backup artifact was retained"
-                ) from None
-        finally:
-            try:
-                temporary_artifact.unlink()
-            except FileNotFoundError:
-                pass
-            raise RuntimeError("Could not check or remove temporary pre-change backup files from the MikroTik") from None
+            cleanup_failed = True
         try:
             temporary_artifact.unlink()
         except FileNotFoundError:
             pass
+        if cleanup_failed:
+            if operation_failed:
+                print("WARNING: Could not confirm removal of temporary RouterOS backup files; the original backup error is reported above.")
+            elif backup_complete:
+                raise RuntimeError(
+                    "Could not remove temporary sensitive backup files from RouterOS; "
+                    "no router settings were applied and the encrypted backup artifact was retained"
+                ) from None
+            else:
+                raise RuntimeError(
+                    "Could not confirm removal of temporary RouterOS backup files; no router settings were applied"
+                ) from None
 
 
 def rest_networks(router):
