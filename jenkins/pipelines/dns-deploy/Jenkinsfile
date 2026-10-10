@@ -30,7 +30,7 @@ python3 jenkins/pipelines/network-settings/review-mikrotik-settings.py
         }
         stage('Approve DNS deployment') {
             steps {
-                input message: 'Review the DNS server plan and the MikroTik DNS/DHCP differences above. Approval creates or reuses the two verified DNS servers, configures Technitium zone replication, then backs up the router before syncing DHCP DNS. No services change before approval.', ok: 'Deploy DNS and sync router'
+                input message: 'Review the DNS server plan and the MikroTik DNS/DHCP differences above. Approval creates or reuses the two verified DNS servers, configures Technitium zone replication, then authorizes Jenkins SSH access if needed, backs up the router, and syncs DHCP DNS. No services change before approval.', ok: 'Deploy DNS and sync router'
             }
         }
         stage('Create and configure DNS servers') {
@@ -70,7 +70,7 @@ python3 jenkins/pipelines/mikrotik-config/apply-mikrotik-config.py
 
     post {
         always {
-            archiveArtifacts artifacts: "artifacts/${env.BUILD_NUMBER}/homelab-router-before-dns-*.rsc.enc", allowEmptyArchive: true, fingerprint: true
+            archiveArtifacts artifacts: "artifacts/${env.BUILD_NUMBER}/homelab-router-before-dns-*.tar.enc", allowEmptyArchive: true, fingerprint: true
         }
     }
 }

@@ -64,11 +64,13 @@ def infisical_values():
         "/mikrotik/router01": (
             "MIKROTIK_HOST", "MIKROTIK_USERNAME", "MIKROTIK_PASSWORD",
             "MIKROTIK_BOOTSTRAP_USERNAME", "MIKROTIK_BOOTSTRAP_PASSWORD",
-            "MIKROTIK_TLS_CERT_SHA256",
+            "MIKROTIK_TLS_CERT_SHA256", "MIKROTIK_SSH_USER", "MIKROTIK_SSH_PRIVATE_KEY",
+            "MIKROTIK_SSH_PUBLIC_KEY", "MIKROTIK_SSH_HOST_KEY",
         ),
         "/dns": ("MIKROTIK_DHCP_DNS_MODE", "DNS_PUBLIC_FALLBACKS"),
         "/dns/dns01": ("DNS_IPV4",),
         "/dns/dns02": ("DNS_IPV4",),
+        "/mikrotik/backup": ("BINARY_BACKUP_PASSWORD",),
         "/mikrotik/wifi_security": (
             "SEC_USERS_PASSWORD", "SEC_MGMT_PASSWORD", "SEC_IOT_PASSWORD", "SEC_GUEST_PASSWORD",
         ),
@@ -141,6 +143,26 @@ def valid_ipv4(value, name):
         raise RuntimeError(f"{name} must be a valid IPv4 address before Review") from None
 
 
+def ssh_backup_blocker(values):
+    host = values.get("MIKROTIK_HOST", "").strip()
+    username = values.get("MIKROTIK_SSH_USER", "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", username):
+        return "set MIKROTIK_SSH_USER"
+    if not values.get("MIKROTIK_SSH_PRIVATE_KEY", "").startswith("-----BEGIN OPENSSH PRIVATE KEY-----"):
+        return "run Settings to generate MIKROTIK_SSH_PRIVATE_KEY"
+    public_key = values.get("MIKROTIK_SSH_PUBLIC_KEY", "").strip().split()
+    if len(public_key) < 3 or public_key[0] != "ssh-ed25519":
+        return "run Settings to generate MIKROTIK_SSH_PUBLIC_KEY"
+    lines = [line.strip() for line in values.get("MIKROTIK_SSH_HOST_KEY", "").splitlines()
+             if line.strip() and not line.lstrip().startswith("#")]
+    if len(lines) != 1:
+        return "verify and save MIKROTIK_SSH_HOST_KEY in Settings"
+    fields = lines[0].split()
+    if len(fields) < 3 or fields[0] != host or not fields[1].startswith("ssh-"):
+        return "saved MIKROTIK_SSH_HOST_KEY does not match MIKROTIK_HOST"
+    return ""
+
+
 def review(values, router):
     resources = router.get("system/resource")
     identity = router.get("system/identity")
@@ -159,6 +181,16 @@ def review(values, router):
 
     print("Router connection: verified (HTTPS certificate pin and REST login)")
     print(f"Router: {identity.get('name', 'name unavailable')} | RouterOS {resources.get('version', 'version unavailable')}")
+    ssh_blocker = ssh_backup_blocker(values)
+    if ssh_blocker:
+        print(f"Router backup connection: blocked; {ssh_blocker}")
+    else:
+        print("Router backup settings: present (pinned SSH host key; Job 004 will authorize and verify Jenkins SSH access after approval)")
+    backup_password = values.get("BINARY_BACKUP_PASSWORD", "")
+    if len(backup_password) < 8 or any(char in backup_password for char in "\r\n\0"):
+        print("Router backup encryption: blocked; set BINARY_BACKUP_PASSWORD (at least 8 characters) in Settings")
+    else:
+        print("Router backup encryption: ready")
 
     desired = []
     missing_dns = []
@@ -229,6 +261,12 @@ def review(values, router):
             raise RuntimeError("Set both DNS_IPV4 values in Settings before approving router changes")
         if mode not in ("router", "direct"):
             raise RuntimeError("Set MIKROTIK_DHCP_DNS_MODE to router or direct in Settings before approving router changes")
+        ssh_blocker = ssh_backup_blocker(values)
+        if ssh_blocker:
+            raise RuntimeError("Complete the router SSH backup settings before approving changes: " + ssh_blocker)
+        backup_password = values.get("BINARY_BACKUP_PASSWORD", "")
+        if len(backup_password) < 8 or any(char in backup_password for char in "\r\n\0"):
+            raise RuntimeError("Set BINARY_BACKUP_PASSWORD in Settings before approving router changes")
         for key in profiles:
             password = values.get(key, "")
             if password and (len(password) < 8 or any(char in password for char in "\r\n\0")):

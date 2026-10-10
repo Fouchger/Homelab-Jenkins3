@@ -13,9 +13,9 @@ Proxmox host-side LXC creation/profile scripts remain in `../../proxmox_helper_s
 | `proxmox-access/provision-proxmox-access.py` | Infisical API and SSH helper called by the Proxmox access pipeline. |
 | `network-settings/Jenkinsfile` | Job `003 - DNS and Cloudflare Settings`: collects editable settings, stores them in Infisical, verifies the saved pinned RouterOS connection, and reviews managed router settings without applying changes. |
 | `network-settings/save-network-settings.py` | Validates, writes, verifies, and rolls back operator-entered DNS, MikroTik, Cloudflare, and DockFlare settings. It generates a missing MikroTik Ed25519 client key and saves a scanned RouterOS host key only after its fingerprint matches the operator-supplied pin. |
-| `network-settings/review-mikrotik-settings.py` | Reads router settings from Infisical, checks the RouterOS HTTPS certificate pin and REST login, and compares current DNS/DHCP/Wi-Fi configuration with saved settings. It is read-only and reports missing prerequisites and planned differences. |
+| `network-settings/review-mikrotik-settings.py` | Reads router settings from Infisical, checks the RouterOS HTTPS certificate pin and REST login, verifies SSH backup prerequisites are present, and compares current DNS/DHCP/Wi-Fi configuration with saved settings. It is read-only and reports missing prerequisites and planned differences. |
 | `mikrotik-config/Jenkinsfile` | Job `004 - MikroTik Configuration`: verifies the router and displays the planned DNS, DHCP, and supplied Wi-Fi changes before approval; then backs up the router and applies the approved routine changes. |
-| `mikrotik-config/apply-mikrotik-config.py` | Reads router settings from Infisical, creates a sensitive RouterOS text export through pinned HTTPS REST, encrypts it on the agent, removes the router-side temporary file, then applies and verifies DNS/DHCP/Wi-Fi changes through REST. The `.rsc.enc` artifact is not a binary clone. |
+| `mikrotik-config/apply-mikrotik-config.py` | Reads router settings from Infisical, creates text and binary pre-change backups over pinned SSH/SFTP, encrypts the combined archive on the agent, removes router-side temporary files, then applies and verifies DNS/DHCP/Wi-Fi changes through pinned HTTPS REST. |
 | `mikrotik-restore/Jenkinsfile` | Job `005 - MikroTik Full Reset and Restore`: a separate destructive recovery action; verifies saved settings and pinned SSH access before asking for approval. |
 | `mikrotik-restore/restore-mikrotik.py` | `--check` validates settings and SSH access without changing the router. The approved run downloads an encrypted pre-reset backup, dry-runs the Infisical script, resets with a generated account/bootstrap wrapper, then waits for pinned SSH recovery at `MIKROTIK_IP`. |
 | `dns-deploy/Jenkinsfile` | Job `006 - DNS Deployment and Router Sync`: shows a read-only plan for dns01/dns02 and reviews the router's DNS/DHCP differences before one approval. The approved run creates or reuses verified DNS LXCs, configures Technitium zone replication, and syncs router DNS with an encrypted pre-change backup. Shared policy is read from `/dns`; each server's `DNS_IPV4` and `DNS_SERVER_ADMIN_PASSWORD` are read from its `/dns/<server>` folder. |
@@ -48,17 +48,19 @@ Routine RouterOS changes require `MIKROTIK_TLS_CERT_SHA256` in
 `/mikrotik/router01`, plus the dedicated REST account in `MIKROTIK_USERNAME`
 and `MIKROTIK_PASSWORD`. Job 003 checks the entered certificate fingerprint
 against the live certificate before saving it. `www-ssl` must be enabled on
-RouterOS. Job 004 requires the independently verified HTTPS certificate
-fingerprint and a RouterOS account with REST access, write permissions for the
-settings it manages, and permissions to export and read files. Because Job 004
-exports passwords and keys before applying changes, the account's RouterOS group
-must include `policy` for the export command and `sensitive` to include passwords
-and keys. MikroTik's REST API requires the `api`, `rest-api`, `read`, `write`,
-`ftp`, and `test` policies for REST operations. If RouterOS rejects the export
-for permissions, Job 004 stops before changing settings and reports the required
-policies. Protect the encrypted build artifact and its
-`BINARY_BACKUP_PASSWORD`. It is a text export, not a binary clone. Update the
-saved fingerprint after certificate rotation.
+RouterOS. Job 004 also uses `MIKROTIK_SSH_USER`, `MIKROTIK_SSH_PRIVATE_KEY`, and
+the independently verified `MIKROTIK_SSH_HOST_KEY` for the pre-change backup.
+Its SSH account must have `ssh`, `read`, `write`, `ftp`, `policy`, and
+`sensitive` permissions: `policy` allows configuration export, while
+`sensitive` includes passwords and keys. Job 004 creates a RouterOS-password-
+protected binary backup and a sensitive text export, downloads both over SFTP,
+encrypts them together on the Jenkins agent with `BINARY_BACKUP_PASSWORD`, and
+removes their temporary router copies before applying settings. The resulting
+`.tar.enc` build artifact contains both backup formats; protect it and its
+password. The REST account needs `api`, `rest-api`, `read`, and `write` for
+router review and configuration operations; it also needs `policy` to authorize
+the SSH key for its RouterOS user. Update saved pins after certificate or SSH
+host-key rotation.
 The full reset job is intentionally separate from routine router configuration.
 It reads the multiline `MIKROTIK_SCRIPT` secret and post-reset address
 `MIKROTIK_IP` from `/mikrotik/router01`, requires explicit approval, and relies

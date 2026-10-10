@@ -125,14 +125,21 @@ certificate is the one Jenkins reaches at `MIKROTIK_HOST`.
 
 REST uses `MIKROTIK_USERNAME` and `MIKROTIK_PASSWORD`, falling back to
 the bootstrap credentials when the normal account is not configured. To create
-the pre-change artifact, Job 004 saves a RouterOS sensitive configuration export
-over REST, encrypts it on the Jenkins agent with `BINARY_BACKUP_PASSWORD`, and
-deletes the temporary router-side file. The `.rsc.enc` artifact contains
-passwords and keys and must be protected. This is a restorable text export, not
-a binary clone: RouterOS exports omit system user passwords, installed
-certificates, and SSH keys. Update the HTTPS certificate pin after rotation.
-SSH keys and the pinned SSH host key remain for the separate full-reset and
-recovery workflow, which takes a binary backup.
+the pre-change artifact, Job 004 authorizes the saved Jenkins SSH key for
+`MIKROTIK_SSH_USER` if needed, then uses the pinned SSH key and host key to save
+and download both a sensitive configuration export and a password-protected
+binary backup. It encrypts the combined archive on the Jenkins agent with
+`BINARY_BACKUP_PASSWORD` and removes the temporary router-side files. RouterOS
+disables password-based SSH login for a user after a public key is assigned, so
+configure a dedicated Jenkins backup account in `MIKROTIK_SSH_USER`. The
+`.tar.enc` artifact contains passwords and keys and must be protected. RouterOS
+text exports omit system user passwords, installed certificates, and SSH keys;
+the binary backup is the complementary same-device recovery format. The SSH
+backup account needs `ssh`, `read`, `write`, `ftp`, `policy`, and `sensitive`
+permissions. The REST account also needs `policy` to authorize the key; it
+handles router review and routine settings updates. Update the HTTPS certificate
+pin after rotation; Job 003 verifies and refreshes the saved SSH host key when
+requested.
 
 `MIKROTIK_BOOTSTRAP_USERNAME` and `MIKROTIK_BOOTSTRAP_PASSWORD` are the
 existing router administrator credentials used only to bootstrap key access
