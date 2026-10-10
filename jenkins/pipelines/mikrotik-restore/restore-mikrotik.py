@@ -311,6 +311,9 @@ def load_settings():
             "MIKROTIK_TLS_CERT_SHA256",
         ),
         "/mikrotik/backup": ("BINARY_BACKUP_PASSWORD",),
+        "/mikrotik/wifi_security": (
+            "SEC_USERS_PASSWORD", "SEC_MGMT_PASSWORD", "SEC_IOT_PASSWORD", "SEC_GUEST_PASSWORD",
+        ),
     }.items():
         query = urllib.parse.urlencode({"projectId": project_id, "environment": environment, "secretPath": path})
         for name in names:
@@ -334,7 +337,62 @@ def ros_quote(value):
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$") + '"'
 
 
+def render_infisical_settings(script, values):
+    """Replace credentials in the reset script with the canonical Infisical values."""
+    script = re.sub(r"\\\r?\n[ \t]*", " ", script)
+    wifi_profiles = {
+        "SEC_USERS_PASSWORD": "sec-users",
+        "SEC_MGMT_PASSWORD": "sec-mgmt",
+        "SEC_IOT_PASSWORD": "sec-iot",
+        "SEC_GUEST_PASSWORD": "sec-guest",
+    }
+    for secret_name, profile in wifi_profiles.items():
+        password = required(values, secret_name)
+        if len(password) < 8 or any(char in password for char in "\r\n\0"):
+            raise RuntimeError(f"{secret_name} in /mikrotik/wifi_security must be at least 8 characters without line breaks")
+        # Match the named security profile's RouterOS export command. This
+        # replaces old literal values as well as ${SECRET_NAME} placeholders.
+        block = re.search(r"(?ims)^/interface wifi security\s*\n(.*?)(?=^/|\Z)", script)
+        if not block:
+            raise RuntimeError("MIKROTIK_SCRIPT is missing the /interface wifi security section")
+        profile_pattern = re.compile(
+            rf'(?im)(^add\b(?=[^\n]*\bname=(?:"{re.escape(profile)}"|{re.escape(profile)})(?:\s|$))[^\n]*?\bpassphrase=)(?:"(?:\\.|[^"\\])*"|\S+)'
+        )
+        section_text = block.group(1)
+        section_text, count = profile_pattern.subn(lambda match: match.group(1) + ros_quote(password), section_text)
+        if count != 1:
+            raise RuntimeError(f"MIKROTIK_SCRIPT must define exactly one {profile} Wi-Fi security profile with a passphrase")
+        script = script[:block.start(1)] + section_text + script[block.end(1):]
+
+    backup_password = required(values, "BINARY_BACKUP_PASSWORD")
+    if len(backup_password) < 8 or any(char in backup_password for char in "\r\n\0"):
+        raise RuntimeError("BINARY_BACKUP_PASSWORD in /mikrotik/backup must be at least 8 characters without line breaks")
+    # RouterOS stores scheduled backup commands as quoted on-event text.
+    # Replace any embedded literal (or placeholder) so the script's Infisical
+    # value remains the source of truth.
+    escaped_backup_password = (
+        backup_password.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$")
+    )
+    lines = []
+    section = ""
+    for line in script.splitlines():
+        if line.startswith("/"):
+            section = line.strip().lower()
+        if section == "/system scheduler" and "/system backup save" in line.lower():
+            prefix = 'password=\\"'
+            suffix = '\\"'
+            before, found, remainder = line.partition(prefix)
+            if found:
+                _old_value, closing, after = remainder.partition(suffix)
+                if closing:
+                    line = before + found + escaped_backup_password + closing + after
+        lines.append(line)
+    script = "\n".join(lines) + "\n"
+    return script
+
+
 def verify_config_script(script, address):
+    script = re.sub(r"\\\r?\n[ \t]*", " ", script)
     if not script.strip() or len(script.encode("utf-8")) > 512 * 1024:
         raise RuntimeError("MIKROTIK_SCRIPT must contain a non-empty RouterOS script no larger than 512 KiB")
     if "\0" in script:
@@ -360,6 +418,11 @@ def verify_config_script(script, address):
             if not skipped_user_section:
                 sanitized.append(line)
         elif not skipped_user_section:
+            # A clean reset removes installed certificates. The recovery
+            # wrapper imports the preserved PKCS#12 certificate after the
+            # main config, then enables www-ssl with the saved source range.
+            if section == "/ip service" and re.match(r"(?i)^set\s+(?:www-ssl(?:\s|$)|\[find[^]]*www-ssl[^]]*\](?:\s|$))", stripped):
+                continue
             sanitized.append(line)
     script = "\n".join(sanitized).strip() + "\n"
     sanitized_active = "\n".join(line.strip() for line in script.splitlines() if line.strip() and not line.lstrip().startswith("#"))
@@ -367,6 +430,23 @@ def verify_config_script(script, address):
         raise RuntimeError("MIKROTIK_SCRIPT must set MIKROTIK_IP outside its /user configuration sections so Jenkins can reconnect")
     if not re.search(r"(?i)\bethernet2\b|\bether2\b", sanitized_active):
         raise RuntimeError("MIKROTIK_SCRIPT must configure or reference the Proxmox-connected ether2 interface outside its /user sections")
+    # This router uses VLAN filtering and two Wi-Fi VLANs. Do not leave these
+    # networks out of the bridge allow-list when restoring the supplied baseline.
+    bridge_vlan_section = re.search(r"(?ims)^/interface bridge vlan\s*\n(.*?)(?=^/|\Z)", script)
+    if not bridge_vlan_section:
+        raise RuntimeError("MIKROTIK_SCRIPT is missing the bridge VLAN table required by this VLAN-filtered router")
+    vlan_text = bridge_vlan_section.group(1)
+    additions = []
+    required_vlan_rules = (
+        (50, "add bridge=bridge comment=IOT tagged=bridge,ether2,wifi1-iot,wifi2-iot vlan-ids=50"),
+        (60, "add bridge=bridge comment=GUEST tagged=bridge,ether2,wifi1-guest,wifi2-guest vlan-ids=60"),
+    )
+    for vlan_id, command_text in required_vlan_rules:
+        if not re.search(rf"(?im)^add\b[^\n]*\bvlan-ids={vlan_id}\b", vlan_text):
+            additions.append(command_text)
+    if additions:
+        vlan_text = vlan_text.rstrip() + "\n" + "\n".join(additions) + "\n"
+        script = script[:bridge_vlan_section.start(1)] + vlan_text + script[bridge_vlan_section.end(1):]
     return script
 
 
@@ -526,7 +606,7 @@ def upload_text(client, remote_name, content):
         sftp.close()
 
 
-def build_wrapper(config_path, wrapper_path, host_key_path, host_key_passphrase, https_cert_path, https_cert_passphrase, https_cert_name, https_allowed_addresses, marker, admin_user, admin_password, ssh_user, ssh_public_key):
+def build_wrapper(config_path, wrapper_path, host_key_path, host_key_passphrase, https_cert_path, https_cert_passphrase, https_cert_name, https_access_property, https_allowed_addresses, marker, admin_user, admin_password, ssh_user, ssh_public_key):
     lines = [":delay 10s"]
     user = ros_quote(admin_user)
     password = ros_quote(admin_password)
@@ -539,7 +619,7 @@ def build_wrapper(config_path, wrapper_path, host_key_path, host_key_passphrase,
         f"/import file-name={config_path} verbose=yes",
         f"/certificate import file-name={https_cert_path} name={ros_quote(https_cert_name)} passphrase={ros_quote(https_cert_passphrase)}",
         f"/file/remove [find where name={ros_quote(https_cert_path.rsplit('/', 1)[-1])}]",
-        f"/ip/service/set [find where name=\"www-ssl\"] certificate={ros_quote(https_cert_name)} port=443 address={ros_quote(https_allowed_addresses)} disabled=no",
+        f"/ip/service/set [find where name=\"www-ssl\"] certificate={ros_quote(https_cert_name)} port=443 {https_access_property}={ros_quote(https_allowed_addresses)} disabled=no",
         f"/ip/ssh/import-host-key private-key-file={ros_quote(host_key_path)} passphrase={ros_quote(host_key_passphrase)}",
         f"/file/remove [find where name={ros_quote(host_key_path)}]",
         *(['/user disable [find where name="admin"]'] if admin_user != "admin" else []),
@@ -610,7 +690,12 @@ def preserve_router_https_certificate(client, remote_dir, build_number):
     certificate_name = property_value("certificate")
     if certificate_name.lower() in ("", "none"):
         raise RuntimeError("www-ssl has no assigned certificate; Job 005 cannot preserve the pinned HTTPS identity, so reset was not started")
-    allowed_addresses = property_value("address")
+    # RouterOS 7.24 renamed this service property from `address` to
+    # `available-from`; accept both so the security restriction survives the reset.
+    https_access_property = "available-from" if property_value("available-from") else "address"
+    allowed_addresses = property_value(https_access_property)
+    if not allowed_addresses:
+        raise RuntimeError("www-ssl has no source-address restriction; set it to the management subnet before resetting")
     prefix = f"homelab-restore-https-{build_number}-{secrets.token_hex(4)}"
     exported_name = prefix + ".p12"
     passphrase = secrets.token_urlsafe(32)
@@ -658,7 +743,7 @@ def preserve_router_https_certificate(client, remote_dir, build_number):
                 local_path.unlink()
             except OSError:
                 pass
-    return remote_path, passphrase, f"homelab-restore-https-{build_number}", allowed_addresses
+    return remote_path, passphrase, f"homelab-restore-https-{build_number}", https_access_property, allowed_addresses
 
 
 def verify_and_reconnect(address, canonical_host, ssh_user, key_file, tls_fingerprint, rest_user, rest_password, marker, deadline):
@@ -732,7 +817,8 @@ def main():
         raise RuntimeError("MikroTik bootstrap, admin, and backup passwords must each be at least 8 characters")
     private_key = required(values, "MIKROTIK_SSH_PRIVATE_KEY")
     public_key = required(values, "MIKROTIK_SSH_PUBLIC_KEY")
-    script = verify_config_script(required(values, "MIKROTIK_SCRIPT"), address)
+    script = render_infisical_settings(required(values, "MIKROTIK_SCRIPT"), values)
+    script = verify_config_script(script, address)
     if not private_key.startswith("-----BEGIN OPENSSH PRIVATE KEY-----") or not public_key.startswith("ssh-ed25519 "):
         raise RuntimeError("Run Job 003 first to generate the MikroTik Ed25519 SSH client key pair")
     saved_host_key = values.get("MIKROTIK_SSH_HOST_KEY", "").strip()
@@ -814,13 +900,13 @@ def main():
         host_key_path, host_key_passphrase = preserve_router_host_key(
             client, remote_dir, build_number, host_key[0]
         )
-        https_cert_path, https_cert_passphrase, https_cert_name, https_allowed_addresses = preserve_router_https_certificate(
+        https_cert_path, https_cert_passphrase, https_cert_name, https_access_property, https_allowed_addresses = preserve_router_https_certificate(
             client, remote_dir, build_number,
         )
         print("Encrypted www-ssl certificate staged for recovery; Job 005 will restore HTTPS before refreshing the SSH host-key pin.")
         wrapper = build_wrapper(
             config_path, wrapper_path, host_key_path, host_key_passphrase,
-            https_cert_path, https_cert_passphrase, https_cert_name, https_allowed_addresses,
+            https_cert_path, https_cert_passphrase, https_cert_name, https_access_property, https_allowed_addresses,
             marker, admin_user, admin_password, ssh_user, public_key,
         )
         upload_text(client, wrapper_path, wrapper)

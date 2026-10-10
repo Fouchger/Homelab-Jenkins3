@@ -93,3 +93,24 @@ A failed check stops before reset; the Jenkins artifact is retained when it was
 already downloaded. Job 006 provisions/configures dns01 and dns02
 before changing router DHCP DNS, so a router backup or sync failure can leave
 the DNS servers updated while DHCP continues using its previous settings.
+
+Job 005 takes Wi-Fi passphrases from `/mikrotik/wifi_security` and the RouterOS
+scheduled-backup password from `/mikrotik/backup`, then replaces values in the
+temporary reset script before uploading it. The `MIKROTIK_SCRIPT` secret can
+therefore use `${SEC_USERS_PASSWORD}`, `${SEC_MGMT_PASSWORD}`,
+`${SEC_IOT_PASSWORD}`, `${SEC_GUEST_PASSWORD}`, and
+`${BINARY_BACKUP_PASSWORD}` placeholders instead of containing password
+literals. For example, use `name=sec-users passphrase=${SEC_USERS_PASSWORD}`
+and, inside a scheduled backup `on-event`,
+`password=\"${BINARY_BACKUP_PASSWORD}\"`. Job 005 also overrides any existing
+literal in those named Wi-Fi profiles or scheduled backup commands with the
+Infisical value. The `/user` section should be omitted from `MIKROTIK_SCRIPT`;
+Job 005 creates/restores router accounts from `MIKROTIK_USERNAME`,
+`MIKROTIK_PASSWORD`, `MIKROTIK_SSH_USER`, and the saved Jenkins key.
+
+The reset import deliberately skips the `www-ssl` service assignment because
+certificates are removed by a full reset. After importing the main script,
+Job 005 restores the preserved certificate and enables HTTPS using its saved
+source restriction (`available-from` on RouterOS 7.24+, or the older
+`address` property). It also ensures bridge VLAN table entries exist for the
+IoT VLAN 50 and Guest VLAN 60 Wi-Fi interfaces in this homelab configuration.
