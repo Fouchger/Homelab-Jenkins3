@@ -424,8 +424,10 @@ def router_key_material(existing_private, existing_public, existing_host_key, ho
                     break
             if not known_host_line:
                 raise RuntimeError("SSH host key scanned by Jenkins did not match the public key returned over pinned HTTPS; no host key was saved")
-            if known_host_line != existing_host_key:
-                generated["MIKROTIK_SSH_HOST_KEY"] = known_host_line
+            # Return the HTTPS-verified value even when it matches the current
+            # value. The caller can then explicitly report that it was verified
+            # and, when update is enabled, ensure the Infisical value is present.
+            generated["MIKROTIK_SSH_HOST_KEY"] = known_host_line
         except RuntimeError:
             raise
         except (OSError, subprocess.SubprocessError, IndexError):
@@ -542,6 +544,10 @@ def main():
                 results[host_key_result] = ("VERIFIED (NOT UPDATED)", detail)
             elif host_key:
                 results[host_key_result] = ("VERIFIED (UNCHANGED)", "router SSH host key matches the saved key")
+            else:
+                results[host_key_result] = (
+                    "FAILED", "RouterOS SSH host key could not be established; no verified key was returned"
+                )
             for name, value in generated.items():
                 updates[(router_path, name)] = value
         except Exception as exc:
