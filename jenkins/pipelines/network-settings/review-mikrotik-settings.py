@@ -243,6 +243,45 @@ def review(values, router):
     else:
         print("DHCP DNS: review blocked until required DNS settings are saved")
 
+    if mode in ("router", "direct"):
+        firewall = router.get("ip/firewall/filter")
+        if not isinstance(firewall, list):
+            raise RuntimeError("RouterOS returned an invalid firewall filter list")
+        prefix = "homelab-managed-router-dns-"
+        desired_rules = {}
+        if mode == "router":
+            for item in networks_with_dns:
+                try:
+                    network = str(ipaddress.ip_network(item.get("address", ""), strict=True))
+                except ValueError:
+                    continue
+                tag = re.sub(r"[^A-Za-z0-9.-]", "-", network)
+                comment = prefix + tag
+                for protocol in ("udp", "tcp"):
+                    desired_rules[(comment, protocol)] = {
+                        "chain": "input", "action": "accept", "protocol": protocol,
+                        "dst-port": "53", "src-address": network,
+                        "comment": comment,
+                    }
+        kept_rules = set()
+        remove_count = 0
+        for rule in firewall:
+            if not isinstance(rule, dict) or not str(rule.get("comment", "")).startswith(prefix):
+                continue
+            key = (str(rule.get("comment", "")), str(rule.get("protocol", "")))
+            expected = desired_rules.get(key)
+            valid = bool(expected) and all(str(rule.get(field, "")) == value for field, value in expected.items())
+            valid = valid and str(rule.get("disabled", "false")).lower() != "true"
+            if valid and key not in kept_rules:
+                kept_rules.add(key)
+            else:
+                remove_count += 1
+        add_count = len(set(desired_rules) - kept_rules)
+        if add_count or remove_count:
+            print(f"Managed router DNS firewall rules: {add_count} to add, {remove_count} to remove")
+        else:
+            print("Managed router DNS firewall rules: matches")
+
     profiles = {"SEC_USERS_PASSWORD": "sec-users", "SEC_MGMT_PASSWORD": "sec-mgmt",
                 "SEC_IOT_PASSWORD": "sec-iot", "SEC_GUEST_PASSWORD": "sec-guest"}
     requested = [profile for key, profile in profiles.items() if values.get(key)]

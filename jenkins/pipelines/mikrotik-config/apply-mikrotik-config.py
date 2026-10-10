@@ -465,7 +465,10 @@ def rest_networks(router):
             gateway = str(ipaddress.IPv4Address(row.get("gateway", "")))
         except ValueError:
             continue
-        networks.append((rest_record_id(row), network, gateway))
+        networks.append((
+            rest_record_id(row), network, gateway,
+            str(row.get("dns-server", "")),
+        ))
     if not networks:
         raise RuntimeError("Could not read active DHCP network and gateway records; no changes were made")
     return networks
@@ -497,42 +500,71 @@ def rest_apply(router, networks, mode, dns_list, wifi_updates):
     if not isinstance(existing_rules, list):
         raise RuntimeError("RouterOS REST returned an invalid firewall filter list")
 
-    router.call("ip/dns/set", "POST", {
-        "allow-remote-requests": "true" if mode == "router" else "false",
-        "servers": dns_list,
-    })
+    expected_remote = "true" if mode == "router" else "false"
+    dns_changed = (
+        str(dns_state.get("servers", "")).replace(" ", "") != dns_list.replace(" ", "")
+        or dns_state.get("allow-remote-requests") != expected_remote
+    )
+    if dns_changed:
+        router.call("ip/dns/set", "POST", {
+            "allow-remote-requests": expected_remote,
+            "servers": dns_list,
+        })
 
-    dhcp_dns = [gateway if mode == "router" else dns_list for _identifier, _network, gateway in networks]
-    for (identifier, network, _gateway), server_list in zip(networks, dhcp_dns):
-        rest_set(router, f"ip/dhcp-server/network/{identifier}", {"dns-server": server_list})
+    dhcp_updates = []
+    expected_dhcp_dns = {}
+    for identifier, network, gateway, current_dns in networks:
+        desired = gateway if mode == "router" else dns_list
+        expected_dhcp_dns[identifier] = (network, desired)
+        if current_dns.replace(" ", "") != desired.replace(" ", ""):
+            rest_set(router, f"ip/dhcp-server/network/{identifier}", {"dns-server": desired})
+            dhcp_updates.append(network)
 
-    for rule in existing_rules:
-        if isinstance(rule, dict) and str(rule.get("comment", "")).startswith("homelab-managed-router-dns-"):
-            router.call(f"ip/firewall/filter/{rest_record_id(rule)}", "DELETE")
-    if mode == "router":
-        for _identifier, network, _gateway in networks:
+    managed_prefix = "homelab-managed-router-dns-"
+    desired_rules = {}
+    for _identifier, network, _gateway, _current_dns in networks:
+        if mode == "router":
             tag = re.sub(r"[^A-Za-z0-9.-]", "-", network)
+            comment = managed_prefix + tag
             for protocol in ("udp", "tcp"):
-                router.call("ip/firewall/filter", "PUT", {
+                desired_rules[(comment, protocol)] = {
                     "chain": "input", "action": "accept", "protocol": protocol,
                     "dst-port": "53", "src-address": network,
-                    "comment": "homelab-managed-router-dns-" + tag,
-                    "place-before": "0",
-                })
+                    "comment": comment,
+                }
+
+    kept_rules = set()
+    firewall_removed = 0
+    for rule in existing_rules:
+        if not isinstance(rule, dict) or not str(rule.get("comment", "")).startswith(managed_prefix):
+            continue
+        key = (str(rule.get("comment", "")), str(rule.get("protocol", "")))
+        expected = desired_rules.get(key)
+        valid = bool(expected) and all(str(rule.get(field, "")) == value for field, value in expected.items())
+        valid = valid and str(rule.get("disabled", "false")).lower() != "true"
+        if valid and key not in kept_rules:
+            kept_rules.add(key)
+        else:
+            router.call(f"ip/firewall/filter/{rest_record_id(rule)}", "DELETE")
+            firewall_removed += 1
+
+    firewall_added = 0
+    for key, payload in desired_rules.items():
+        if key not in kept_rules:
+            router.call("ip/firewall/filter", "PUT", {**payload, "place-before": "0"})
+            firewall_added += 1
 
     for profile, password in wifi_updates:
         rest_set(router, f"interface/wifi/security/{rest_record_id(wifi_records[profile])}", {"passphrase": password})
 
-    for identifier, network, gateway in networks:
+    for identifier, (network, expected) in expected_dhcp_dns.items():
         rows = router.call("ip/dhcp-server/network")
         match = next((row for row in rows if isinstance(row, dict) and row.get(".id") == identifier), None)
-        expected = gateway if mode == "router" else dns_list
         if not match or match.get("dns-server", "").replace(" ", "") != expected.replace(" ", ""):
             raise RuntimeError(f"DHCP DNS verification failed for {network}; encrypted backup is available in Jenkins artifacts")
     dns_state = router.call("ip/dns")
     if isinstance(dns_state, list):
         dns_state = dns_state[0] if dns_state else {}
-    expected_remote = "true" if mode == "router" else "false"
     if (dns_state.get("servers", "").replace(" ", "") != dns_list.replace(" ", "")
             or dns_state.get("allow-remote-requests") != expected_remote):
         raise RuntimeError("RouterOS DNS settings verification failed; encrypted backup is available in Jenkins artifacts")
@@ -540,10 +572,19 @@ def rest_apply(router, networks, mode, dns_list, wifi_updates):
         rule for rule in router.call("ip/firewall/filter")
         if isinstance(rule, dict) and str(rule.get("comment", "")).startswith("homelab-managed-router-dns-")
     ]
-    if mode == "router" and len(managed_rules) != 2 * len(networks):
+    actual_rules = {
+        (str(rule.get("comment", "")), str(rule.get("protocol", "")))
+        for rule in managed_rules if isinstance(rule, dict)
+    }
+    if actual_rules != set(desired_rules) or len(managed_rules) != len(desired_rules):
         raise RuntimeError("RouterOS did not retain all managed DNS firewall rules; encrypted backup is available in Jenkins artifacts")
-    if mode == "direct" and managed_rules:
-        raise RuntimeError("Managed router DNS firewall rules remain in direct mode; encrypted backup is available in Jenkins artifacts")
+    return {
+        "dns_changed": dns_changed,
+        "dhcp_updates": dhcp_updates,
+        "firewall_added": firewall_added,
+        "firewall_removed": firewall_removed,
+        "wifi_updated": [profile for profile, _password in wifi_updates],
+    }
 
 
 def apply(values):
@@ -619,13 +660,23 @@ def apply(values):
     finally:
         ssh.close()
     dns_list = ",".join(upstreams)
-    rest_apply(rest, networks, mode, dns_list, wifi_updates)
-    print(f"Configured MikroTik DNS upstreams in order: {', '.join(upstreams)}.")
-    print(f"Set DHCP DNS for {len(networks)} network(s) using mode '{mode}'.")
-    if wifi_updates:
-        print(f"Updated Wi-Fi security profiles: {', '.join(profile for profile, _ in wifi_updates)}.")
+    changes = rest_apply(rest, networks, mode, dns_list, wifi_updates)
+    if changes["dns_changed"]:
+        print(f"Configured MikroTik DNS upstreams in order: {', '.join(upstreams)}.")
+    else:
+        print(f"MikroTik DNS upstreams already match: {', '.join(upstreams)}.")
+    if changes["dhcp_updates"]:
+        print(f"Updated DHCP DNS for {len(changes['dhcp_updates'])} network(s) using mode '{mode}': {', '.join(changes['dhcp_updates'])}.")
+    else:
+        print(f"DHCP DNS already matches mode '{mode}' for all {len(networks)} network(s).")
+    if changes["wifi_updated"]:
+        print(f"Updated Wi-Fi security profiles: {', '.join(changes['wifi_updated'])}.")
     else:
         print("Wi-Fi settings were unchanged because no SEC_*_PASSWORD values were supplied.")
+    if changes["firewall_added"] or changes["firewall_removed"]:
+        print(f"Managed DNS firewall rules changed: added {changes['firewall_added']}, removed {changes['firewall_removed']}.")
+    else:
+        print("Managed DNS firewall rules already match the selected mode.")
 
 
 def main():
