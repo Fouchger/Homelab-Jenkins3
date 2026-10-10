@@ -155,7 +155,17 @@ class RouterREST:
             response = connection.getresponse()
             raw = response.read()
             if response.status >= 400:
-                raise RuntimeError(f"RouterOS REST {method} {path} failed with HTTP {response.status}; response suppressed")
+                detail = ""
+                try:
+                    error_body = json.loads(raw.decode("utf-8")) if raw else {}
+                    if isinstance(error_body, dict):
+                        message = error_body.get("detail") or error_body.get("message")
+                        if isinstance(message, str):
+                            detail = " ".join(message.split())[:240]
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    pass
+                suffix = f"; RouterOS says: {detail}" if detail else ""
+                raise RuntimeError(f"RouterOS REST {method} {path} failed with HTTP {response.status}{suffix}")
             if not raw:
                 return {}
             try:
@@ -192,8 +202,11 @@ def ensure_ssh_key(router, username, public_key):
         return
     try:
         result = router.call("user/ssh-keys", "PUT", {"user": username, "key": public_key.strip()})
-    except RuntimeError:
-        raise RuntimeError("RouterOS did not authorize the Jenkins SSH key; the REST account needs user-management permission to assign it") from None
+    except RuntimeError as exc:
+        detail = str(exc)
+        if "not enough permissions" in detail.lower():
+            raise RuntimeError("RouterOS denied Jenkins SSH key authorization for lack of permissions. The REST account needs the RouterOS policy required to manage SSH keys (usually policy and write).") from None
+        raise RuntimeError(f"RouterOS rejected Jenkins SSH key authorization: {detail}") from None
     if isinstance(result, dict) and result.get("error"):
         raise RuntimeError("RouterOS rejected Jenkins SSH key authorization; check REST account user-management permission")
     rows = router.call(path)
