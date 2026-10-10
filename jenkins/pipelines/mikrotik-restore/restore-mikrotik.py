@@ -289,7 +289,10 @@ def build_wrapper(config_path, wrapper_path, marker, admin_user, admin_password,
 def verify_and_reconnect(address, ssh_user, key_file, host_key, marker, deadline):
     pin = (host_key[0], host_key[1])
     last_error = "Router has not returned yet"
+    next_status = time.monotonic()
+    attempts = 0
     while time.monotonic() < deadline:
+        attempts += 1
         client = None
         try:
             client = connect(address, ssh_user, pin, key_filename=key_file, timeout=8)
@@ -301,12 +304,20 @@ def verify_and_reconnect(address, ssh_user, key_file, host_key, marker, deadline
             client.close()
             print(f"Router restored and verified at {address}; Jenkins key authentication is working.")
             return
-        except RuntimeError as exc:
-            last_error = str(exc)
+        except Exception as exc:
+            # Network, SSH handshake, and RouterOS command failures are
+            # expected while the router is rebooting and importing its config.
+            last_error = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
             if client:
-                client.close()
+                try:
+                    client.close()
+                except Exception:
+                    pass
             time.sleep(15)
-    raise RuntimeError(f"Reset was initiated but the router did not return with verified key access at MIKROTIK_IP={address}. Check the Proxmox-connected ether2 link, script log on the router, and pinned host key. Last safe status: {last_error}")
+        if time.monotonic() >= next_status:
+            print(f"Waiting for MikroTik recovery at {address}: SSH not ready yet (attempt {attempts}; last status: {last_error}).")
+            next_status = time.monotonic() + 60
+    raise RuntimeError(f"Reset was initiated but the router did not return with verified key access at MIKROTIK_IP={address} before the recovery timeout. Check the Proxmox-connected ether2 link, script log on the router, and pinned host key. Last safe status: {last_error}")
 
 
 def main():
@@ -393,7 +404,9 @@ def main():
         command(client, f"/system/script/run [find where name={trigger_name}]", allow_disconnect=True)
         client.close()
         client = None
-        deadline = time.monotonic() + 15 * 60
+        # RouterOS reset, first boot, and configuration import can take
+        # several minutes. Keep polling well beyond the usual restart window.
+        deadline = time.monotonic() + 30 * 60
         verify_and_reconnect(address, ssh_user, str(key_path), host_key, marker, deadline)
         # Apply Infisical-managed DNS/DHCP mode and Wi-Fi passphrases over the
         # restored key-authenticated connection, with its own encrypted backup.
