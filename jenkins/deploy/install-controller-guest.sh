@@ -540,7 +540,7 @@ if (job == null) {
     println("Updating managed Pipeline '${jobName}' to the current repository pipeline path.")
 }
 job.setDefinition(definition)
-job.setDescription('001 - Updates both verified Jenkins LXCs from the configured GitHub branch every day at 2:00 a.m. Pacific/Auckland. Manual runs show the last recorded installed commit and the GitHub commit before confirmation. Timer runs proceed automatically; containers are always reused and never destroyed.')
+job.setDescription('001 - Updates both verified Jenkins LXCs from one exact GitHub commit every day at 2:00 a.m. Pacific/Auckland. Refreshes controller and agent installers, managed Jenkins pipeline job definitions, the Job 003 SSH host-key form, and the complete project snapshot on the controller. Pipeline and Ansible jobs check out their project files from GitHub when they run. Manual runs show installed and GitHub commits before confirmation. Containers are reused and never destroyed.')
 job.removeProperty(ParametersDefinitionProperty)
 job.addProperty(new ParametersDefinitionProperty(
     new BooleanParameterDefinition('AUTOMATED_UPDATE', false, 'Set by the daily timer. Manual runs show the installed and latest GitHub versions before asking for confirmation.')
@@ -740,6 +740,39 @@ job.save()
 JENKINS_INFISICAL_AUDIT_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/102-homelab-infisical-audit-pipeline.groovy"
 chmod 0640 "$jenkins_home/init.groovy.d/102-homelab-infisical-audit-pipeline.groovy"
+
+# Declarative pipeline parameters normally refresh only when that job runs.
+# Keep the router SSH-key form current as part of the server update so users
+# do not have to submit the obsolete manual fingerprint parameter once first.
+cat >"$jenkins_home/init.groovy.d/103-homelab-network-settings-parameters.groovy" <<'JENKINS_NETWORK_SETTINGS_PARAMETERS_HOOK'
+import hudson.model.ChoiceParameterDefinition
+import hudson.model.ParametersDefinitionProperty
+import jenkins.model.Jenkins
+
+def job = Jenkins.get().getItem('003 - DNS and Cloudflare Settings')
+if (job == null) {
+    println("Network settings job parameter refresh skipped: job does not exist yet.")
+} else {
+    def existing = job.getProperty(ParametersDefinitionProperty)
+    if (existing == null) {
+        println("Network settings job parameter refresh skipped: no existing parameter definitions to preserve.")
+    } else {
+        def definitions = new ArrayList(existing.getParameterDefinitions())
+        definitions.removeAll { it.getName() in ['MIKROTIK_SSH_HOST_KEY_FINGERPRINT', 'MIKROTIK_SSH_HOST_KEY_UPDATE'] }
+        definitions.add(new ChoiceParameterDefinition(
+            'MIKROTIK_SSH_HOST_KEY_UPDATE',
+            ['no', 'yes'] as String[],
+            '/mikrotik/router01/MIKROTIK_SSH_HOST_KEY — Test the SSH host key against the key fetched from RouterOS over the pinned HTTPS connection. Choose yes to save/update the verified key; no tests without changing the saved key.'
+        ))
+        job.removeProperty(ParametersDefinitionProperty)
+        job.addProperty(new ParametersDefinitionProperty(definitions))
+        job.save()
+        println("Updated Job 003 SSH host-key parameters; removed the manual fingerprint field.")
+    }
+}
+JENKINS_NETWORK_SETTINGS_PARAMETERS_HOOK
+chown jenkins:jenkins "$jenkins_home/init.groovy.d/103-homelab-network-settings-parameters.groovy"
+chmod 0640 "$jenkins_home/init.groovy.d/103-homelab-network-settings-parameters.groovy"
 
 rm -f -- "$jenkins_home/init.groovy.d/97-homelab-infisical-credential-approvals.groovy" \
   "$jenkins_home/init.groovy.d/98-homelab-infisical-credential-setup-pipeline.groovy"
