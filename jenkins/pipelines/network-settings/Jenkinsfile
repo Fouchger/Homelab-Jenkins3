@@ -47,6 +47,7 @@ pipeline {
             steps {
                 catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
                 withCredentials([
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
                     usernamePassword(credentialsId: 'infisical-homelab-prod-writer-api', usernameVariable: 'INFISICAL_WRITE_CLIENT_ID', passwordVariable: 'INFISICAL_WRITE_CLIENT_SECRET'),
                     string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
                     string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),

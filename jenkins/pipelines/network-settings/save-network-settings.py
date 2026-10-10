@@ -101,13 +101,13 @@ def request_json(url, method="GET", token=None, body=None, form=None, allow_404=
         raise RuntimeError("Infisical returned an invalid JSON response") from None
 
 
-def infisical_login(base_url):
+def infisical_login(base_url, client_id_name, client_secret_name):
     response = request_json(
         f"{base_url}/api/v1/auth/universal-auth/login",
         method="POST",
         form={
-            "clientId": required("INFISICAL_WRITE_CLIENT_ID"),
-            "clientSecret": required("INFISICAL_WRITE_CLIENT_SECRET"),
+            "clientId": required(client_id_name),
+            "clientSecret": required(client_secret_name),
         },
     )
     token = response.get("accessToken") if isinstance(response, dict) else None
@@ -452,19 +452,19 @@ def verify_router_tls_pin(host, expected):
         raise RuntimeError("The entered MikroTik HTTPS fingerprint does not match the certificate currently served by MIKROTIK_HOST; it was not saved")
 
 
-def save_one_secret(base_url, token, secret_path, name, value):
+def save_one_secret(base_url, read_token, write_token, secret_path, name, value):
     """Write and verify one value; restore only this value if verification fails."""
-    previous = read_secret(base_url, token, secret_path, name)
+    previous = read_secret(base_url, read_token, secret_path, name)
     try:
-        write_secret(base_url, token, secret_path, name, value, previous is not None)
-        if read_secret(base_url, token, secret_path, name) != value:
+        write_secret(base_url, write_token, secret_path, name, value, previous is not None)
+        if read_secret(base_url, read_token, secret_path, name) != value:
             raise RuntimeError("Infisical read-back did not match the submitted value")
     except Exception:
         try:
             if previous is None:
-                delete_secret(base_url, token, secret_path, name)
+                delete_secret(base_url, write_token, secret_path, name)
             else:
-                write_secret(base_url, token, secret_path, name, previous, True)
+                write_secret(base_url, write_token, secret_path, name, previous, True)
         except Exception:
             raise RuntimeError("save failed and rollback could not be verified") from None
         raise RuntimeError("save failed; previous value was restored") from None
@@ -489,25 +489,28 @@ def main():
                     updates[key] = validate_value(name, value)
                 except RuntimeError as exc:
                     results[key] = ("FAILED", str(exc))
-    token = infisical_login(base_url)
+    read_token = infisical_login(base_url, "INFISICAL_READ_CLIENT_ID", "INFISICAL_READ_CLIENT_SECRET")
+    write_token = infisical_login(base_url, "INFISICAL_WRITE_CLIENT_ID", "INFISICAL_WRITE_CLIENT_SECRET")
     router_path = "/mikrotik/router01"
     try:
-        stored_router_host = read_secret(base_url, token, router_path, "MIKROTIK_HOST") or ""
+        stored_router_host = read_secret(base_url, read_token, router_path, "MIKROTIK_HOST") or ""
     except Exception as exc:
         stored_router_host = ""
         results[(router_path, "MIKROTIK_HOST")] = ("FAILED", f"could not read current router host: {exc}")
     router_host = updates.get((router_path, "MIKROTIK_HOST"), stored_router_host)
     update_ssh_host_key = os.environ.get("MIKROTIK_SSH_HOST_KEY_UPDATE", "yes").strip().lower() == "yes"
+    host_key_result = (router_path, "MIKROTIK_SSH_HOST_KEY")
+    print("Router SSH host-key update: " + ("yes" if update_ssh_host_key else "no"))
     if router_host and not any(path == router_path for path, _ in results):
         changed = bool(stored_router_host and router_host != stored_router_host)
         if not os.environ.get("MIKROTIK_HOST", "").strip():
             os.environ["MIKROTIK_HOST"] = router_host
         try:
-            private = read_secret(base_url, token, router_path, "MIKROTIK_SSH_PRIVATE_KEY") or ""
-            public = read_secret(base_url, token, router_path, "MIKROTIK_SSH_PUBLIC_KEY") or ""
-            host_key = read_secret(base_url, token, router_path, "MIKROTIK_SSH_HOST_KEY") or ""
+            private = read_secret(base_url, read_token, router_path, "MIKROTIK_SSH_PRIVATE_KEY") or ""
+            public = read_secret(base_url, read_token, router_path, "MIKROTIK_SSH_PUBLIC_KEY") or ""
+            host_key = read_secret(base_url, read_token, router_path, "MIKROTIK_SSH_HOST_KEY") or ""
             tls_pin = updates.get((router_path, "MIKROTIK_TLS_CERT_SHA256"), "")
-            stored_tls = read_secret(base_url, token, router_path, "MIKROTIK_TLS_CERT_SHA256") or ""
+            stored_tls = read_secret(base_url, read_token, router_path, "MIKROTIK_TLS_CERT_SHA256") or ""
             effective_tls_pin = tls_pin or stored_tls
             if tls_pin:
                 verify_router_tls_pin(router_host, tls_pin)
@@ -521,17 +524,16 @@ def main():
                 observed = router_tls_fingerprint(router_host)
                 print("RouterOS HTTPS certificate fingerprint seen by this Jenkins agent: " + observed)
                 print("Verify it through a trusted local connection and enter MIKROTIK_TLS_CERT_SHA256 on the next run; this scanned value was not saved.")
-            rest_username = updates.get((router_path, "MIKROTIK_USERNAME")) or read_secret(base_url, token, router_path, "MIKROTIK_USERNAME") or ""
-            rest_password = updates.get((router_path, "MIKROTIK_PASSWORD")) or read_secret(base_url, token, router_path, "MIKROTIK_PASSWORD") or ""
+            rest_username = updates.get((router_path, "MIKROTIK_USERNAME")) or read_secret(base_url, read_token, router_path, "MIKROTIK_USERNAME") or ""
+            rest_password = updates.get((router_path, "MIKROTIK_PASSWORD")) or read_secret(base_url, read_token, router_path, "MIKROTIK_PASSWORD") or ""
             if not rest_username or not rest_password:
-                rest_username = updates.get((router_path, "MIKROTIK_BOOTSTRAP_USERNAME")) or read_secret(base_url, token, router_path, "MIKROTIK_BOOTSTRAP_USERNAME") or ""
-                rest_password = updates.get((router_path, "MIKROTIK_BOOTSTRAP_PASSWORD")) or read_secret(base_url, token, router_path, "MIKROTIK_BOOTSTRAP_PASSWORD") or ""
+                rest_username = updates.get((router_path, "MIKROTIK_BOOTSTRAP_USERNAME")) or read_secret(base_url, read_token, router_path, "MIKROTIK_BOOTSTRAP_USERNAME") or ""
+                rest_password = updates.get((router_path, "MIKROTIK_BOOTSTRAP_PASSWORD")) or read_secret(base_url, read_token, router_path, "MIKROTIK_BOOTSTRAP_PASSWORD") or ""
             generated = router_key_material(
                 private, public, host_key, router_host, effective_tls_pin,
                 rest_username, rest_password,
             )
             verified_host_key = generated.pop("MIKROTIK_SSH_HOST_KEY", None)
-            host_key_result = (router_path, "MIKROTIK_SSH_HOST_KEY")
             if verified_host_key and update_ssh_host_key:
                 updates[host_key_result] = verified_host_key
                 print("RouterOS SSH host key verified against its public key over the pinned HTTPS connection.")
@@ -547,11 +549,19 @@ def main():
                 if key[0] == router_path:
                     results[key] = ("FAILED", str(exc))
                     updates.pop(key)
+    elif not router_host:
+        results[host_key_result] = (
+            "FAILED", "MIKROTIK_HOST could not be read from Infisical; enter the current router host in Settings. SSH host-key verification was skipped"
+        )
+    else:
+        results[host_key_result] = (
+            "FAILED", "SSH host-key verification was skipped because another router setting failed validation"
+        )
 
     for key, value in updates.items():
         path, name = key
         try:
-            save_one_secret(base_url, token, path, name, value)
+            save_one_secret(base_url, read_token, write_token, path, name, value)
             results[key] = ("SAVED", "")
         except Exception as exc:
             results[key] = ("FAILED", str(exc))
@@ -565,7 +575,7 @@ def main():
                 print(f"{status}: {secret_path}/{name}" + (f" — {detail}" if detail else ""))
     if not updates and not results:
         print("No settings changed. Existing Infisical values are ready for Review.")
-    public_key = read_secret(base_url, token, "/mikrotik/router01", "MIKROTIK_SSH_PUBLIC_KEY")
+    public_key = read_secret(base_url, read_token, "/mikrotik/router01", "MIKROTIK_SSH_PUBLIC_KEY")
     if public_key:
         print("Generated Jenkins SSH public key (public key only; Job 004 authorizes it with the stored RouterOS administrator login):")
         print(public_key)
