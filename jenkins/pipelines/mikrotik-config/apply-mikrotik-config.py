@@ -210,12 +210,34 @@ def ensure_ssh_key(router, username, public_key):
     if account.get("disabled") == "true":
         raise RuntimeError("MIKROTIK_SSH_USER is disabled on RouterOS")
     group_name = account.get("group", "")
-    groups = router.call("user/group?.proplist=name,policy")
+    groups = router.call("user/group?.proplist=.id,name,policy")
     group = next((row for row in groups if isinstance(row, dict) and row.get("name") == group_name), None) if isinstance(groups, list) else None
-    policies = {item.strip().lower() for item in str(group.get("policy", "")).split(",")
-                if item.strip() and not item.strip().startswith("!")} if group else set()
+    policy_items = [item.strip() for item in str(group.get("policy", "")).split(",") if item.strip()] if group else []
+    policies = {item.lower() for item in policy_items if not item.startswith("!")}
+    missing_policies = {"read", "write", "ftp", "sensitive"} - policies
+    if missing_policies:
+        raise RuntimeError(
+            f"MIKROTIK_SSH_USER group '{group_name}' is missing required backup policies: "
+            + ", ".join(sorted(missing_policies))
+        )
     if "ssh" not in policies:
-        raise RuntimeError(f"MIKROTIK_SSH_USER group '{group_name}' does not allow SSH login; enable the ssh policy or assign a dedicated SSH backup group")
+        members = [row for row in users if isinstance(row, dict) and row.get("group") == group_name]
+        if len(members) != 1 or members[0].get("name") != username:
+            raise RuntimeError(f"MIKROTIK_SSH_USER group '{group_name}' does not allow SSH login and is shared by other RouterOS users; assign a dedicated group before running Job 004")
+        if not group:
+            raise RuntimeError(f"Could not read RouterOS group '{group_name}' to safely enable SSH login")
+        # This is an approved, reversible change. Only modify a group that is
+        # used exclusively by the dedicated Jenkins backup user.
+        updated_policy = [item for item in policy_items if item.lower() not in ("ssh", "!ssh")]
+        updated_policy.append("ssh")
+        router.call(f"user/group/{rest_record_id(group)}", "PATCH", {"policy": ",".join(updated_policy)})
+        groups = router.call("user/group?.proplist=.id,name,policy")
+        group = next((row for row in groups if isinstance(row, dict) and row.get("name") == group_name), None) if isinstance(groups, list) else None
+        policies = {item.strip().lower() for item in str(group.get("policy", "")).split(",")
+                    if item.strip() and not item.strip().startswith("!")} if group else set()
+        if "ssh" not in policies:
+            raise RuntimeError(f"RouterOS did not confirm the ssh policy for dedicated group '{group_name}'")
+        print(f"Enabled SSH login for the dedicated MikroTik backup group '{group_name}'.")
 
     path = "user/ssh-keys?.proplist=.id,user,info,key-type,bits,fingerprint"
     rows = router.call(path)
@@ -305,7 +327,7 @@ def ssh_command(client, command_text):
     combined = (output + b"\n" + error).decode("utf-8", errors="replace")
     if status != 0 or re.search(r"(?im)^\s*(failure|error|script error):|not enough permissions", combined):
         if "not enough permissions" in combined.lower():
-            raise RuntimeError("RouterOS denied the backup command. The SSH backup account needs ssh, read, write, policy, sensitive, and ftp permissions.")
+            raise RuntimeError("RouterOS denied the backup command. The SSH backup account needs ssh, read, write, sensitive, and ftp permissions.")
         raise RuntimeError("RouterOS rejected a backup command; command output was suppressed")
     return combined
 

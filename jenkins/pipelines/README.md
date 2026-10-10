@@ -50,9 +50,10 @@ and `MIKROTIK_PASSWORD`. Job 003 checks the entered certificate fingerprint
 against the live certificate before saving it. `www-ssl` must be enabled on
 RouterOS. Job 004 also uses `MIKROTIK_SSH_USER`, `MIKROTIK_SSH_PRIVATE_KEY`, and
 the independently verified `MIKROTIK_SSH_HOST_KEY` for the pre-change backup.
-Its SSH account must have `ssh`, `read`, `write`, `ftp`, `policy`, and
-`sensitive` permissions: `policy` allows configuration export, while
-`sensitive` includes passwords and keys. Job 004 creates a RouterOS-password-
+Its SSH account must have `ssh`, `read`, `write`, `ftp`, and `sensitive`
+permissions. After approval, Job 004 enables `ssh` for the account's group only
+when that group contains no other users; shared groups are never changed.
+`sensitive` is required to include passwords and keys in the export. Job 004 creates a RouterOS-password-
 protected binary backup and a sensitive text export, downloads both over SFTP,
 encrypts them together on the Jenkins agent with `BINARY_BACKUP_PASSWORD`, and
 removes their temporary router copies before applying settings. The resulting

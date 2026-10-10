@@ -28,7 +28,7 @@ python3 jenkins/pipelines/network-settings/review-mikrotik-settings.py
         }
         stage('Approve routine changes') {
             steps {
-                input message: 'Review the router and planned DNS, DHCP, and Wi-Fi changes above. If they are correct, Jenkins will authorize its saved SSH key for the configured backup user if needed, create and encrypt pre-change text and binary backups over pinned SSH, then apply the approved settings. RouterOS key authorization disables password-based SSH login for that user, so use a dedicated Jenkins backup account. No router changes are made before approval.', ok: 'Back up and apply changes'
+                input message: 'Review the router and planned DNS, DHCP, and Wi-Fi changes above. If they are correct, Jenkins will enable SSH login for the backup user only when its RouterOS group is dedicated to that user, authorize Jenkins’s saved SSH key if needed, create and encrypt pre-change text and binary backups over pinned SSH, then apply the approved settings. If the group is shared, Jenkins stops without changing group permissions. RouterOS key authorization disables password-based SSH login for that user, so use a dedicated Jenkins backup account. No changes are made before approval.', ok: 'Back up and apply changes'
             }
         }
         stage('Back up and configure MikroTik') {
