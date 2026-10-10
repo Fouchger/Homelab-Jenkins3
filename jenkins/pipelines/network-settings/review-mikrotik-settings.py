@@ -156,10 +156,10 @@ def ssh_backup_blocker(values):
     lines = [line.strip() for line in values.get("MIKROTIK_SSH_HOST_KEY", "").splitlines()
              if line.strip() and not line.lstrip().startswith("#")]
     if len(lines) != 1:
-        return "verify and save MIKROTIK_SSH_HOST_KEY in Settings"
+        return "run Job 003 Settings with SSH host-key update set to yes; it verifies and saves the key over pinned HTTPS"
     fields = lines[0].split()
     if len(fields) < 3 or fields[0] != host or not fields[1].startswith("ssh-"):
-        return "saved MIKROTIK_SSH_HOST_KEY does not match MIKROTIK_HOST"
+        return "run Job 003 Settings with SSH host-key update set to yes to verify and refresh the saved key"
     return ""
 
 

@@ -761,7 +761,7 @@ if (job == null) {
         definitions.removeAll { it.getName() in ['MIKROTIK_SSH_HOST_KEY_FINGERPRINT', 'MIKROTIK_SSH_HOST_KEY_UPDATE'] }
         definitions.add(new ChoiceParameterDefinition(
             'MIKROTIK_SSH_HOST_KEY_UPDATE',
-            ['no', 'yes'] as String[],
+            ['yes', 'no'] as String[],
             '/mikrotik/router01/MIKROTIK_SSH_HOST_KEY — Test the SSH host key against the key fetched from RouterOS over the pinned HTTPS connection. Choose yes to save/update the verified key; no tests without changing the saved key.'
         ))
         job.removeProperty(ParametersDefinitionProperty)

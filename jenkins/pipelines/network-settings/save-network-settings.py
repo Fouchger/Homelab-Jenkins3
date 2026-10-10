@@ -497,7 +497,7 @@ def main():
         stored_router_host = ""
         results[(router_path, "MIKROTIK_HOST")] = ("FAILED", f"could not read current router host: {exc}")
     router_host = updates.get((router_path, "MIKROTIK_HOST"), stored_router_host)
-    update_ssh_host_key = os.environ.get("MIKROTIK_SSH_HOST_KEY_UPDATE", "no").strip().lower() == "yes"
+    update_ssh_host_key = os.environ.get("MIKROTIK_SSH_HOST_KEY_UPDATE", "yes").strip().lower() == "yes"
     if router_host and not any(path == router_path for path, _ in results):
         changed = bool(stored_router_host and router_host != stored_router_host)
         if not os.environ.get("MIKROTIK_HOST", "").strip():
