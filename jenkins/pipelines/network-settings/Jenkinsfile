@@ -55,7 +55,10 @@ pipeline {
                 ]) {
                     sh(label: 'Validate and save settings in Infisical', script: '''#!/bin/sh
 set +x
-python3 jenkins/pipelines/network-settings/save-network-settings.py
+script_file=$(mktemp)
+trap 'rm -f "$script_file"' EXIT
+git show HEAD:jenkins/pipelines/network-settings/save-network-settings.py > "$script_file"
+python3 "$script_file"
 ''')
                 }
                 }

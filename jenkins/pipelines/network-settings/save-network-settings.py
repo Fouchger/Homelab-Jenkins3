@@ -572,6 +572,25 @@ def main():
         except Exception as exc:
             results[key] = ("FAILED", str(exc))
 
+    if host_key_result not in results:
+        try:
+            saved_host_key = read_secret(base_url, read_token, router_path, "MIKROTIK_SSH_HOST_KEY") or ""
+            lines = [line.strip() for line in saved_host_key.splitlines()
+                     if line.strip() and not line.lstrip().startswith("#")]
+            fields = lines[0].split() if len(lines) == 1 else []
+            if len(fields) >= 3 and fields[0] == router_host and fields[1].startswith("ssh-"):
+                results[host_key_result] = (
+                    "VERIFIED (UNCHANGED)", "a valid pinned key is already saved in Infisical"
+                )
+            else:
+                results[host_key_result] = (
+                    "FAILED", "no valid router SSH host-key pin is saved in Infisical; verification or save did not complete"
+                )
+        except Exception:
+            results[host_key_result] = (
+                "FAILED", "could not read back MIKROTIK_SSH_HOST_KEY from Infisical after verification"
+            )
+
     print("Settings results (blank inputs were left unchanged):")
     for secret_path, items in CONFIG.items():
         for name in items:
