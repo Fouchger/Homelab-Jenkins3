@@ -50,10 +50,15 @@ and `MIKROTIK_PASSWORD`. Job 003 checks the entered certificate fingerprint
 against the live certificate before saving it. `www-ssl` must be enabled on
 RouterOS. Job 004 requires the independently verified HTTPS certificate
 fingerprint and a RouterOS account with REST access, write permissions for the
-settings it manages, and permissions to export and read files. The sensitive
-export includes passwords and keys, so protect the encrypted build artifact and
-its `BINARY_BACKUP_PASSWORD`. It is a text export, not a binary clone. Update
-the saved fingerprint after certificate rotation.
+settings it manages, and permissions to export and read files. Because Job 004
+exports passwords and keys before applying changes, the account's RouterOS group
+must include `policy` for the export command and `sensitive` to include passwords
+and keys. MikroTik's REST API requires the `api`, `rest-api`, `read`, `write`,
+`ftp`, and `test` policies for REST operations. If RouterOS rejects the export
+for permissions, Job 004 stops before changing settings and reports the required
+policies. Protect the encrypted build artifact and its
+`BINARY_BACKUP_PASSWORD`. It is a text export, not a binary clone. Update the
+saved fingerprint after certificate rotation.
 The full reset job is intentionally separate from routine router configuration.
 It reads the multiline `MIKROTIK_SCRIPT` secret and post-reset address
 `MIKROTIK_IP` from `/mikrotik/router01`, requires explicit approval, and relies

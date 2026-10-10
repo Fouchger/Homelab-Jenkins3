@@ -151,6 +151,24 @@ class RouterREST:
             if allow_404 and response.status == 404:
                 return None
             if response.status >= 400:
+                detail = ""
+                try:
+                    error_body = json.loads(raw.decode("utf-8"))
+                    if isinstance(error_body, dict):
+                        detail = " ".join(str(error_body.get(key, "")) for key in ("error", "message", "detail"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    pass
+                detail = detail.lower()
+                if path == "export" and response.status == 500 and any(
+                    marker in detail for marker in ("not enough permissions", "not allowed")
+                ):
+                    raise RuntimeError(
+                        "RouterOS rejected the sensitive pre-change export (HTTP 500). "
+                        "Check that the Job 004 account's RouterOS group has 'policy' (needed for export) "
+                        "and 'sensitive' (needed to include passwords and keys), plus 'api', 'rest-api', "
+                        "read, write, ftp, and test for the current REST workflow. "
+                        "No router settings were applied."
+                    )
                 raise RuntimeError(f"RouterOS REST {method} {path} failed with HTTP {response.status}; response suppressed")
             if not raw:
                 return {}
