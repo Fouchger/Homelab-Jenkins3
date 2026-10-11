@@ -214,7 +214,8 @@ def ensure_ssh_key(router, username, public_key):
     group = next((row for row in groups if isinstance(row, dict) and row.get("name") == group_name), None) if isinstance(groups, list) else None
     policy_items = [item.strip() for item in str(group.get("policy", "")).split(",") if item.strip()] if group else []
     policies = {item.lower() for item in policy_items if not item.startswith("!")}
-    missing_policies = {"read", "write", "ftp", "sensitive"} - policies
+    # RouterOS requires the test policy for remote system backup operations.
+    missing_policies = {"read", "write", "ftp", "sensitive", "test"} - policies
     if missing_policies:
         raise RuntimeError(
             f"MIKROTIK_SSH_USER group '{group_name}' is missing required backup policies: "
