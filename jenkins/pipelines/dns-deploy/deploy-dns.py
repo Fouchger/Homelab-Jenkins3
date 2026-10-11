@@ -105,7 +105,7 @@ def read_infisical(*, require_backup_password=False):
             raise RuntimeError(f"{field} must be at least 6 characters and contain no line breaks")
     for role in ("dns01", "dns02"):
         root_password = values[f"{role.upper()}_ROOT_PASSWORD"]
-        if len(root_password) < 16 or ":" in root_password or any(char in root_password for char in "\r\n\0"):
+        if len(root_password) < 6 or ":" in root_password or any(char in root_password for char in "\r\n\0"):
             raise RuntimeError(f"/proxmox/lxc/{role}/LXC_ROOT_PASSWORD is invalid")
     return values
 

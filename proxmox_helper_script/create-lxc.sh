@@ -150,13 +150,13 @@ if [[ -z ${HOMELAB_LXC_ROOT_PASSWORD_FILE:-} ]]; then
   }
   HOMELAB_LXC_ROOT_PASSWORD_FILE="$temp_dir/root-password-input"
   while true; do
-    printf '\nChoose a root password for %s (CTID %s), at least 16 characters; do not use a colon: ' "${LXC_PROFILE_TITLE:-LXC}" "$container_id" >/dev/tty
+    printf '\nChoose a root password for %s (CTID %s), at least 6 characters; do not use a colon: ' "${LXC_PROFILE_TITLE:-LXC}" "$container_id" >/dev/tty
     IFS= read -r -s root_password </dev/tty || exit 1
     printf '\nConfirm the root password: ' >/dev/tty
     IFS= read -r -s confirm_password </dev/tty || exit 1
     printf '\n' >/dev/tty
-    if (( ${#root_password} < 16 )) || [[ $root_password == *:* ]]; then
-      printf 'Use at least 16 characters and do not include a colon.\n' >/dev/tty
+    if (( ${#root_password} < 6 )) || [[ $root_password == *:* ]]; then
+      printf 'Use at least 6 characters and do not include a colon.\n' >/dev/tty
     elif [[ $root_password != "$confirm_password" ]]; then
       printf 'The passwords did not match. Try again.\n' >/dev/tty
     else
@@ -180,9 +180,9 @@ if [[ -n ${HOMELAB_LXC_ROOT_PASSWORD_FILE:-} ]]; then
     exit 2
   }
   IFS= read -r root_password < "$password_file" || true
-  [[ ${#root_password} -ge 16 && $root_password != *:* && $root_password != *$'\n'* ]] || {
+  [[ ${#root_password} -ge 6 && $root_password != *:* && $root_password != *$'\n'* ]] || {
     unset root_password
-    printf 'Root password must be at least 16 characters and must not contain a colon.\n' >&2
+    printf 'Root password must be at least 6 characters and must not contain a colon.\n' >&2
     exit 2
   }
   password_payload="$temp_dir/root-password"
