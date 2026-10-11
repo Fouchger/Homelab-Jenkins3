@@ -86,8 +86,8 @@ def infisical_secrets():
         ),
         "/mikrotik/backup": ("BINARY_BACKUP_PASSWORD",),
         "/mikrotik/wifi_security": ("SEC_GUEST_PASSWORD", "SEC_IOT_PASSWORD", "SEC_MGMT_PASSWORD", "SEC_USERS_PASSWORD"),
-        "/dns/dns01": ("DNS_IPV4",),
-        "/dns/dns02": ("DNS_IPV4",),
+        "/dns/dns01": ("DSN_IP4",),
+        "/dns/dns02": ("DSN_IP4",),
     }.items():
         query = urllib.parse.urlencode({
             "projectId": required("INFISICAL_PROJECT_ID"),
@@ -103,7 +103,7 @@ def infisical_secrets():
             secret = result.get("secret", {}) if isinstance(result, dict) else {}
             value = secret.get("secretValue") if isinstance(secret, dict) else None
             if isinstance(value, str):
-                key = f"{path.rsplit('/', 1)[-1].upper()}_IPV4" if name == "DNS_IPV4" else name
+                key = f"{path.rsplit('/', 1)[-1].upper()}_IPV4" if name == "DSN_IP4" else name
                 values[key] = value
     return values
 

@@ -29,8 +29,8 @@ CONFIG = {
         "DNS_PUBLIC_FALLBACKS": "CFG_DNS_PUBLIC_FALLBACKS",
         "DNS_HOSTED_ZONES": "CFG_DNS_HOSTED_ZONES",
     },
-    "/dns/dns01": {"DNS_IPV4": "CFG_DNS01_IPV4", "DNS_SERVER_ADMIN_PASSWORD": "CFG_DNS01_ADMIN_PASSWORD"},
-    "/dns/dns02": {"DNS_IPV4": "CFG_DNS02_IPV4", "DNS_SERVER_ADMIN_PASSWORD": "CFG_DNS02_ADMIN_PASSWORD"},
+    "/dns/dns01": {"DSN_IP4": "CFG_DNS01_IPV4", "DNS_SERVER_ADMIN_PASSWORD": "CFG_DNS01_ADMIN_PASSWORD"},
+    "/dns/dns02": {"DSN_IP4": "CFG_DNS02_IPV4", "DNS_SERVER_ADMIN_PASSWORD": "CFG_DNS02_ADMIN_PASSWORD"},
     "/mikrotik/router01": {
         "MIKROTIK_HOST": "CFG_MIKROTIK_HOST",
         "MIKROTIK_IP": "CFG_MIKROTIK_IP",
@@ -197,7 +197,7 @@ def validate_value(name, value):
         if len(value) < 8 or any(char in value for char in "\r\n\0"):
             raise RuntimeError(f"{name} must be at least 8 characters and must not contain a line break")
         return value
-    if name == "DNS_IPV4":
+    if name == "DSN_IP4":
         try:
             return str(ipaddress.IPv4Address(value))
         except ipaddress.AddressValueError:

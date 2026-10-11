@@ -85,8 +85,8 @@ def read_infisical():
         "DNS_PUBLIC_FALLBACKS", "MIKROTIK_DHCP_DNS_MODE", "DNS_HOSTED_ZONES",
     ), optional=("DNS_PUBLIC_FALLBACKS", "DNS_HOSTED_ZONES"))
     for role in ("dns01", "dns02"):
-        fetch(f"/dns/{role}", ("DNS_IPV4", "DNS_SERVER_ADMIN_PASSWORD"))
-        values[f"{role.upper()}_IPV4"] = values.pop("DNS_IPV4")
+        fetch(f"/dns/{role}", ("DSN_IP4", "DNS_SERVER_ADMIN_PASSWORD"))
+        values[f"{role.upper()}_IPV4"] = values.pop("DSN_IP4")
         values[f"{role.upper()}_ADMIN_PASSWORD"] = values.pop("DNS_SERVER_ADMIN_PASSWORD")
     for role in ("dns01", "dns02"):
         fetch(f"/proxmox/lxc/{role}", ("LXC_ROOT_PASSWORD",))
@@ -142,7 +142,8 @@ def ssh_settings(host, values):
 
 def remote(client, command, timeout=900, operation="operation"):
     try:
-        _stdin, stdout, _stderr = client.exec_command(command + " 2>&1", timeout=timeout)
+        stdin, stdout, _stderr = client.exec_command(command + " 2>&1", timeout=timeout)
+        stdin.close()  # Never leave an SSH command waiting for interactive input.
         out = stdout.read().decode("utf-8", errors="replace")
         status = stdout.channel.recv_exit_status()
     except Exception:

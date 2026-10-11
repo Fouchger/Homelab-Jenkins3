@@ -173,7 +173,7 @@ bash -n "$temp_dir/installer.sh"
 # Explicit empty value suppresses an inherited hook in the installer environment.
 # SSH/Jenkins sessions do not necessarily define TERM. Some generated-mode
 # community installers still invoke terminal helpers that require it.
-TERM="${TERM:-xterm}" env "${env_args[@]}" var_post_install= MODE=generated mode=generated bash "$temp_dir/installer.sh"
+TERM="${TERM:-xterm}" PHS_SILENT=1 env "${env_args[@]}" var_post_install= MODE=generated mode=generated bash "$temp_dir/installer.sh"
 if [[ -n ${HOMELAB_LXC_ROOT_PASSWORD_FILE:-} ]]; then
   container_id=${LXC_DEFAULT_CTID:-${var_ctid:-}}
   password_file=$HOMELAB_LXC_ROOT_PASSWORD_FILE
