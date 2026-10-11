@@ -17,7 +17,7 @@ pipeline {
                     string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
                     string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT')
                 ]) {
-                    sh(label: 'List configured names and compare with pipeline requirements', script: '''#!/bin/sh
+                sh(label: 'List configured names and compare with pipeline requirements', script: '''#!/bin/sh
 set +x
 python3 jenkins/pipelines/infisical-audit/audit-infisical.py
 ''')

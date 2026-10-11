@@ -15,7 +15,17 @@ if command -v java >/dev/null 2>&1; then
   current_java_path="$(readlink -f "$(command -v java)")"
   update-alternatives --set java "$current_java_path"
 fi
-apt-get install -y ca-certificates curl fontconfig jq openssh-client python3 openjdk-25-jre
+apt-get install -y ca-certificates curl fontconfig jq openssl openssh-client python3 openjdk-25-jre
+
+JENKINS_URL=${HOMELAB_JENKINS_URL:-https://192.168.20.5:8443}
+JENKINS_URL=${JENKINS_URL%/}
+[[ $JENKINS_URL =~ ^https://([A-Za-z0-9.-]+):([0-9]{1,5})$ ]] || {
+  printf 'HOMELAB_JENKINS_URL must be an HTTPS origin with an explicit port (1024-65535).\n' >&2; exit 2;
+}
+JENKINS_HOST=${BASH_REMATCH[1]}
+JENKINS_HTTPS_PORT=${BASH_REMATCH[2]}
+(( 10#$JENKINS_HTTPS_PORT >= 1024 && 10#$JENKINS_HTTPS_PORT <= 65535 )) || exit 2
+JENKINS_HTTPS_PORT=$((10#$JENKINS_HTTPS_PORT))
 
 install -d -m 0755 /etc/apt/keyrings
 key_tmp="$(mktemp)"
@@ -66,8 +76,28 @@ infisicalReadCredentialId=${HOMELAB_INFISICAL_CREDENTIAL_ID:-infisical-homelab-p
 infisicalUrl=${HOMELAB_INFISICAL_URL:-https://app.infisical.com}
 infisicalEnvironment=${HOMELAB_INFISICAL_ENVIRONMENT:-prod}
 infisicalProjectSlug=${HOMELAB_INFISICAL_PROJECT_SLUG:-}
+jenkinsUrl=$JENKINS_URL
 PROJECT_SETTINGS
 chmod 0644 "$settings_dir/project.properties"
+install -d -o jenkins -g jenkins -m 0750 "$jenkins_home/init.groovy.d"
+cat >"$jenkins_home/init.groovy.d/89-homelab-jenkins-location.groovy" <<'JENKINS_LOCATION_HOOK'
+import jenkins.model.JenkinsLocationConfiguration
+
+def settings = new Properties()
+new File('/etc/homelab/project.properties').withInputStream { settings.load(it) }
+def configuredUrl = settings.getProperty('jenkinsUrl', '').trim()
+if (!configuredUrl.startsWith('https://')) {
+    throw new IllegalStateException('The configured Jenkins root URL must use HTTPS.')
+}
+def location = JenkinsLocationConfiguration.get()
+def normalizedUrl = configuredUrl.endsWith('/') ? configuredUrl : configuredUrl + '/'
+if (location.getUrl() != normalizedUrl) {
+    location.setUrl(normalizedUrl)
+    location.save()
+}
+JENKINS_LOCATION_HOOK
+chown jenkins:jenkins "$jenkins_home/init.groovy.d/89-homelab-jenkins-location.groovy"
+chmod 0640 "$jenkins_home/init.groovy.d/89-homelab-jenkins-location.groovy"
 plugin_dir="$jenkins_home/plugins"
 install -d -o jenkins -g jenkins -m 0750 "$plugin_dir"
 
@@ -661,7 +691,7 @@ if (job == null) {
     throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
 }
 job.setDefinition(definition)
-job.setDescription('005 - Destructive full RouterOS reset. Requires explicit manual approval, reads MIKROTIK_SCRIPT and credentials from Infisical, validates the script, saves and archives an encrypted backup, then runs the script after reset and verifies SSH access at MIKROTIK_IP through the configured ether2 network path.')
+job.setDescription('005 - Destructive full RouterOS reset. Requires explicit manual approval, validates the tracked router-baseline.rsc and Infisical settings, saves and archives an encrypted backup, then runs the baseline after reset and verifies SSH access at MIKROTIK_IP through the configured ether2 network path.')
 job.save()
 JENKINS_MIKROTIK_RESTORE_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/100-homelab-mikrotik-restore-pipeline.groovy"
@@ -779,13 +809,63 @@ rm -f -- "$jenkins_home/init.groovy.d/97-homelab-infisical-credential-approvals.
 install -o jenkins -g jenkins -m 0600 /dev/null "$jenkins_home/secrets/homelab-agent-enrollment.pending"
 
 install -d -m 0755 /etc/systemd/system/jenkins.service.d
+https_dir=/var/lib/jenkins/secrets
+install -d -o jenkins -g jenkins -m 0700 "$https_dir"
+keystore="$https_dir/controller-https.p12"
+certificate="$https_dir/controller-https.crt"
+key_file="$https_dir/controller-https.key"
+subject_alt_name="DNS:$JENKINS_HOST"
+if [[ $JENKINS_HOST =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+  subject_alt_name="IP:$JENKINS_HOST"
+fi
+if [[ ! -s $certificate || ! -s $key_file || ! -s $keystore ]] || ! openssl x509 -in "$certificate" -noout -checkend 2592000 >/dev/null 2>&1; then
+  cert_stage=$(mktemp -d "$https_dir/.controller-cert.XXXXXX")
+  trap 'rm -rf -- "$cert_stage"' EXIT
+  staged_certificate="$cert_stage/controller-https.crt"
+  staged_key="$cert_stage/controller-https.key"
+  staged_keystore="$cert_stage/controller-https.p12"
+  openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 825 \
+    -keyout "$staged_key" -out "$staged_certificate" -subj "/CN=$JENKINS_HOST" \
+    -addext "subjectAltName=$subject_alt_name" \
+    -addext 'extendedKeyUsage=serverAuth' \
+    -addext 'keyUsage=digitalSignature,keyEncipherment'
+  keystore_password=$(openssl rand -hex 32)
+  openssl pkcs12 -export -in "$staged_certificate" -inkey "$staged_key" \
+    -out "$staged_keystore" -name jenkins-controller -passout "pass:$keystore_password"
+  install -o jenkins -g jenkins -m 0644 "$staged_certificate" "$certificate"
+  install -o jenkins -g jenkins -m 0600 "$staged_key" "$key_file"
+  install -o jenkins -g jenkins -m 0600 "$staged_keystore" "$keystore"
+  rm -rf -- "$cert_stage"
+  unset cert_stage
+  trap - EXIT
+else
+  keystore_password=$(sed -n 's/^Environment="JENKINS_HTTPS_KEYSTORE_PASSWORD=\(.*\)"$/\1/p' \
+    /etc/systemd/system/jenkins.service.d/20-homelab.conf)
+  [[ -n $keystore_password ]] || { printf 'Existing Jenkins HTTPS keystore has no saved password.\n' >&2; exit 1; }
+  if [[ $subject_alt_name == IP:* ]]; then
+    openssl x509 -in "$certificate" -noout -checkip "$JENKINS_HOST" >/dev/null 2>&1 || {
+      printf 'The existing Jenkins HTTPS certificate does not cover %s; remove the old certificate and keystore before changing the URL.\n' "$JENKINS_HOST" >&2; exit 1;
+    }
+  else
+    openssl x509 -in "$certificate" -noout -checkhost "$JENKINS_HOST" >/dev/null 2>&1 || {
+      printf 'The existing Jenkins HTTPS certificate does not cover %s; remove the old certificate and keystore before changing the URL.\n' "$JENKINS_HOST" >&2; exit 1;
+    }
+  fi
+fi
+install -o root -g root -m 0644 "$certificate" /etc/ssl/certs/homelab-jenkins-controller.crt
+install -o jenkins -g jenkins -m 0644 "$certificate" "$https_dir/homelab-controller.crt"
 cat > /etc/systemd/system/jenkins.service.d/20-homelab.conf <<EOF
-# Homelab controller: Java 25 and configured HTTP port.
+# Homelab controller: HTTPS only, Java 25, and a root-managed service override.
 [Service]
-Environment="JENKINS_PORT=$JENKINS_PORT"
+Environment="JENKINS_PORT=-1"
+Environment="JENKINS_HTTPS_PORT=$JENKINS_HTTPS_PORT"
+Environment="JENKINS_HTTPS_KEYSTORE=$keystore"
+Environment="JENKINS_HTTPS_KEYSTORE_PASSWORD=$keystore_password"
 Environment="JENKINS_JAVA_CMD=$java25_path"
 Environment="JAVA_HOME=${java25_path%/bin/java}"
 EOF
+unset keystore_password
+chmod 0600 /etc/systemd/system/jenkins.service.d/20-homelab.conf
 systemctl daemon-reload
 systemctl enable jenkins
 systemctl restart jenkins
@@ -804,13 +884,15 @@ done
 
 healthy=no
 for ((attempt=1; attempt<=60; attempt++)); do
-  if curl --silent --show-error --max-time 5 --dump-header /tmp/homelab-jenkins-headers \
-    --output /dev/null "http://127.0.0.1:$JENKINS_PORT/login" && \
+  if curl --silent --show-error --max-time 5 --cacert /etc/ssl/certs/homelab-jenkins-controller.crt \
+    --resolve "$JENKINS_HOST:$JENKINS_HTTPS_PORT:127.0.0.1" \
+    --dump-header /tmp/homelab-jenkins-headers --output /dev/null \
+    "$JENKINS_URL/login" && \
     grep -qi '^X-Jenkins:' /tmp/homelab-jenkins-headers; then healthy=yes; break; fi
   sleep 5
 done
 rm -f /tmp/homelab-jenkins-headers
-[[ $healthy == yes ]] || { printf 'Jenkins HTTP health check failed.\n' >&2; exit 1; }
+[[ $healthy == yes ]] || { printf 'Jenkins HTTPS health check failed.\n' >&2; exit 1; }
 date -Is > /var/lib/homelab/jenkins-controller-installed
 printf 'Controller installed: Java 25, plugins, inbound node and homelab-check job.\n'
 printf 'Complete the first administrator wizard; no passwords are printed.\n'

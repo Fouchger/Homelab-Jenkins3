@@ -36,11 +36,11 @@ The current secret layout is:
 | `/proxmox/automation` | `PVE_API_TOKEN_ID`, `PVE_API_TOKEN_SECRET`, `PVE_SSH_HOST_KEY`, `PVE_SSH_PRIVATE_KEY` |
 | `/proxmox/pve01` | `PROXMOX_ROOT_PASSWORD` |
 | `/proxmox/lxc/controlplane`, `/proxmox/lxc/jenkins-agent`, and other LXC folders | `LXC_ROOT_PASSWORD` only |
-| `/dns` | `DNS_PUBLIC_FALLBACKS`, `MIKROTIK_DHCP_DNS_MODE`, optional `DNS_HOSTED_ZONES` |
+| `/dns` | `DNS_PUBLIC_FALLBACKS`, `MIKROTIK_DHCP_DNS_MODE`, optional `DNS_HOSTED_ZONES`, `DNS_BACKUP_ENCRYPTION_PASSWORD` (required to recreate a DNS LXC) |
 | `/dns/dns01` | `DNS_IPV4`, `DNS_SERVER_ADMIN_PASSWORD` |
 | `/dns/dns02` | `DNS_IPV4`, `DNS_SERVER_ADMIN_PASSWORD` |
 | `/proxmox/lxc/dns01`, `/proxmox/lxc/dns02` | `LXC_ROOT_PASSWORD` only |
-| `/mikrotik/router01` | `MIKROTIK_HOST`, `MIKROTIK_IP`, `MIKROTIK_USERNAME`, `MIKROTIK_PASSWORD`, `MIKROTIK_BOOTSTRAP_USERNAME`, `MIKROTIK_BOOTSTRAP_PASSWORD`, `MIKROTIK_SCRIPT`, `MIKROTIK_SSH_USER`, `MIKROTIK_SSH_PRIVATE_KEY`, `MIKROTIK_SSH_PUBLIC_KEY`, `MIKROTIK_SSH_HOST_KEY`, `MIKROTIK_TLS_CERT_SHA256` |
+| `/mikrotik/router01` | `MIKROTIK_HOST`, `MIKROTIK_IP`, `MIKROTIK_USERNAME`, `MIKROTIK_PASSWORD`, `MIKROTIK_BOOTSTRAP_USERNAME`, `MIKROTIK_BOOTSTRAP_PASSWORD`, `MIKROTIK_SSH_USER`, `MIKROTIK_SSH_PRIVATE_KEY`, `MIKROTIK_SSH_PUBLIC_KEY`, `MIKROTIK_SSH_HOST_KEY`, `MIKROTIK_TLS_CERT_SHA256` |
 | `/mikrotik/backup` | `BINARY_BACKUP_PASSWORD` |
 | `/mikrotik/wifi_security` | `SEC_GUEST_PASSWORD`, `SEC_IOT_PASSWORD`, `SEC_MGMT_PASSWORD`, `SEC_USERS_PASSWORD` |
 | `/cloudflare` | `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_DOMAIN_1`, `CLOUDFLARE_DOMAIN_2`, `CLOUDFLARE_ZONE_ID_1`, `CLOUDFLARE_ZONE_ID_2` |
@@ -68,17 +68,23 @@ domains are chosen. Set admin passwords directly in Infisical to avoid
 retaining password parameters in Jenkins build records. Job 006 changes the
 default `admin`/`admin` password only on a new Technitium install; it refuses
 to reset an unknown existing admin password.
+Set `/dns/DNS_BACKUP_ENCRYPTION_PASSWORD` to a randomly generated passphrase of
+at least 32 characters before selecting `dns01` or `dns02` for recreation.
+Jenkins uses it to encrypt and verify the retained Proxmox backup; without it,
+the job stops before deleting the container. Keep the passphrase in Infisical
+so the archived `.gpg` backup can be decrypted for recovery.
 MikroTik administrator/backup passwords and Wi-Fi passphrases entered in Job
 003 are also retained in encrypted Jenkins build records. To avoid those
 additional copies, enter them directly in the corresponding Infisical secrets.
-The complete RouterOS restore script is a multiline secret and must be entered
-directly in Infisical as `/mikrotik/router01/MIKROTIK_SCRIPT`. Job 003 accepts
-`MIKROTIK_IP`, the IPv4 address to use for SSH after a full reset. The script
-must configure that address on the Proxmox-connected `ether2` network and must
-not contain another reset command. Job 005 removes the script's `/user`
-sections and supplies the configured admin and SSH-user setup itself. Put the
-script directly into the Infisical multiline secret; it is not a Jenkins
-parameter or a public repository file.
+Job 005 uses the reviewed, version-controlled
+[`router-baseline.rsc`](../jenkins/pipelines/mikrotik-restore/router-baseline.rsc)
+as the full RouterOS reset baseline. It reads sensitive passwords, keys, and
+the recovery address from Infisical, renders them into a temporary script, and
+never reads `MIKROTIK_SCRIPT`. Remove any old `MIKROTIK_SCRIPT` entry from
+`/mikrotik/router01` after confirming the tracked baseline is current. Update
+the baseline through reviewed repository changes; do not put secrets in it.
+`MIKROTIK_IP` must be configured on the Proxmox-connected `ether2` network for
+SSH recovery after reset.
 
 When `MIKROTIK_HOST` is configured and the SSH key pair is absent, job 003
 generates an Ed25519 client key pair and stores its private and public keys in
@@ -191,8 +197,8 @@ folders in the selected project/environment with
 [`expected-secrets.json`](../jenkins/pipelines/infisical-audit/expected-secrets.json).
 The job calls Infisical's recursive secrets-list endpoint with
 `viewSecretValue=false`; it never requests, prints, or stores secret values.
-Its console output and archived CSV show `SET` for configured variables used by
-the project, `MISSING` for absent required variables, and `UNUSED` for present
+Its console output and archived CSV show `PRESENT` when a variable name exists
+(the value itself is not validated), `MISSING` for absent required variables, and `UNUSED` for present
 variables that the project does not consume (including untracked names).
 Missing optional, conditional, planned, and obsolete variables are omitted.
 Missing required entries fail the build. The read identity must have list/read

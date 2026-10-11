@@ -65,6 +65,50 @@ tags: community-script;dns;homelab;managed-by-jenkins
                     changed, "dns01", "02:00:00:00:01:50"
                 ))
 
+    def test_destructive_dns_backup_is_verified_and_retained_encrypted(self):
+        payload = b"mock Proxmox backup data"
+        archive = "/tmp/stage/backups/vzdump-lxc-150-2026_10_11-00_00_00.tar.zst"
+
+        class FakeSftp:
+            def get(self, remote_path, local_path):
+                Path(local_path).write_bytes(payload)
+
+            def close(self):
+                pass
+
+        class FakeClient:
+            def open_sftp(self):
+                return FakeSftp()
+
+        def fake_remote(_client, command, timeout=900):
+            if command.startswith("vzdump "):
+                return f"INFO: creating vzdump archive '{archive}'"
+            if command.startswith("sha256sum "):
+                import hashlib
+                return f"{hashlib.sha256(payload).hexdigest()}  {archive}"
+            return ""
+
+        def fake_gpg(command, **_kwargs):
+            if "--symmetric" in command:
+                output = Path(command[command.index("--output") + 1])
+                output.write_bytes(b"encrypted mock")
+            return types.SimpleNamespace(returncode=0)
+
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.object(deploy, "ROOT", Path(temp)), \
+                 patch.object(deploy, "remote", side_effect=fake_remote), \
+                 patch.object(deploy.subprocess, "run", side_effect=fake_gpg), \
+                 patch.dict(os.environ, {"BUILD_NUMBER": "17"}):
+                result = deploy.backup_container(FakeClient(), "/tmp/stage", "dns01", 150,
+                                                 "a" * 40)
+
+            self.assertTrue(result.is_file())
+            self.assertEqual(result.suffix, ".gpg")
+            self.assertEqual(result.read_bytes(), b"encrypted mock")
+            if os.name == "posix":
+                self.assertEqual(result.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(list(result.parent.iterdir()), [result])
+
     def test_dns_secret_path_mapping_uses_new_layout(self):
         self.assertEqual(network_settings.CONFIG["/dns/dns01"], {
             "DNS_IPV4": "CFG_DNS01_IPV4",
@@ -91,11 +135,12 @@ tags: community-script;dns;homelab;managed-by-jenkins
             ("/dns/dns02", "DNS_IPV4"): "192.168.30.3",
             ("/dns", "MIKROTIK_DHCP_DNS_MODE"): "router",
             ("/dns", "DNS_PUBLIC_FALLBACKS"): "1.1.1.1,1.0.0.1",
+            ("/dns", "DNS_BACKUP_ENCRYPTION_PASSWORD"): "dns-backup-encryption-passphrase-2026",
             ("/dns", "DNS_HOSTED_ZONES"): "example.internal",
             ("/dns/dns01", "DNS_SERVER_ADMIN_PASSWORD"): "admin-pass-1",
             ("/dns/dns02", "DNS_SERVER_ADMIN_PASSWORD"): "admin-pass-2",
-            ("/proxmox/lxc/dns01", "LXC_ROOT_PASSWORD"): "root-pass-1",
-            ("/proxmox/lxc/dns02", "LXC_ROOT_PASSWORD"): "root-pass-2",
+            ("/proxmox/lxc/dns01", "LXC_ROOT_PASSWORD"): "root-password-01-strong",
+            ("/proxmox/lxc/dns02", "LXC_ROOT_PASSWORD"): "root-password-02-strong",
         }
         requested_paths = []
 
@@ -115,8 +160,8 @@ tags: community-script;dns;homelab;managed-by-jenkins
 
         self.assertEqual(values["DNS01_ADMIN_PASSWORD"], "admin-pass-1")
         self.assertEqual(values["DNS02_ADMIN_PASSWORD"], "admin-pass-2")
-        self.assertEqual(values["DNS01_ROOT_PASSWORD"], "root-pass-1")
-        self.assertEqual(values["DNS02_ROOT_PASSWORD"], "root-pass-2")
+        self.assertEqual(values["DNS01_ROOT_PASSWORD"], "root-password-01-strong")
+        self.assertEqual(values["DNS02_ROOT_PASSWORD"], "root-password-02-strong")
         self.assertNotIn(("/proxmox/dns", "DNS01_ADMIN_PASSWORD"), requested_paths)
         self.assertIn(("/dns/dns01", "DNS_SERVER_ADMIN_PASSWORD"), requested_paths)
         self.assertIn(("/dns/dns02", "DNS_SERVER_ADMIN_PASSWORD"), requested_paths)
@@ -155,30 +200,26 @@ tags: community-script;dns;homelab;managed-by-jenkins
         self.assertEqual(create["zoneTransferProtocol"], "Tcp")
         self.assertNotIn("primaryZoneTransferProtocol", create)
 
-    def test_router_dhcp_dns_verification_checks_both_modes(self):
-        networks = [("192.168.20.0/24", "192.168.20.1")]
-        with patch.object(router, "require_router_object") as check_object, patch.object(
-            router, "run_command", return_value="192.168.20.1"
-        ):
-            router.verify_dhcp_dns(
-                object(), networks, "router", ["192.168.30.2", "192.168.30.3"]
-            )
-            check_object.assert_called_once()
+    def test_router_dhcp_dns_verification_checks_live_records(self):
+        class FakeRouter:
+            def __init__(self, dns_rows):
+                self.dns_rows = dns_rows
 
-        with patch.object(router, "require_router_object"), patch.object(
-            router, "run_command", return_value="192.168.30.2, 192.168.30.3"
-        ):
-            router.verify_dhcp_dns(
-                object(), networks, "direct", ["192.168.30.2", "192.168.30.3"]
-            )
+            def call(self, path, method="GET", payload=None):
+                if path == "ip/dns":
+                    return {"servers": "192.168.30.2,192.168.30.3", "allow-remote-requests": "false"}
+                if path == "ip/firewall/filter":
+                    return []
+                if path == "ip/dhcp-server/network":
+                    return self.dns_rows
+                raise AssertionError(f"Unexpected RouterOS path: {path}")
 
-        with patch.object(router, "require_router_object"), patch.object(
-            router, "run_command", return_value="192.168.30.2"
-        ):
-            with self.assertRaisesRegex(RuntimeError, "DHCP DNS verification failed"):
-                router.verify_dhcp_dns(
-                    object(), networks, "direct", ["192.168.30.2", "192.168.30.3"]
-                )
+        network = [("*1", "192.168.20.0/24", "192.168.20.1", "192.168.30.2,192.168.30.3")]
+        good = FakeRouter([{".id": "*1", "dns-server": "192.168.30.2,192.168.30.3"}])
+        router.rest_apply(good, network, "direct", "192.168.30.2,192.168.30.3", [])
+        bad = FakeRouter([{".id": "*1", "dns-server": "192.168.30.2"}])
+        with self.assertRaisesRegex(RuntimeError, "DHCP DNS verification failed"):
+            router.rest_apply(bad, network, "direct", "192.168.30.2,192.168.30.3", [])
 
     def test_normal_router_jobs_use_management_host_not_reset_address(self):
         values = {"MIKROTIK_HOST": "router-mgmt.example", "MIKROTIK_IP": "192.168.99.1"}
@@ -186,13 +227,6 @@ tags: community-script;dns;homelab;managed-by-jenkins
             self.assertEqual(router.connection_host(values), "router-mgmt.example")
         with patch.dict(os.environ, {"HOMELAB_MIKROTIK_CONNECT_HOST": "192.168.99.1"}, clear=True):
             self.assertEqual(router.connection_host(values), "192.168.99.1")
-
-    def test_reset_ip_does_not_change_trusted_host_key_identity(self):
-        with patch.dict(os.environ, {"HOMELAB_MIKROTIK_CONNECT_HOST": "192.168.99.1"}, clear=True):
-            self.assertEqual(
-                router.host_key_line("router-mgmt.example ssh-ed25519 AAAA", "router-mgmt.example")[0],
-                "router-mgmt.example",
-            )
 
     def test_infisical_audit_only_requests_variable_metadata(self):
         env = {
@@ -232,7 +266,15 @@ tags: community-script;dns;homelab;managed-by-jenkins
             ],
         )
         self.assertTrue(failed)
-        self.assertEqual([row["status"] for row in rows], ["MISSING", "OPTIONAL-MISSING", "MISSING-CONDITIONAL", "PLANNED"])
+        self.assertEqual([row["status"] for row in rows], ["MISSING"])
+
+    def test_infisical_audit_reports_presence_without_claiming_value_is_set(self):
+        rows, failed = audit.build_report(
+            {("/dns/dns01", "DNS_IPV4")},
+            [{"path": "/dns/dns01", "name": "DNS_IPV4", "state": "required", "used_by": "006"}],
+        )
+        self.assertFalse(failed)
+        self.assertEqual(rows[0]["status"], "PRESENT")
 
 
 if __name__ == "__main__":

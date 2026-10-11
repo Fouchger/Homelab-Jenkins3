@@ -18,10 +18,10 @@ Proxmox host-side LXC creation/profile scripts remain in `../../proxmox_helper_s
 | `mikrotik-config/apply-mikrotik-config.py` | Reads router settings from Infisical, creates text and binary pre-change backups over pinned SSH/SFTP, encrypts the combined archive on the agent, removes router-side temporary files, then applies and verifies DNS/DHCP/Wi-Fi changes through pinned HTTPS REST. |
 | `mikrotik-restore/Jenkinsfile` | Job `005 - MikroTik Full Reset and Restore`: a separate destructive recovery action; verifies saved settings and pinned SSH access before asking for approval. |
 | `mikrotik-restore/restore-mikrotik.py` | `--check` validates settings and SSH access without changing the router. The approved run downloads an encrypted pre-reset backup, preserves the pinned SSH server key for import after reset, dry-runs the Infisical script, then waits up to 30 minutes for verified SSH recovery at `MIKROTIK_IP`, reporting progress and distinguishing key mismatch, login rejection, and unavailable SSH. |
-| `dns-deploy/Jenkinsfile` | Job `006 - DNS Deployment and Router Sync`: shows a read-only plan for dns01/dns02 and reviews the router's DNS/DHCP differences before one approval. `RECREATE_DNS_SERVER` defaults to `none` and can select only `dns01` or `dns02` for clean replacement; its existing DNS data is permanently deleted without a DNS-container backup, and the other server is reused. Shared policy is read from `/dns`; each server's `DNS_IPV4` and `DNS_SERVER_ADMIN_PASSWORD` are read from its `/dns/<server>` folder. |
+| `dns-deploy/Jenkinsfile` | Job `006 - DNS Deployment and Router Sync`: shows a read-only plan for dns01/dns02 and reviews the router's DNS/DHCP differences before one approval. `RECREATE_DNS_SERVER` defaults to `none` and can select only `dns01` or `dns02`; before deletion, the job creates, downloads, checksum-verifies, encrypts, and decrypt-verifies a Proxmox LXC backup, then archives the encrypted backup with the build. A 32-character-or-longer `/dns/DNS_BACKUP_ENCRYPTION_PASSWORD` is required for recreation. Shared policy is read from `/dns`; each server's `DNS_IPV4` and `DNS_SERVER_ADMIN_PASSWORD` are read from its `/dns/<server>` folder. |
 | `dns-deploy/deploy-dns.py` | `--plan` checks the pinned Proxmox connection and existing LXC identities without changes, then lists the intended DNS operations, including any selected destructive replacement. The normal run replaces at most one identity-verified CTID through pinned Proxmox SSH and runs DNS management locally inside each guest so passwords do not cross the network in clear text. |
 | `dns-deploy/manage-technitium.py` | Uses Technitium's local HTTP API over loopback to secure the admin login, create configured primary zones, permit zone transfers only from dns02, and create/resync secondary zones on dns02. |
-| `infisical-audit/Jenkinsfile` | Job `007 - Infisical Variable Audit`: lists secret folder/name pairs without values, reports active values as SET, required omissions as MISSING, and present-but-unused values as UNUSED, then archives a names-only CSV. |
+| `infisical-audit/Jenkinsfile` | Job `007 - Infisical Variable Audit`: lists secret folder/name pairs without values, reports names that exist as PRESENT, required omissions as MISSING, and present-but-unused values as UNUSED, then archives a names-only CSV. PRESENT does not validate a value or its permissions. |
 | `infisical-audit/audit-infisical.py` | Uses the Infisical read identity and `viewSecretValue=false`; omits absent optional, conditional, planned, and obsolete entries from its report. |
 | `infisical-audit/expected-secrets.json` | Source-controlled declaration of current Infisical folder/name expectations and which jobs use them. |
 
@@ -72,10 +72,13 @@ router review and configuration operations; it also needs `policy` to authorize
 the SSH key for its RouterOS user. Update saved pins after certificate or SSH
 host-key rotation.
 The full reset job is intentionally separate from routine router configuration.
-It reads the multiline `MIKROTIK_SCRIPT` secret and post-reset address
-`MIKROTIK_IP` from `/mikrotik/router01`, requires explicit approval, and relies
-on the configuration script restoring SSH reachability over the Proxmox-linked
-`ether2` path. Before reset, Job 005 checks that the saved Ed25519 public and
+It uses the tracked `router-baseline.rsc` file shipped beside the pipeline and
+reads the post-reset address `MIKROTIK_IP` and sensitive credentials from
+Infisical. The baseline must be reviewed and committed with code changes;
+`MIKROTIK_SCRIPT` is obsolete and can be removed from Infisical after migrating
+to this tracked source. Job 005 requires explicit approval and relies on the
+baseline restoring SSH reachability over the Proxmox-linked `ether2` path.
+Before reset, Job 005 checks that the saved Ed25519 public and
 private keys match, downloads the password-protected binary backup to a
 temporary agent file, verifies its size, and confirms the temporary router copy
 was removed. It also exports the current SSH server host key and the certificate
@@ -95,16 +98,16 @@ before changing router DHCP DNS, so a router backup or sync failure can leave
 the DNS servers updated while DHCP continues using its previous settings.
 
 Job 005 takes Wi-Fi passphrases from `/mikrotik/wifi_security` and the RouterOS
-scheduled-backup password from `/mikrotik/backup`, then replaces values in the
-temporary reset script before uploading it. The `MIKROTIK_SCRIPT` secret can
-therefore use `${SEC_USERS_PASSWORD}`, `${SEC_MGMT_PASSWORD}`,
+scheduled-backup password from `/mikrotik/backup`, then replaces placeholders
+in the temporary rendered baseline before uploading it. The tracked baseline
+uses `${SEC_USERS_PASSWORD}`, `${SEC_MGMT_PASSWORD}`,
 `${SEC_IOT_PASSWORD}`, `${SEC_GUEST_PASSWORD}`, and
 `${BINARY_BACKUP_PASSWORD}` placeholders instead of containing password
 literals. For example, use `name=sec-users passphrase=${SEC_USERS_PASSWORD}`
 and, inside a scheduled backup `on-event`,
 `password=\"${BINARY_BACKUP_PASSWORD}\"`. Job 005 also overrides any existing
 literal in those named Wi-Fi profiles or scheduled backup commands with the
-Infisical value. The `/user` section should be omitted from `MIKROTIK_SCRIPT`;
+Infisical value. The `/user` section should be omitted from `router-baseline.rsc`;
 Job 005 creates/restores router accounts from `MIKROTIK_USERNAME`,
 `MIKROTIK_PASSWORD`, `MIKROTIK_SSH_USER`, and the saved Jenkins key.
 

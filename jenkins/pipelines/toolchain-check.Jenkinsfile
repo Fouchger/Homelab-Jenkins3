@@ -12,6 +12,7 @@ pipeline {
                 sh '''
                     set -eu
                     java -version
+                    gpg --version
                     git --version
                     tofu version
                     packer version
@@ -23,6 +24,15 @@ pipeline {
                     for collection in community.proxmox community.routeros community.general kubernetes.core; do
                         ansible-galaxy collection list "$collection" | grep -F "$collection"
                     done
+                '''
+            }
+        }
+        stage('Validate project automation code') {
+            steps {
+                sh '''
+                    set -eu
+                    python3 -m compileall -q jenkins proxmox_helper_script tests
+                    python3 -m unittest discover -s tests -v
                 '''
             }
         }

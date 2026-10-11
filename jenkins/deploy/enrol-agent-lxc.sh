@@ -25,6 +25,9 @@ flock -n 8 || { printf 'Another enrolment is in progress; rerun this hook afterw
 controller_secret=/var/lib/jenkins/secrets/homelab-agent-bootstrap.secret
 pending_marker=/var/lib/jenkins/secrets/homelab-agent-enrollment.pending
 guest_secret=/run/homelab-agent-enrol.secret
+guest_cert=/run/homelab-jenkins-controller.crt
+controller_cert=/var/lib/jenkins/secrets/homelab-controller.crt
+[[ $HOMELAB_JENKINS_URL =~ ^https://[A-Za-z0-9.-]+:[0-9]{1,5}$ ]] || { printf 'HOMELAB_JENKINS_URL must be HTTPS with an explicit port.\n' >&2; exit 1; }
 # Re-export through the existing startup hook when recovering/rerunning.
 if ! pct exec "$controller_id" -- test -s "$controller_secret"; then
   pct exec "$controller_id" -- install -o jenkins -g jenkins -m 0600 /dev/null "$pending_marker"
@@ -39,16 +42,20 @@ done
 temp_dir=$(mktemp -d)
 cleanup() {
   rm -rf -- "$temp_dir"
-  pct exec "$agent_id" -- rm -f -- "$guest_secret" >/dev/null 2>&1 || true
+  pct exec "$agent_id" -- rm -f -- "$guest_secret" "$guest_cert" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 pct exec "$controller_id" -- cat "$controller_secret" > "$temp_dir/agent.secret"
+temp_cert="$temp_dir/controller.crt"
+pct exec "$controller_id" -- cat "$controller_cert" > "$temp_cert"
+openssl x509 -in "$temp_cert" -noout -checkend 0 >/dev/null || { printf 'Controller HTTPS certificate is invalid or expired.\n' >&2; exit 1; }
 grep -Eq '^[[:alnum:]]{32,128}$' "$temp_dir/agent.secret" || {
   printf 'Controller returned an invalid agent secret.\n' >&2; exit 1;
 }
 pct push "$agent_id" "$temp_dir/agent.secret" "$guest_secret" --perms 0600
+pct push "$agent_id" "$temp_cert" "$guest_cert" --perms 0600
 pct exec "$agent_id" -- env "HOMELAB_JENKINS_URL=$HOMELAB_JENKINS_URL" \
-  /usr/local/sbin/configure-jenkins-agent --secret-file "$guest_secret"
+  /usr/local/sbin/configure-jenkins-agent --secret-file "$guest_secret" --controller-cert-file "$guest_cert"
 # Only remove the controller handoff file after agent service configuration succeeds.
 pct exec "$controller_id" -- rm -f -- "$controller_secret"
 printf 'WebSocket agent service configured; node jenkins-agent uses label homelab-automation.\n'

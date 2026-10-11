@@ -75,7 +75,7 @@ esac
         trace = self.trace.read_text()
         self.assertLess(trace.index('installer\n'), trace.index('push 100'))
         self.assertIn('install-controller-guest.sh', trace)
-        self.assertIn('JENKINS_PORT=8080', trace)
+        self.assertIn('JENKINS_PORT=8443', trace)
         self.assertIn('INSTALL_TIMEZONE=Pacific/Auckland', trace)
 
     def test_agent_hook_receives_correct_container_and_tools_script(self):
@@ -84,7 +84,7 @@ esac
         trace = self.trace.read_text()
         self.assertIn('push 101', trace)
         self.assertIn('install-agent-guest.sh', trace)
-        self.assertIn('HOMELAB_JENKINS_URL=http://192.168.20.5:8080', trace)
+        self.assertIn('HOMELAB_JENKINS_URL=https://192.168.20.5:8443', trace)
 
     def test_download_failure_propagates(self):
         result = self.launch(extra={'TEST_DOWNLOAD': 'fail'})
@@ -133,6 +133,7 @@ esac
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         trace = self.trace.read_text()
         self.assertIn('configure-jenkins-agent --secret-file', trace)
+        self.assertIn('--controller-cert-file', trace)
         self.assertIn('push 101', trace)
         self.assertNotIn('a' * 64, result.stdout + result.stderr + trace)
         self.assertIn('exec 100 -- rm -f -- /var/lib/jenkins/secrets/homelab-agent-bootstrap.secret', trace)

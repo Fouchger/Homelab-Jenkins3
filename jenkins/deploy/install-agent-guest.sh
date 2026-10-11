@@ -112,20 +112,20 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
-if [[ "${1:-}" == --secret-file && "$#" -eq 2 ]]; then
-  secret_file="$2"
-  [[ -r "$secret_file" ]] || { echo "Agent secret file is not readable." >&2; exit 1; }
-  IFS= read -r agent_secret <"$secret_file" || {
-    echo "Could not read the agent secret file." >&2
-    exit 1
-  }
-  rm -f -- "$secret_file"
-elif [[ "$#" -eq 0 ]]; then
-  printf 'Paste the secret shown on the Jenkins node page (input is hidden): '
-  IFS= read -r -s agent_secret
-  printf '\n'
+secret_file=""
+controller_cert_file=""
+while (($#)); do
+  case "$1" in
+    --secret-file) (($# >= 2)) || { echo "--secret-file requires a path." >&2; exit 2; }; secret_file=$2; shift 2 ;;
+    --controller-cert-file) (($# >= 2)) || { echo "--controller-cert-file requires a path." >&2; exit 2; }; controller_cert_file=$2; shift 2 ;;
+    *) echo "Usage: configure-jenkins-agent --secret-file PATH --controller-cert-file PATH" >&2; exit 2 ;;
+  esac
+done
+if [[ -n $secret_file && -n $controller_cert_file ]]; then
+  [[ -r "$secret_file" && -r "$controller_cert_file" ]] || { echo "Agent secret or controller certificate file is not readable." >&2; exit 1; }
+  IFS= read -r agent_secret <"$secret_file" || { echo "Could not read the agent secret file." >&2; exit 1; }
 else
-  echo "Usage: configure-jenkins-agent [--secret-file PATH]" >&2
+  echo "Provide both --secret-file and --controller-cert-file; enrollment without the pinned controller certificate is disabled." >&2
   exit 2
 fi
 [[ "$agent_secret" =~ ^[[:alnum:]]{32,128}$ ]] || {
@@ -133,11 +133,25 @@ fi
   exit 1
 }
 
-agent_url="${HOMELAB_JENKINS_URL:-http://192.168.20.5:8080}"
+agent_url="${HOMELAB_JENKINS_URL:-https://192.168.20.5:8443}"
 agent_url="${agent_url%/}"
-[[ $agent_url =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?$ ]] || {
-  echo 'Controller URL must be an HTTP(S) origin with an optional port.' >&2; exit 2;
+[[ $agent_url =~ ^https://([A-Za-z0-9.-]+):([0-9]{1,5})$ ]] || {
+  echo 'Controller URL must be an HTTPS origin with an explicit port.' >&2; exit 2;
 }
+port=$((10#${BASH_REMATCH[2]}))
+((port >= 1024 && port <= 65535)) || { echo 'Controller HTTPS port must be between 1024 and 65535.' >&2; exit 2; }
+java25_path="$(update-alternatives --list java | awk '/java-25-openjdk/ { print; exit }')"
+[[ -x $java25_path ]] || { echo 'Java 25 runtime was not found.' >&2; exit 1; }
+java_home=${java25_path%/bin/java}
+if [[ -n $controller_cert_file ]]; then
+  openssl x509 -in "$controller_cert_file" -noout -checkend 0 >/dev/null || { echo 'Controller certificate is invalid or expired.' >&2; exit 1; }
+  keytool="$java_home/bin/keytool"
+  [[ -x $keytool ]] || { echo 'Java 25 keytool was not found.' >&2; exit 1; }
+  "$keytool" -delete -alias homelab-jenkins-controller -keystore "$java_home/lib/security/cacerts" -storepass changeit >/dev/null 2>&1 || true
+  "$keytool" -importcert -noprompt -trustcacerts -alias homelab-jenkins-controller \
+    -file "$controller_cert_file" -keystore "$java_home/lib/security/cacerts" -storepass changeit >/dev/null
+  rm -f -- "$controller_cert_file" "$secret_file"
+fi
 install -d -o root -g jenkins-agent -m 0750 /etc/jenkins-agent
 printf '%s\n' "$agent_secret" >/etc/jenkins-agent/agent.secret
 chown root:jenkins-agent /etc/jenkins-agent/agent.secret
@@ -145,7 +159,7 @@ chmod 0640 /etc/jenkins-agent/agent.secret
 rm -f -- /etc/jenkins-agent/agent.env
 unset agent_secret
 
-curl --proto '=http,https' --proto-redir '=http,https' --fail --silent --show-error --location \
+curl --proto '=https' --proto-redir '=https' --fail --silent --show-error --location \
   "$agent_url/jnlpJars/agent.jar" --output /opt/jenkins-agent/agent.jar
 chown root:root /opt/jenkins-agent/agent.jar
 chmod 0644 /opt/jenkins-agent/agent.jar
@@ -163,7 +177,7 @@ Group=jenkins-agent
 WorkingDirectory=/var/lib/jenkins-agent
 Environment=HOME=/var/lib/jenkins-agent
 Environment=ANSIBLE_CONFIG=/etc/ansible/ansible.cfg
-Environment=JENKINS_URL=http://192.168.20.5:8080/
+Environment=JENKINS_URL=https://192.168.20.5:8443/
 Environment=JENKINS_AGENT_NAME=jenkins-agent
 Environment=JENKINS_AGENT_WORKDIR=/var/lib/jenkins-agent
 ExecStart=__JAVA25__ -jar /opt/jenkins-agent/agent.jar -url $JENKINS_URL -secret @/etc/jenkins-agent/agent.secret -name $JENKINS_AGENT_NAME -webSocket -workDir $JENKINS_AGENT_WORKDIR
@@ -183,8 +197,6 @@ ReadWritePaths=/var/lib/jenkins-agent /tmp
 WantedBy=multi-user.target
 AGENT_UNIT
 sed -i "s|^Environment=JENKINS_URL=.*|Environment=JENKINS_URL=${agent_url}/|" /etc/systemd/system/jenkins-agent.service
-java25_path="$(update-alternatives --list java | awk '/java-25-openjdk/ { print; exit }')"
-[[ -x $java25_path ]] || { echo 'Java 25 runtime was not found.' >&2; exit 1; }
 sed -i "s|__JAVA25__|$java25_path|" /etc/systemd/system/jenkins-agent.service
 chmod 0644 /etc/systemd/system/jenkins-agent.service
 systemctl daemon-reload

@@ -2,11 +2,13 @@
 """Create or safely reuse DNS LXCs on Proxmox, configure Technitium, and sync zones."""
 
 import ipaddress
+import hashlib
 import json
 import os
 import re
 import shlex
 import sys
+import subprocess
 import tempfile
 import time
 import urllib.error
@@ -48,7 +50,7 @@ def http_json(url, method="GET", headers=None, form=None):
         raise RuntimeError(f"Infisical request failed: {type(exc).__name__}") from None
 
 
-def read_infisical():
+def read_infisical(*, require_backup_password=False):
     base = required("INFISICAL_URL").rstrip("/")
     if not base.startswith("https://"):
         raise RuntimeError("INFISICAL_URL must use HTTPS")
@@ -81,8 +83,12 @@ def read_infisical():
 
     fetch("/proxmox/automation", ("PVE_SSH_PRIVATE_KEY", "PVE_SSH_HOST_KEY"))
     fetch("/dns", (
-        "DNS_PUBLIC_FALLBACKS", "MIKROTIK_DHCP_DNS_MODE", "DNS_HOSTED_ZONES",
-    ), optional=("DNS_PUBLIC_FALLBACKS", "DNS_HOSTED_ZONES"))
+        "DNS_PUBLIC_FALLBACKS", "MIKROTIK_DHCP_DNS_MODE", "DNS_HOSTED_ZONES", "DNS_BACKUP_ENCRYPTION_PASSWORD",
+    ), optional=("DNS_PUBLIC_FALLBACKS", "DNS_HOSTED_ZONES", "DNS_BACKUP_ENCRYPTION_PASSWORD"))
+    if require_backup_password:
+        password = values.get("DNS_BACKUP_ENCRYPTION_PASSWORD", "")
+        if len(password) < 32 or any(char in password for char in "\r\n\0"):
+            raise RuntimeError("Selected DNS recreation requires /dns/DNS_BACKUP_ENCRYPTION_PASSWORD with at least 32 characters")
     for role in ("dns01", "dns02"):
         fetch(f"/dns/{role}", ("DNS_IPV4", "DNS_SERVER_ADMIN_PASSWORD"))
         values[f"{role.upper()}_IPV4"] = values.pop("DNS_IPV4")
@@ -99,7 +105,7 @@ def read_infisical():
             raise RuntimeError(f"{field} must be at least 6 characters and contain no line breaks")
     for role in ("dns01", "dns02"):
         root_password = values[f"{role.upper()}_ROOT_PASSWORD"]
-        if len(root_password) < 6 or ":" in root_password or any(char in root_password for char in "\r\n\0"):
+        if len(root_password) < 16 or ":" in root_password or any(char in root_password for char in "\r\n\0"):
             raise RuntimeError(f"/proxmox/lxc/{role}/LXC_ROOT_PASSWORD is invalid")
     return values
 
@@ -154,6 +160,71 @@ def remote(client, command, timeout=900):
 def upload(sftp, local_path, remote_path, mode=0o600):
     sftp.put(str(local_path), remote_path)
     sftp.chmod(remote_path, mode)
+
+
+def backup_container(client, stage, role, ctid, password):
+    """Create, verify, encrypt, and retain a Proxmox LXC backup."""
+    backup_dir = f"{stage}/backups"
+    remote(client, f"install -d -m 700 {shlex.quote(backup_dir)}", timeout=30)
+    output = remote(client, f"vzdump {ctid} --mode stop --compress zstd --dumpdir {shlex.quote(backup_dir)}", timeout=3600)
+    matches = re.findall(r"(?:creating vzdump archive|archive):? ['\"]?([^'\"\s]+\.tar\.(?:zst|gz|lzo))", output)
+    if len(matches) != 1:
+        raise RuntimeError(f"Proxmox did not report one unambiguous backup archive for {role}; refusing to delete CTID {ctid}")
+    archive = matches[0]
+    remote(client, f"test -s {shlex.quote(archive)}", timeout=30)
+    build = os.environ.get("BUILD_NUMBER", "local")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", build):
+        raise RuntimeError("BUILD_NUMBER is invalid for backup artifact storage")
+    destination_dir = ROOT / "artifacts" / build / "dns-container-backups"
+    destination_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    destination = destination_dir / (Path(archive).name + ".gpg")
+    destination.unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f".{role}-", dir=destination_dir) as temp_dir:
+        os.chmod(temp_dir, 0o700)
+        plaintext = Path(temp_dir) / Path(archive).name
+        password_file = Path(temp_dir) / "passphrase"
+        sftp = client.open_sftp()
+        try:
+            sftp.get(archive, str(plaintext))
+        finally:
+            sftp.close()
+        os.chmod(plaintext, 0o600)
+        digest = hashlib.sha256()
+        with plaintext.open("rb") as backup_file:
+            for chunk in iter(lambda: backup_file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        local_hash = digest.hexdigest()
+        hash_fields = remote(client, f"sha256sum {shlex.quote(archive)}", timeout=60).split()
+        remote_hash = hash_fields[0] if hash_fields else ""
+        if not re.fullmatch(r"[0-9a-f]{64}", remote_hash) or local_hash != remote_hash:
+            raise RuntimeError(f"Downloaded backup for {role} failed SHA-256 verification; refusing to delete CTID {ctid}")
+        password_file.write_text(password + "\n", encoding="utf-8")
+        os.chmod(password_file, 0o600)
+        try:
+            encrypted = subprocess.run(
+                ["gpg", "--batch", "--yes", "--pinentry-mode", "loopback", "--symmetric",
+                 "--cipher-algo", "AES256", "--s2k-mode", "3", "--s2k-digest-algo", "SHA512",
+                 "--s2k-count", "65011712", "--passphrase-file", str(password_file),
+                 "--output", str(destination), str(plaintext)],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=3600, check=False,
+            )
+            if encrypted.returncode != 0 or not destination.is_file() or destination.stat().st_size == 0:
+                raise RuntimeError(f"Could not encrypt the pre-recreation backup for {role}; refusing to delete CTID {ctid}")
+            verified = subprocess.run(
+                ["gpg", "--batch", "--yes", "--pinentry-mode", "loopback", "--passphrase-file",
+                 str(password_file), "--decrypt", "--output", os.devnull, str(destination)],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=3600, check=False,
+            )
+            if verified.returncode != 0:
+                raise RuntimeError(f"Encrypted backup verification failed for {role}; refusing to delete CTID {ctid}")
+        except (OSError, subprocess.SubprocessError, RuntimeError):
+            destination.unlink(missing_ok=True)
+            raise
+        os.chmod(destination, 0o600)
+    print(f"Verified encrypted pre-recreation backup for {role}: {destination.relative_to(ROOT)}")
+    return destination
 
 
 def matches_container_identity(config, role, mac):
@@ -240,8 +311,9 @@ def provision(client, stage, values, recreate_role):
                 raise RuntimeError(f"CTID {ctid} already exists but does not match the {role} profile; refusing to modify or replace it")
             status = remote(client, f"pct status {ctid}", timeout=30)
             if role == recreate_role:
-                print(f"RECREATING {role} (CTID {ctid}): permanently deleting its container and DNS data; no DNS-container backup will be made.")
+                print(f"RECREATING {role} (CTID {ctid}): creating and downloading a verified Proxmox backup before deletion.")
                 try:
+                    backup_container(client, stage, role, ctid, values["DNS_BACKUP_ENCRYPTION_PASSWORD"])
                     if "status: running" in status:
                         try:
                             remote(client, f"pct shutdown {ctid} --timeout 120", timeout=180)
@@ -351,7 +423,7 @@ def review_plan(client, values, recreate_role):
             state = remote(client, f"pct status {ctid}", timeout=30).replace("status: ", "").strip()
             if role == recreate_role:
                 other_role = "dns02" if role == "dns01" else "dns01"
-                print(f"- {role}: DESTRUCTIVE — permanently delete verified CTID {ctid} ({state}) and all DNS data, then create a clean replacement at {expected_ip}; no DNS-container backup; {other_role} remains in place")
+                print(f"- {role}: DESTRUCTIVE — create and verify a Proxmox backup, then delete verified CTID {ctid} ({state}) and create a clean replacement at {expected_ip}; {other_role} remains in place")
             else:
                 print(f"- {role}: reuse verified CTID {ctid} ({state}); verify its address is {expected_ip}")
         else:
@@ -372,7 +444,7 @@ def main():
     if arguments not in ([], ["--plan"]):
         raise RuntimeError("Usage: deploy-dns.py [--plan]")
     recreate_role = selected_recreate_role()
-    values = read_infisical()
+    values = read_infisical(require_backup_password=recreate_role != "none")
     host = required("PROXMOX_HOST")
     if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
         raise RuntimeError("PROXMOX_HOST must be a hostname or IPv4 address")

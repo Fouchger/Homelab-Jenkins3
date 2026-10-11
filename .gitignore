@@ -19,6 +19,9 @@
 !/proxmox_helper_script/
 !/proxmox_helper_script/**
 !/jenkins/
+!/tests/
+/tests/*
+!/tests/test_proxmox_access.py
 
 # Ignore all files in jobs subdirectories except for folders.
 # Note: git doesn't track folders, only file content.
@@ -51,3 +54,8 @@ jobs/**/*workspace
 
 # As a result, only Jenkins settings and job config.xml files in JENKINS_HOME
 # will be tracked by git.
+
+# Python caches and local validation scratch data.
+__pycache__/
+*.py[cod]
+.review-tmp/

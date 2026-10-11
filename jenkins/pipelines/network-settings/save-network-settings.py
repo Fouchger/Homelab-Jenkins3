@@ -244,8 +244,8 @@ def validate_value(name, value):
             raise RuntimeError("MIKROTIK_TLS_CERT_SHA256 must be a 64-character SHA-256 fingerprint (colons are optional)")
         return normalized
     if name == "LXC_ROOT_PASSWORD":
-        if len(value) < 6 or ":" in value or any(char in value for char in "\r\n\0"):
-            raise RuntimeError("LXC root passwords must be at least 6 characters and cannot contain a colon or line break")
+        if len(value) < 16 or ":" in value or any(char in value for char in "\r\n\0"):
+            raise RuntimeError("LXC root passwords must be at least 16 characters and cannot contain a colon or line break")
         return value
     if name == "DNS_SERVER_ADMIN_PASSWORD":
         if len(value) < 6 or any(char in value for char in "\r\n\0"):

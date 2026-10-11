@@ -21,7 +21,7 @@ class DownloadBootstrapTests(unittest.TestCase):
         (fixture / 'jenkins/deploy').mkdir()
         (fixture / 'jenkins/config/install.conf').write_text(
             '# Fixture settings\nCONTROLLER_CTID=100\nAGENT_CTID=101\n'
-            'HOMELAB_JENKINS_URL=http://192.168.20.5:8080\n')
+            'HOMELAB_JENKINS_URL=https://192.168.20.5:8443\n')
         for name, ctid, mac in [('controlplane', 100, 'BC:24:11:4B:E3:DB'),
                                 ('jenkins-agent', 101, 'BC:24:11:5E:D9:F9')]:
             (fixture / f'proxmox_helper_script/lxc/ubuntu/{name}.profile.sh').write_text(

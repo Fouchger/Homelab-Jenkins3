@@ -18,7 +18,7 @@ Edit `jenkins/config/install.conf` before deployment. Defaults:
 | Setting | Default |
 | --- | --- |
 | Controller / agent CTID | 100 / 101 |
-| Controller URL | http://192.168.20.5:8080 |
+| Controller URL | https://192.168.20.5:8443 |
 | Runtime | Java 25 on both servers |
 | Jenkins release | Current LTS; reruns may upgrade it |
 | Timezone | Pacific/Auckland (sample only) |
@@ -37,8 +37,9 @@ silent fallback to a different runtime.
 
 The host needs access to the Community Scripts download. Guests need outbound
 DNS/HTTPS to Ubuntu APT, Jenkins, GitHub, HashiCorp, OpenTofu, Cloudsmith, PyPI and
-Ansible Galaxy. The agent connects outbound to the configured controller HTTP(S)
-port over WebSocket; no inbound agent port is needed for Jenkins connectivity.
+Ansible Galaxy. The agent connects outbound to the configured controller HTTPS
+port over WebSocket and trusts the controller certificate delivered over the
+Proxmox enrollment channel; no inbound agent port is needed for Jenkins.
 Community Scripts may prompt for host-specific provisioning choices.
 
 ## One-command bootstrap from Proxmox
@@ -79,7 +80,7 @@ argument. Destroying permanently removes the LXC and its data.
 New LXCs are created by passing all profile settings to the Community Script in
 generated mode, which skips its setup menus. Immediately before each new
 controlplane or agent is created, the bootstrap asks you to choose and confirm
-that LXC's root password (at least 6 characters; no colon). The input is hidden,
+that LXC's root password (at least 16 characters; no colon). The input is hidden,
 applied to the guest before its application installer runs, and removed from the
 host's temporary files. When Infisical setup is active, the bootstrap also saves
 the password as `LXC_ROOT_PASSWORD` under `/proxmox/lxc/controlplane` or
@@ -256,13 +257,13 @@ available when both Technitium servers are down.
 Job 006 has a `RECREATE_DNS_SERVER` parameter which defaults to `none`. You can
 select `dns01` or `dns02` to replace that one identity-verified container with a
 clean installation; the other DNS server remains in place. The approval prompt
-repeats that the selected container and its data will be permanently deleted,
-with no backup. For dns01, only zone names in `DNS_HOSTED_ZONES` are recreated;
+repeats that the selected container will first be backed up and verified, then
+replaced. Jenkins archives that LXC backup with the build. For dns01, only zone
+names in `DNS_HOSTED_ZONES` are recreated;
 custom DNS records and other server data are lost. A recreated dns02 receives
 the current secondary zones again from dns01. To replace both servers, run the
 pipeline separately for each one and review/approve each run. The router's
-encrypted backup is still created before router settings are changed; it does
-not contain the deleted DNS container data.
+encrypted backup is still created before router settings are changed.
 
 These scripts seed the Proxmox access
 setup job. The job applies the existing `HomelabLxcOperator` role to

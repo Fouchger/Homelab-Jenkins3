@@ -92,7 +92,7 @@ def build_report(actual, expected):
         present = key in actual
         state = item["state"]
         if present:
-            status = "UNUSED" if state in ("obsolete", "planned") else "SET"
+            status = "UNUSED" if state in ("obsolete", "planned") else "PRESENT"
         elif state in required_states:
             status = "MISSING"
             failed = True
@@ -136,12 +136,13 @@ def main():
         writer.writerows(rows)
     os.chmod(report, 0o600)
 
-    print("Infisical variable audit (names only; secret values were not requested or saved):")
+    print("Infisical variable audit (names only; values, validity, access scope, and runtime usability were not checked):")
     print(f"{'STATUS':<18} {'FOLDER':<38} VARIABLE")
     print("-" * 100)
     for row in rows:
         print(f"{row['status']:<18} {row['folder']:<38} {row['variable']}")
     print(f"\nFound {len(actual)} configured variable(s); report saved as {report.relative_to(ROOT)}.")
+    print("PRESENT means only that a variable name exists; it does not confirm a non-empty or valid value.")
     if missing_required:
         print("One or more required variables are missing. See MISSING rows above.", file=sys.stderr)
         return 1
