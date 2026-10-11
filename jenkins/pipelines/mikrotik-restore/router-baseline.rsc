@@ -86,7 +86,7 @@ add address-pool=pool-vlan90 authoritative=after-2sec-delay interface=VLAN90-DMZ
 add address-pool=pool-vlan80 interface=VLAN80-K8S lease-time=8h name=dhcp-vlan80
 /user group
 add name=homelab-dns policy="local,telnet,ssh,ftp,reboot,read,write,policy,test,winbox,password,web,sniff,sensitive,api,romon,rest-api"
-add name=homelab-backup policy="ssh,ftp,read,write,sensitive,!local,!telnet,!reboot,!policy,!test,!winbox,!password,!web,!sniff,!api,!romon,!rest-api"
+add name=homelab-backup policy="ssh,ftp,read,write,sensitive,!local,!telnet,!reboot,policy,test,!winbox,!password,!web,!sniff,!api,!romon,!rest-api"
 /dude
 set enabled=yes
 /interface bridge port
