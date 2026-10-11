@@ -143,24 +143,31 @@ port=$((10#${BASH_REMATCH[2]}))
 java25_path="$(update-alternatives --list java | awk '/java-25-openjdk/ { print; exit }')"
 [[ -x $java25_path ]] || { echo 'Java 25 runtime was not found.' >&2; exit 1; }
 java_home=${java25_path%/bin/java}
+agent_ca_cert=/etc/jenkins-agent/controller-ca.crt
+install -d -o root -g jenkins-agent -m 0750 /etc/jenkins-agent
 if [[ -n $controller_cert_file ]]; then
   openssl x509 -in "$controller_cert_file" -noout -checkend 0 >/dev/null || { echo 'Controller certificate is invalid or expired.' >&2; exit 1; }
   keytool="$java_home/bin/keytool"
   [[ -x $keytool ]] || { echo 'Java 25 keytool was not found.' >&2; exit 1; }
-  "$keytool" -delete -alias homelab-jenkins-controller -keystore "$java_home/lib/security/cacerts" -storepass changeit >/dev/null 2>&1 || true
+  install -o root -g root -m 0644 "$controller_cert_file" "$agent_ca_cert"
+  echo 'Installing the pinned Jenkins controller certificate into the Java trust store.'
+  "$keytool" -delete -alias homelab-jenkins-controller -cacerts -storepass changeit >/dev/null 2>&1 || true
   "$keytool" -importcert -noprompt -trustcacerts -alias homelab-jenkins-controller \
-    -file "$controller_cert_file" -keystore "$java_home/lib/security/cacerts" -storepass changeit >/dev/null
+    -file "$controller_cert_file" -cacerts -storepass changeit >/dev/null
   rm -f -- "$controller_cert_file" "$secret_file"
 fi
-install -d -o root -g jenkins-agent -m 0750 /etc/jenkins-agent
 printf '%s\n' "$agent_secret" >/etc/jenkins-agent/agent.secret
 chown root:jenkins-agent /etc/jenkins-agent/agent.secret
 chmod 0640 /etc/jenkins-agent/agent.secret
 rm -f -- /etc/jenkins-agent/agent.env
 unset agent_secret
 
-curl --proto '=https' --proto-redir '=https' --fail --silent --show-error --location \
+echo 'Downloading the Jenkins inbound-agent JAR using the pinned controller certificate.'
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --silent --show-error --location \
+  --connect-timeout 15 --max-time 180 --retry 3 --cacert "$agent_ca_cert" \
   "$agent_url/jnlpJars/agent.jar" --output /opt/jenkins-agent/agent.jar
+test -s /opt/jenkins-agent/agent.jar
+echo 'Jenkins inbound-agent JAR downloaded and verified.'
 chown root:root /opt/jenkins-agent/agent.jar
 chmod 0644 /opt/jenkins-agent/agent.jar
 
