@@ -2,13 +2,11 @@
 """Create or safely reuse DNS LXCs on Proxmox, configure Technitium, and sync zones."""
 
 import ipaddress
-import hashlib
 import json
 import os
 import re
 import shlex
 import sys
-import subprocess
 import tempfile
 import time
 import urllib.error
@@ -51,7 +49,7 @@ def http_json(url, method="GET", headers=None, form=None):
         raise RuntimeError(f"Infisical request failed: {type(exc).__name__}") from None
 
 
-def read_infisical(*, require_backup_password=False):
+def read_infisical():
     base = required("INFISICAL_URL").rstrip("/")
     if not base.startswith("https://"):
         raise RuntimeError("INFISICAL_URL must use HTTPS")
@@ -84,12 +82,8 @@ def read_infisical(*, require_backup_password=False):
 
     fetch("/proxmox/automation", ("PVE_SSH_PRIVATE_KEY", "PVE_SSH_HOST_KEY"))
     fetch("/dns", (
-        "DNS_PUBLIC_FALLBACKS", "MIKROTIK_DHCP_DNS_MODE", "DNS_HOSTED_ZONES", "DNS_BACKUP_ENCRYPTION_PASSWORD",
-    ), optional=("DNS_PUBLIC_FALLBACKS", "DNS_HOSTED_ZONES", "DNS_BACKUP_ENCRYPTION_PASSWORD"))
-    if require_backup_password:
-        password = values.get("DNS_BACKUP_ENCRYPTION_PASSWORD", "")
-        if len(password) < 32 or any(char in password for char in "\r\n\0"):
-            raise RuntimeError("Selected DNS recreation requires /dns/DNS_BACKUP_ENCRYPTION_PASSWORD with at least 32 characters")
+        "DNS_PUBLIC_FALLBACKS", "MIKROTIK_DHCP_DNS_MODE", "DNS_HOSTED_ZONES",
+    ), optional=("DNS_PUBLIC_FALLBACKS", "DNS_HOSTED_ZONES"))
     for role in ("dns01", "dns02"):
         fetch(f"/dns/{role}", ("DNS_IPV4", "DNS_SERVER_ADMIN_PASSWORD"))
         values[f"{role.upper()}_IPV4"] = values.pop("DNS_IPV4")
@@ -174,71 +168,6 @@ def upload(sftp, local_path, remote_path, mode=0o600):
     sftp.chmod(remote_path, mode)
 
 
-def backup_container(client, stage, role, ctid, password):
-    """Create, verify, encrypt, and retain a Proxmox LXC backup."""
-    backup_dir = f"{stage}/backups"
-    remote(client, f"install -d -m 700 {shlex.quote(backup_dir)}", timeout=30)
-    output = remote(client, f"vzdump {ctid} --mode stop --compress zstd --dumpdir {shlex.quote(backup_dir)}", timeout=3600)
-    matches = re.findall(r"(?:creating vzdump archive|archive):? ['\"]?([^'\"\s]+\.tar\.(?:zst|gz|lzo))", output)
-    if len(matches) != 1:
-        raise RuntimeError(f"Proxmox did not report one unambiguous backup archive for {role}; refusing to delete CTID {ctid}")
-    archive = matches[0]
-    remote(client, f"test -s {shlex.quote(archive)}", timeout=30)
-    build = os.environ.get("BUILD_NUMBER", "local")
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+", build):
-        raise RuntimeError("BUILD_NUMBER is invalid for backup artifact storage")
-    destination_dir = ROOT / "artifacts" / build / "dns-container-backups"
-    destination_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    destination = destination_dir / (Path(archive).name + ".gpg")
-    destination.unlink(missing_ok=True)
-    with tempfile.TemporaryDirectory(prefix=f".{role}-", dir=destination_dir) as temp_dir:
-        os.chmod(temp_dir, 0o700)
-        plaintext = Path(temp_dir) / Path(archive).name
-        password_file = Path(temp_dir) / "passphrase"
-        sftp = client.open_sftp()
-        try:
-            sftp.get(archive, str(plaintext))
-        finally:
-            sftp.close()
-        os.chmod(plaintext, 0o600)
-        digest = hashlib.sha256()
-        with plaintext.open("rb") as backup_file:
-            for chunk in iter(lambda: backup_file.read(1024 * 1024), b""):
-                digest.update(chunk)
-        local_hash = digest.hexdigest()
-        hash_fields = remote(client, f"sha256sum {shlex.quote(archive)}", timeout=60).split()
-        remote_hash = hash_fields[0] if hash_fields else ""
-        if not re.fullmatch(r"[0-9a-f]{64}", remote_hash) or local_hash != remote_hash:
-            raise RuntimeError(f"Downloaded backup for {role} failed SHA-256 verification; refusing to delete CTID {ctid}")
-        password_file.write_text(password + "\n", encoding="utf-8")
-        os.chmod(password_file, 0o600)
-        try:
-            encrypted = subprocess.run(
-                ["gpg", "--batch", "--yes", "--pinentry-mode", "loopback", "--symmetric",
-                 "--cipher-algo", "AES256", "--s2k-mode", "3", "--s2k-digest-algo", "SHA512",
-                 "--s2k-count", "65011712", "--passphrase-file", str(password_file),
-                 "--output", str(destination), str(plaintext)],
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=3600, check=False,
-            )
-            if encrypted.returncode != 0 or not destination.is_file() or destination.stat().st_size == 0:
-                raise RuntimeError(f"Could not encrypt the pre-recreation backup for {role}; refusing to delete CTID {ctid}")
-            verified = subprocess.run(
-                ["gpg", "--batch", "--yes", "--pinentry-mode", "loopback", "--passphrase-file",
-                 str(password_file), "--decrypt", "--output", os.devnull, str(destination)],
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=3600, check=False,
-            )
-            if verified.returncode != 0:
-                raise RuntimeError(f"Encrypted backup verification failed for {role}; refusing to delete CTID {ctid}")
-        except (OSError, subprocess.SubprocessError, RuntimeError):
-            destination.unlink(missing_ok=True)
-            raise
-        os.chmod(destination, 0o600)
-    print(f"Verified encrypted pre-recreation backup for {role}: {destination.relative_to(ROOT)}")
-    return destination
-
-
 def matches_container_identity(config, role, mac):
     """Require exact identity markers before an existing guest can be reused."""
     lines = {}
@@ -318,6 +247,54 @@ def recreation_order(client, recreate_roles):
     if presence["dns01"] and not presence["dns02"]:
         return ["dns02", "dns01"]
     return order
+
+
+def destroy_verified_container(client, ctid, config):
+    """Stop and destroy an already identity-verified container, honoring protection."""
+    protected = re.search(r"(?m)^protection:\s*(?:1|yes)\s*$", config) is not None
+    if protected:
+        print(f"CTID {ctid} is protected; temporarily disabling protection before deletion.")
+        remote(client, f"pct set {ctid} --protection 0", timeout=60)
+
+    try:
+        status = remote(client, f"pct status {ctid}", timeout=30)
+        if "status: running" in status:
+            remote(client, f"pct stop {ctid}", timeout=120, operation=f"stop of CTID {ctid}")
+    except Exception as exc:
+        if protected:
+            try:
+                remote(client, f"pct set {ctid} --protection 1", timeout=60)
+            except Exception:
+                print(f"WARNING: could not restore protection on CTID {ctid} after stop failure.", file=sys.stderr)
+        raise RuntimeError(f"Could not stop CTID {ctid}; protection was restored if it had been enabled. {exc}") from None
+
+    destroy_error = None
+    try:
+        remote(client, f"pct destroy {ctid} -f", timeout=600, operation=f"destruction of CTID {ctid}")
+    except Exception as exc:
+        destroy_error = str(exc)
+
+    try:
+        still_present = remote(
+            client,
+            f"if pct status {ctid} >/dev/null 2>&1; then printf present; else printf absent; fi",
+            timeout=30,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Could not verify whether CTID {ctid} was deleted. {exc}") from None
+    if still_present != "absent":
+        if protected:
+            try:
+                remote(client, f"pct set {ctid} --protection 1", timeout=60)
+            except Exception:
+                print(f"WARNING: could not restore protection on CTID {ctid} after destroy failure.", file=sys.stderr)
+        detail = f" Proxmox reported: {destroy_error}" if destroy_error else ""
+        raise RuntimeError(
+            f"CTID {ctid} still exists after the destroy request; protection was restored if it had been enabled.{detail}"
+        )
+    if destroy_error:
+        print(f"Proxmox reported an error, but CTID {ctid} is confirmed absent: {destroy_error}")
+    print(f"CTID {ctid} was deleted.")
 
 
 def ensure_peer_dns_online(client, stage, role, values):
@@ -469,30 +446,14 @@ def provision(client, stage, values, recreate_roles):
                 raise RuntimeError(f"CTID {ctid} already exists but does not match the {role} profile; refusing to modify or replace it")
             status = remote(client, f"pct status {ctid}", timeout=30)
             if recreate_role:
-                print(f"RECREATING {role} (CTID {ctid}): creating and downloading a verified Proxmox backup before deletion.")
+                print(f"RECREATING {role} (CTID {ctid}); hosted zone data will be preserved before deletion.")
                 try:
                     peer_role = "dns02" if role == "dns01" else "dns01"
                     print(f"Verifying {peer_role} is healthy before taking {role} offline.")
                     ensure_peer_dns_online(client, stage, peer_role, values)
                     if role == "dns01":
                         preserved_dns01_zones = export_zone_files(client, stage, "dns01", values, ["Primary"])
-                    backup_container(client, stage, role, ctid, values["DNS_BACKUP_ENCRYPTION_PASSWORD"])
-                    if "status: running" in status:
-                        try:
-                            remote(client, f"pct shutdown {ctid} --timeout 120", timeout=180, operation=f"graceful shutdown of CTID {ctid}")
-                        except RuntimeError:
-                            pass
-                        status = remote(client, f"pct status {ctid}", timeout=30)
-                        if "status: stopped" not in status:
-                            remote(client, f"pct stop {ctid}", timeout=120, operation=f"forced stop of CTID {ctid}")
-                    remote(client, f"pct destroy {ctid} --purge 1", timeout=600, operation=f"destruction of CTID {ctid}")
-                    still_present = remote(
-                        client,
-                        f"if pct status {ctid} >/dev/null 2>&1; then printf present; else printf absent; fi",
-                        timeout=30,
-                    )
-                    if still_present != "absent":
-                        raise RuntimeError(f"Proxmox still reports CTID {ctid} after destroy")
+                    destroy_verified_container(client, ctid, existing)
                 except Exception as exc:
                     try:
                         final_status = remote(client, f"pct status {ctid}", timeout=30).replace("status: ", "").strip()
@@ -500,7 +461,7 @@ def provision(client, stage, values, recreate_roles):
                         final_status = "unknown (Proxmox status query failed)"
                     raise RuntimeError(
                         f"Could not safely remove {role} CTID {ctid}; its current status is {final_status}. "
-                        f"The verified encrypted backup is retained. Proxmox reported: {exc}"
+                        f"Proxmox reported: {exc}"
                     ) from None
             else:
                 if "status: running" not in status:
@@ -579,7 +540,7 @@ def review_plan(client, values, recreate_roles):
             state = remote(client, f"pct status {ctid}", timeout=30).replace("status: ", "").strip()
             if role in recreate_roles:
                 other_role = "dns02" if role == "dns01" else "dns01"
-                print(f"- {role}: DESTRUCTIVE — create and verify a Proxmox backup, then delete verified CTID {ctid} ({state}) and create a clean replacement at {expected_ip}; {other_role} stays online during this recreation")
+                print(f"- {role}: DESTRUCTIVE — delete identity-verified CTID {ctid} ({state}) and create a clean replacement at {expected_ip}; {other_role} stays online during this recreation; Proxmox protection is handled safely")
             else:
                 print(f"- {role}: reuse verified CTID {ctid} ({state}); verify its address is {expected_ip}")
         else:
@@ -605,7 +566,7 @@ def main():
     if arguments not in ([], ["--plan"]):
         raise RuntimeError("Usage: deploy-dns.py [--plan]")
     recreate_roles = selected_recreate_roles()
-    values = read_infisical(require_backup_password=bool(recreate_roles))
+    values = read_infisical()
     SENSITIVE_VALUES.extend(value for value in values.values() if isinstance(value, str) and value)
     host = required("PROXMOX_HOST")
     if not re.fullmatch(r"[A-Za-z0-9.-]+", host):

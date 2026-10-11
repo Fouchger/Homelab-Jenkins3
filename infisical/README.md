@@ -36,7 +36,7 @@ The current secret layout is:
 | `/proxmox/automation` | `PVE_API_TOKEN_ID`, `PVE_API_TOKEN_SECRET`, `PVE_SSH_HOST_KEY`, `PVE_SSH_PRIVATE_KEY` |
 | `/proxmox/pve01` | `PROXMOX_ROOT_PASSWORD` |
 | `/proxmox/lxc/controlplane`, `/proxmox/lxc/jenkins-agent`, and other LXC folders | `LXC_ROOT_PASSWORD` only |
-| `/dns` | `DNS_PUBLIC_FALLBACKS`, `MIKROTIK_DHCP_DNS_MODE`, optional `DNS_HOSTED_ZONES`, `DNS_BACKUP_ENCRYPTION_PASSWORD` (required to recreate a DNS LXC) |
+| `/dns` | `DNS_PUBLIC_FALLBACKS`, `MIKROTIK_DHCP_DNS_MODE`, optional `DNS_HOSTED_ZONES` |
 | `/dns/dns01` | `DNS_IPV4`, `DNS_SERVER_ADMIN_PASSWORD` |
 | `/dns/dns02` | `DNS_IPV4`, `DNS_SERVER_ADMIN_PASSWORD` |
 | `/proxmox/lxc/dns01`, `/proxmox/lxc/dns02` | `LXC_ROOT_PASSWORD` only |
@@ -68,11 +68,10 @@ domains are chosen. Set admin passwords directly in Infisical to avoid
 retaining password parameters in Jenkins build records. Job 006 changes the
 default `admin`/`admin` password only on a new Technitium install; it refuses
 to reset an unknown existing admin password.
-Set `/dns/DNS_BACKUP_ENCRYPTION_PASSWORD` to a randomly generated passphrase of
-at least 32 characters before selecting `dns01` or `dns02` for recreation.
-Jenkins uses it to encrypt and verify the retained Proxmox backup; without it,
-the job stops before deleting the container. Keep the passphrase in Infisical
-so the archived `.gpg` backup can be decrypted for recovery.
+Job 006 does not create a full-container Proxmox backup. It preserves the
+Technitium zone data needed to restore hosted DNS records when dns01 is
+recreated. `/dns/DNS_BACKUP_ENCRYPTION_PASSWORD` is no longer used and can be
+removed from Infisical if present.
 MikroTik administrator/backup passwords and Wi-Fi passphrases entered in Job
 003 are also retained in encrypted Jenkins build records. To avoid those
 additional copies, enter them directly in the corresponding Infisical secrets.

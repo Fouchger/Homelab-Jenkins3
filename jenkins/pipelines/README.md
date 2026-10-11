@@ -18,7 +18,7 @@ Proxmox host-side LXC creation/profile scripts remain in `../../proxmox_helper_s
 | `mikrotik-config/apply-mikrotik-config.py` | Reads router settings from Infisical, creates text and binary pre-change backups over pinned SSH/SFTP, encrypts the combined archive on the agent, removes router-side temporary files, then applies and verifies DNS/DHCP/Wi-Fi changes through pinned HTTPS REST. |
 | `mikrotik-restore/Jenkinsfile` | Job `005 - MikroTik Full Reset and Restore`: a separate destructive recovery action; verifies saved settings and pinned SSH access before asking for approval. |
 | `mikrotik-restore/restore-mikrotik.py` | `--check` validates settings and SSH access without changing the router. The approved run downloads an encrypted pre-reset backup, preserves the pinned SSH server key for import after reset, dry-runs the Infisical script, then waits up to 30 minutes for verified SSH recovery at `MIKROTIK_IP`, reporting progress and distinguishing key mismatch, login rejection, and unavailable SSH. |
-| `dns-deploy/Jenkinsfile` | Job `006 - DNS Deployment and Router Sync`: shows a read-only plan for dns01/dns02 and reviews the router's DNS/DHCP differences before one approval. `RECREATE_DNS_SERVER` defaults to `none` and can select only `dns01` or `dns02`; before deletion, the job creates, downloads, checksum-verifies, encrypts, and decrypt-verifies a Proxmox LXC backup, then archives the encrypted backup with the build. A 32-character-or-longer `/dns/DNS_BACKUP_ENCRYPTION_PASSWORD` is required for recreation. Shared policy is read from `/dns`; each server's `DNS_IPV4` and `DNS_SERVER_ADMIN_PASSWORD` are read from its `/dns/<server>` folder. |
+| `dns-deploy/Jenkinsfile` | Job `006 - DNS Deployment and Router Sync`: shows a read-only plan for dns01/dns02 and reviews the router's DNS/DHCP differences before one approval. Each server has a `reuse` or `destroy-and-recreate` choice; both may be selected and are handled sequentially with peer health checks and DNS zone data preservation. Full Proxmox container backups are not created. Shared policy is read from `/dns`; each server's `DNS_IPV4` and `DNS_SERVER_ADMIN_PASSWORD` are read from its `/dns/<server>` folder. |
 | `dns-deploy/deploy-dns.py` | `--plan` checks the pinned Proxmox connection and existing LXC identities without changes, then lists the intended DNS operations, including any selected destructive replacement. The normal run replaces at most one identity-verified CTID through pinned Proxmox SSH and runs DNS management locally inside each guest so passwords do not cross the network in clear text. |
 | `dns-deploy/manage-technitium.py` | Uses Technitium's local HTTP API over loopback to secure the admin login, create configured primary zones, permit zone transfers only from dns02, and create/resync secondary zones on dns02. |
 | `infisical-audit/Jenkinsfile` | Job `007 - Infisical Variable Audit`: lists secret folder/name pairs without values, reports names that exist as PRESENT, required omissions as MISSING, and present-but-unused values as UNUSED, then archives a names-only CSV. PRESENT does not validate a value or its permissions. |
@@ -100,10 +100,12 @@ Job 006 asks for an action per DNS server: `reuse` or `destroy-and-recreate`.
 Both servers may be selected for recreation in one build. Jenkins handles them
 sequentially, checks that the peer is online before each deletion, and
 saves/restores dns01 zone files and synchronizes the restored primary zones to
-dns02 before taking dns02 offline. Each selected container is backed up,
-downloaded, encrypted, and verified before it can be destroyed. The apply stage
-stops before deletion if the peer fails its container, address, Technitium
-authentication, or DNS listener health checks.
+dns02 before taking dns02 offline. Full container backups are not made. For a
+protected container, Jenkins temporarily disables Proxmox protection and
+restores it if deletion fails. The apply stage stops before deletion if the
+peer fails its container, address, Technitium authentication, or DNS listener
+health checks. The later router DNS/DHCP stage still makes its normal encrypted
+pre-change MikroTik backup.
 
 Job 005 takes Wi-Fi passphrases from `/mikrotik/wifi_security` and the RouterOS
 scheduled-backup password from `/mikrotik/backup`, then replaces placeholders
