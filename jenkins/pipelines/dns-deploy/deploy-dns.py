@@ -24,6 +24,7 @@ PROFILES = {
     "dns01": (150, "02:00:00:00:01:50", "dns01.profile.sh"),
     "dns02": (151, "02:00:00:00:01:51", "dns02.profile.sh"),
 }
+SENSITIVE_VALUES = []
 
 
 def required(name):
@@ -145,7 +146,7 @@ def ssh_settings(host, values):
     return client, key_file.name
 
 
-def remote(client, command, timeout=900):
+def remote(client, command, timeout=900, operation="operation"):
     try:
         _stdin, stdout, _stderr = client.exec_command(command + " 2>&1", timeout=timeout)
         out = stdout.read().decode("utf-8", errors="replace")
@@ -153,7 +154,18 @@ def remote(client, command, timeout=900):
     except Exception:
         raise RuntimeError("Proxmox SSH operation failed; remote output was suppressed") from None
     if status:
-        raise RuntimeError(f"Proxmox operation failed with exit status {status}")
+        safe_output = out.strip()
+        for secret in sorted((value for value in SENSITIVE_VALUES if value), key=len, reverse=True):
+            safe_output = safe_output.replace(secret, "[REDACTED]")
+        safe_output = re.sub(
+            r"(?i)\b(password|passphrase|token|secret)(\s*[:=]\s*)([^\s,;]+)",
+            r"\1\2[REDACTED]",
+            safe_output,
+        )
+        if len(safe_output) > 4000:
+            safe_output = safe_output[-4000:]
+        detail = f"; Proxmox output: {safe_output}" if safe_output else "; Proxmox returned no diagnostic output"
+        raise RuntimeError(f"Proxmox {operation} failed with exit status {status}{detail}")
     return out.strip()
 
 
@@ -467,13 +479,13 @@ def provision(client, stage, values, recreate_roles):
                     backup_container(client, stage, role, ctid, values["DNS_BACKUP_ENCRYPTION_PASSWORD"])
                     if "status: running" in status:
                         try:
-                            remote(client, f"pct shutdown {ctid} --timeout 120", timeout=180)
+                            remote(client, f"pct shutdown {ctid} --timeout 120", timeout=180, operation=f"graceful shutdown of CTID {ctid}")
                         except RuntimeError:
                             pass
                         status = remote(client, f"pct status {ctid}", timeout=30)
                         if "status: stopped" not in status:
-                            remote(client, f"pct stop {ctid}", timeout=120)
-                    remote(client, f"pct destroy {ctid} --purge 1", timeout=600)
+                            remote(client, f"pct stop {ctid}", timeout=120, operation=f"forced stop of CTID {ctid}")
+                    remote(client, f"pct destroy {ctid} --purge 1", timeout=600, operation=f"destruction of CTID {ctid}")
                     still_present = remote(
                         client,
                         f"if pct status {ctid} >/dev/null 2>&1; then printf present; else printf absent; fi",
@@ -482,7 +494,14 @@ def provision(client, stage, values, recreate_roles):
                     if still_present != "absent":
                         raise RuntimeError(f"Proxmox still reports CTID {ctid} after destroy")
                 except Exception as exc:
-                    raise RuntimeError(f"Could not safely remove {role} CTID {ctid}; check its Proxmox status before retrying. {exc}") from None
+                    try:
+                        final_status = remote(client, f"pct status {ctid}", timeout=30).replace("status: ", "").strip()
+                    except Exception:
+                        final_status = "unknown (Proxmox status query failed)"
+                    raise RuntimeError(
+                        f"Could not safely remove {role} CTID {ctid}; its current status is {final_status}. "
+                        f"The verified encrypted backup is retained. Proxmox reported: {exc}"
+                    ) from None
             else:
                 if "status: running" not in status:
                     remote(client, f"pct start {ctid}", timeout=120)
@@ -587,6 +606,7 @@ def main():
         raise RuntimeError("Usage: deploy-dns.py [--plan]")
     recreate_roles = selected_recreate_roles()
     values = read_infisical(require_backup_password=bool(recreate_roles))
+    SENSITIVE_VALUES.extend(value for value in values.values() if isinstance(value, str) and value)
     host = required("PROXMOX_HOST")
     if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
         raise RuntimeError("PROXMOX_HOST must be a hostname or IPv4 address")

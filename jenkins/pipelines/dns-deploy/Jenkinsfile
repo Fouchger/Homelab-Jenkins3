@@ -39,8 +39,8 @@ pipeline {
                         sh(label: 'Show read-only DNS deployment plan', script: '''#!/bin/sh
 set -eu
 set +x
-python3 jenkins/pipelines/dns-deploy/deploy-dns.py --plan
-python3 jenkins/pipelines/network-settings/review-mikrotik-settings.py
+python3 -u jenkins/pipelines/dns-deploy/deploy-dns.py --plan
+python3 -u jenkins/pipelines/network-settings/review-mikrotik-settings.py
 ''')
                     }
                 }
@@ -67,7 +67,7 @@ python3 jenkins/pipelines/network-settings/review-mikrotik-settings.py
                         sh(label: 'Provision DNS LXCs sequentially and configure Technitium', script: '''#!/bin/sh
 set -eu
 set +x
-python3 jenkins/pipelines/dns-deploy/deploy-dns.py
+python3 -u jenkins/pipelines/dns-deploy/deploy-dns.py
 ''')
                     }
                 }
@@ -84,7 +84,7 @@ python3 jenkins/pipelines/dns-deploy/deploy-dns.py
                     withEnv(['HOMELAB_MIKROTIK_DNS_ONLY=yes']) {
                         sh(label: 'Back up router and apply DNS/DHCP resolver settings', script: '''#!/bin/sh
 set +x
-python3 jenkins/pipelines/mikrotik-config/apply-mikrotik-config.py
+python3 -u jenkins/pipelines/mikrotik-config/apply-mikrotik-config.py
 ''')
                     }
                 }
