@@ -386,6 +386,10 @@ install_role() {
     create_lxc_with_password "$profile_file" "$profile_name" "$expected_id"
   fi
 }
+# Install both roles before enrolling. The agent installer refreshes its
+# configure-jenkins-agent helper, which must be current before certificate
+# pinning and agent.jar download are attempted.
+export HOMELAB_DEFER_AGENT_ENROLMENT=yes
 install_role controlplane controller "$CONTROLLER_CTID"
 infisical_setup_imported=no
 import_infisical_setup() {
@@ -397,6 +401,12 @@ import_infisical_setup() {
 import_infisical_setup
 install_role jenkins-agent agent "$AGENT_CTID"
 import_infisical_setup
+if [[ ${HOMELAB_SKIP_AGENT_ENROLMENT:-no} == yes ]]; then
+  printf 'Skipping agent re-enrolment for a repository update; preserving current WebSocket credentials.\n'
+else
+  bash "$project_dir/jenkins/deploy/enrol-agent-lxc.sh" "$CONTROLLER_CTID" "$AGENT_CTID"
+fi
+unset HOMELAB_DEFER_AGENT_ENROLMENT
 
 # Keep a repository snapshot on the controlplane after the host temporary copy goes.
 # Installed services and their persistent configuration already live in the LXCs.

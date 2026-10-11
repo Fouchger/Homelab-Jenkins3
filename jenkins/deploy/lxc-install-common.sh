@@ -47,6 +47,8 @@ install_in_lxc() {
   if [[ $role == controller ]]; then CONTROLLER_CTID=$container_id; else AGENT_CTID=$container_id; fi
   if [[ ${HOMELAB_SKIP_AGENT_ENROLMENT:-no} == yes ]]; then
     printf 'Skipping agent re-enrolment for a repository update; preserving current WebSocket credentials.\n'
+  elif [[ ${HOMELAB_DEFER_AGENT_ENROLMENT:-no} == yes ]]; then
+    printf 'Deferring agent enrolment until both Jenkins installers have completed.\n'
   else
     bash "$script_dir/enrol-agent-lxc.sh" "$CONTROLLER_CTID" "$AGENT_CTID"
   fi
