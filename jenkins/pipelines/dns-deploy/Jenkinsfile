@@ -5,12 +5,12 @@ pipeline {
         choice(
             name: 'DNS01_ACTION',
             choices: ['reuse', 'destroy-and-recreate'],
-            description: 'dns01 (192.168.30.2): reuse the existing container or create and verify a Proxmox backup, then destroy and recreate it. Keep dns02 online during this action.'
+            description: 'dns01 (192.168.30.2): reuse the existing container or create and verify a Proxmox backup, then destroy and recreate it. If both servers are selected, Jenkins rebuilds them sequentially and verifies the peer is online before each deletion.'
         )
         choice(
             name: 'DNS02_ACTION',
             choices: ['reuse', 'destroy-and-recreate'],
-            description: 'dns02 (192.168.30.3): reuse the existing container or create and verify a Proxmox backup, then destroy and recreate it. Keep dns01 online during this action. Only one server may be recreated per build.'
+            description: 'dns02 (192.168.30.3): reuse the existing container or create and verify a Proxmox backup, then destroy and recreate it. If both servers are selected, Jenkins rebuilds them sequentially and verifies the peer is online before each deletion.'
         )
     }
 
@@ -37,6 +37,7 @@ pipeline {
                         "HOMELAB_DNS02_ACTION=${params.DNS02_ACTION ?: 'reuse'}"
                     ]) {
                         sh(label: 'Show read-only DNS deployment plan', script: '''#!/bin/sh
+set -eu
 set +x
 python3 jenkins/pipelines/dns-deploy/deploy-dns.py --plan
 python3 jenkins/pipelines/network-settings/review-mikrotik-settings.py
@@ -47,7 +48,7 @@ python3 jenkins/pipelines/network-settings/review-mikrotik-settings.py
         }
         stage('Approve DNS deployment') {
             steps {
-                input message: "Review the DNS server plan and the MikroTik DNS/DHCP differences above. Per-server actions: dns01=${params.DNS01_ACTION ?: 'reuse'}, dns02=${params.DNS02_ACTION ?: 'reuse'}. Only one server may be destroyed and recreated per build. Before deletion, Jenkins verifies the other server's container, expected IP, Technitium admin access, and UDP/53 DNS response; recreation stops if that peer is unhealthy. Jenkins also creates, downloads, and verifies a Proxmox backup of the selected managed container before deletion, then archives it with this build. The normal encrypted MikroTik backup still runs before router changes. After provisioning, Jenkins configures zone replication and syncs DHCP DNS. If recreation fails, the selected server may remain deleted; if the later router backup or sync fails, DNS servers may already be updated while router DHCP remains unchanged. No changes occur before approval.", ok: 'Deploy DNS and sync router'
+                input message: "Review the DNS server plan and the MikroTik DNS/DHCP differences above. Per-server actions: dns01=${params.DNS01_ACTION ?: 'reuse'}, dns02=${params.DNS02_ACTION ?: 'reuse'}. Jenkins handles selected servers sequentially, creating an absent peer first when that is needed to keep a DNS server online. Before each deletion, Jenkins verifies the peer container, expected IP, Technitium admin access, and UDP/53 DNS response; recreation stops if the peer is unhealthy. Before dns01 is taken offline, Jenkins preserves its primary zone files and restores them on the replacement, then synchronizes them to dns02 before taking dns02 offline. Jenkins creates, downloads, and verifies a Proxmox backup of each selected container before deletion, then archives it with this build. The normal encrypted MikroTik backup still runs before router changes. If recreation fails, the selected server may remain deleted; if the later router backup or sync fails, DNS servers may already be updated while router DHCP remains unchanged. No changes occur before approval.", ok: 'Deploy DNS and sync router'
             }
         }
         stage('Create and configure DNS servers') {
@@ -64,6 +65,7 @@ python3 jenkins/pipelines/network-settings/review-mikrotik-settings.py
                         "HOMELAB_DNS02_ACTION=${params.DNS02_ACTION ?: 'reuse'}"
                     ]) {
                         sh(label: 'Provision DNS LXCs sequentially and configure Technitium', script: '''#!/bin/sh
+set -eu
 set +x
 python3 jenkins/pipelines/dns-deploy/deploy-dns.py
 ''')

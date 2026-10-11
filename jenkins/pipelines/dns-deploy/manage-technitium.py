@@ -2,7 +2,9 @@
 """Run within a DNS LXC to initialize its admin password and manage zone replication."""
 
 import json
+import base64
 import os
+import re
 import socket
 import sys
 import time
@@ -67,6 +69,10 @@ def authenticate(desired_password):
 
 
 def zones(token):
+    return primary_zones(token, include_internal=False)
+
+
+def primary_zones(token, include_internal):
     result = call("/api/zones/list", token=token)
     entries = result.get("response", {}).get("zones", [])
     if not isinstance(entries, list):
@@ -74,8 +80,57 @@ def zones(token):
     return [
         item["name"] for item in entries
         if isinstance(item, dict) and item.get("type") == "Primary"
-        and not item.get("internal", False) and item.get("name")
+        and (include_internal or not item.get("internal", False)) and item.get("name")
     ]
+
+
+def all_zones(token):
+    result = call("/api/zones/list", token=token)
+    entries = result.get("response", {}).get("zones", [])
+    if not isinstance(entries, list):
+        raise RuntimeError("Technitium returned an invalid zone list")
+    return [item for item in entries if isinstance(item, dict) and item.get("name")]
+
+
+def export_zone(token, zone):
+    query = urllib.parse.urlencode({"zone": zone})
+    request = urllib.request.Request(
+        BASE + "/api/zones/export?" + query,
+        headers={"Accept": "text/plain", "Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            content = response.read().decode("utf-8")
+    except (urllib.error.URLError, TimeoutError, UnicodeDecodeError):
+        raise RuntimeError(f"Could not export Technitium zone {zone}") from None
+    if not content.strip():
+        raise RuntimeError(f"Technitium returned an empty export for zone {zone}")
+    return content
+
+
+def import_zone(token, zone, content):
+    query = urllib.parse.urlencode({
+        "zone": zone,
+        "overwriteZone": "true",
+        "overwriteSoaSerial": "false",
+    })
+    request = urllib.request.Request(
+        BASE + "/api/zones/import?" + query,
+        data=content.encode("utf-8"),
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "text/plain",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            result = json.loads(response.read().decode())
+    except (urllib.error.URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError):
+        raise RuntimeError(f"Could not import preserved records for zone {zone}") from None
+    if not isinstance(result, dict) or result.get("status") != "ok":
+        raise RuntimeError(f"Technitium rejected the preserved zone data for {zone}")
 
 
 def verify_dns_listener():
@@ -112,6 +167,37 @@ def main():
         return
     if mode == "list-zones":
         print(json.dumps(zones(token)))
+        return
+    if mode == "export-zones":
+        zone_types = config.get("zone_types", ["Primary"])
+        if not isinstance(zone_types, list) or not all(item in ("Primary", "Secondary") for item in zone_types):
+            raise RuntimeError("Zone export types are invalid")
+        zone_files = {}
+        for item in all_zones(token):
+            if item.get("type") in zone_types:
+                zone_files[item["name"]] = base64.b64encode(export_zone(token, item["name"]).encode("utf-8")).decode("ascii")
+        print(json.dumps(zone_files, separators=(",", ":")))
+        return
+    if mode == "import-zones":
+        zone_files = config.get("zone_files")
+        if not isinstance(zone_files, dict):
+            raise RuntimeError("Preserved zone data is invalid")
+        current = call("/api/zones/list", token=token).get("response", {}).get("zones", [])
+        by_name = {item.get("name"): item for item in current if isinstance(item, dict) and item.get("name")}
+        for zone, encoded in zone_files.items():
+            if not isinstance(zone, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", zone) or not isinstance(encoded, str):
+                raise RuntimeError("Preserved zone data contains an invalid zone name or payload")
+            existing = by_name.get(zone)
+            if existing and existing.get("type") != "Primary":
+                raise RuntimeError(f"Cannot restore {zone}: it exists as a non-primary zone on dns01")
+            if not existing:
+                call("/api/zones/create", {"zone": zone, "type": "Primary"}, token=token)
+            try:
+                content = base64.b64decode(encoded, validate=True).decode("utf-8")
+            except (ValueError, UnicodeDecodeError):
+                raise RuntimeError(f"Preserved zone data for {zone} is invalid") from None
+            import_zone(token, zone, content)
+        print(f"Restored {len(zone_files)} preserved primary zone(s).")
         return
     if mode == "ensure-primary-zones":
         current = call("/api/zones/list", token=token).get("response", {}).get("zones", [])

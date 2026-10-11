@@ -279,7 +279,7 @@ def execute_in_ct(client, ct, remote_script, config, action):
             pass
 
 
-def selected_recreate_role():
+def selected_recreate_roles():
     actions = {
         role: os.environ.get(f"HOMELAB_{role.upper()}_ACTION", "reuse").strip().lower() or "reuse"
         for role in PROFILES
@@ -291,12 +291,21 @@ def selected_recreate_role():
             "DNS server actions must be reuse or destroy-and-recreate: " + ", ".join(invalid)
         )
     selected = [role for role, action in actions.items() if action == "destroy-and-recreate"]
-    if len(selected) > 1:
-        raise RuntimeError(
-            "Only one DNS server may be destroyed and recreated per build. "
-            "Keep the other server on reuse, then run a separate build to recreate it."
-        )
-    return selected[0] if selected else "none"
+    return selected
+
+
+def recreation_order(client, recreate_roles):
+    """Prefer creating an absent DNS peer before destroying the surviving server."""
+    order = list(recreate_roles)
+    if set(order) != {"dns01", "dns02"}:
+        return order
+    presence = {}
+    for role, (ctid, _mac, _profile) in PROFILES.items():
+        result = remote(client, f"if pct status {ctid} >/dev/null 2>&1; then printf yes; else printf no; fi", timeout=30)
+        presence[role] = result == "yes"
+    if presence["dns01"] and not presence["dns02"]:
+        return ["dns02", "dns01"]
+    return order
 
 
 def ensure_peer_dns_online(client, stage, role, values):
@@ -336,95 +345,44 @@ def ensure_peer_dns_online(client, stage, role, values):
     print(f"Safety check passed: {role} (CTID {ctid}, {expected_ip}) is running and answering DNS queries.")
 
 
-def provision(client, stage, values, recreate_role):
-    remote(client, "command -v pct >/dev/null && command -v curl >/dev/null && command -v python3 >/dev/null", timeout=30)
-    # main() creates this directory with mktemp -d; only tighten its mode here.
-    remote(client, f"chmod 700 {shlex.quote(stage)}", timeout=30)
-    sftp = client.open_sftp()
+def wait_for_dns_guest_ready(client, stage, role, values):
+    ctid, _mac, _profile = PROFILES[role]
+    expected_ip = values[f"{role.upper()}_IPV4"]
+    deadline = time.monotonic() + 900
+    while time.monotonic() < deadline:
+        guest_ips = remote(client, f"pct exec {ctid} -- hostname -I", timeout=30).split()
+        if expected_ip in guest_ips:
+            break
+        time.sleep(10)
+    else:
+        raise RuntimeError(f"{role} did not receive its configured DHCP reservation {expected_ip}")
+    remote(client, f"pct exec {ctid} -- test -x /usr/bin/python3", timeout=30)
+    config = {"admin_password": values[f"{role.upper()}_ADMIN_PASSWORD"], "action": "verify"}
+    result = execute_in_ct(client, ctid, f"{stage}/manage-technitium.py", config, "verify")
+    if "DNS listener verified" not in result:
+        raise RuntimeError(f"{role} did not pass the Technitium DNS readiness check")
+    print(f"Verified {role} is online at {expected_ip} and answering DNS queries.")
+
+
+def export_zone_files(client, stage, role, values, zone_types):
+    ctid = PROFILES[role][0]
+    config = {
+        "admin_password": values[f"{role.upper()}_ADMIN_PASSWORD"],
+        "action": "export-zones",
+        "zone_types": zone_types,
+    }
+    raw = execute_in_ct(client, ctid, f"{stage}/manage-technitium.py", config, "export-zones")
     try:
-        upload(sftp, ROOT / "proxmox_helper_script/create-lxc.sh", f"{stage}/create-lxc.sh", 0o700)
-        upload(sftp, ROOT / "jenkins/pipelines/dns-deploy/manage-technitium.py", f"{stage}/manage-technitium.py", 0o700)
-        for role, (ctid, _mac, profile_name) in PROFILES.items():
-            upload(sftp, ROOT / "proxmox_helper_script/lxc/technitium_dns" / profile_name, f"{stage}/{role}.profile.sh", 0o600)
-            with sftp.file(f"{stage}/{role}.root-password", "wb") as handle:
-                handle.write((values[f"{role.upper()}_ROOT_PASSWORD"] + "\n").encode())
-            sftp.chmod(f"{stage}/{role}.root-password", 0o600)
-    finally:
-        sftp.close()
+        zone_files = json.loads(raw)
+    except json.JSONDecodeError:
+        raise RuntimeError(f"{role} returned invalid exported zone data") from None
+    if not isinstance(zone_files, dict):
+        raise RuntimeError(f"{role} returned invalid exported zone data")
+    print(f"Captured {len(zone_files)} {role} zone file(s) for safe primary-zone restoration.")
+    return zone_files
 
-    if recreate_role != "none":
-        peer_role = "dns02" if recreate_role == "dns01" else "dns01"
-        print(f"Verifying {peer_role} is healthy before taking {recreate_role} offline.")
-        ensure_peer_dns_online(client, stage, peer_role, values)
 
-    for role, (ctid, mac, _profile) in PROFILES.items():
-        hostname = role
-        is_present = remote(client, f"if pct status {ctid} >/dev/null 2>&1; then printf yes; else printf no; fi", timeout=30)
-        if is_present == "yes":
-            existing = remote(client, f"pct config {ctid}", timeout=30)
-            if not matches_container_identity(existing, hostname, mac):
-                raise RuntimeError(f"CTID {ctid} already exists but does not match the {role} profile; refusing to modify or replace it")
-            status = remote(client, f"pct status {ctid}", timeout=30)
-            if role == recreate_role:
-                print(f"RECREATING {role} (CTID {ctid}): creating and downloading a verified Proxmox backup before deletion.")
-                try:
-                    backup_container(client, stage, role, ctid, values["DNS_BACKUP_ENCRYPTION_PASSWORD"])
-                    if "status: running" in status:
-                        try:
-                            remote(client, f"pct shutdown {ctid} --timeout 120", timeout=180)
-                        except RuntimeError:
-                            pass
-                        status = remote(client, f"pct status {ctid}", timeout=30)
-                        if "status: stopped" not in status:
-                            remote(client, f"pct stop {ctid}", timeout=120)
-                    remote(client, f"pct destroy {ctid} --purge 1", timeout=600)
-                    still_present = remote(
-                        client,
-                        f"if pct status {ctid} >/dev/null 2>&1; then printf present; else printf absent; fi",
-                        timeout=30,
-                    )
-                    if still_present != "absent":
-                        raise RuntimeError(f"Proxmox still reports CTID {ctid} after destroy")
-                except Exception as exc:
-                    raise RuntimeError(f"Could not safely remove {role} CTID {ctid}; check its Proxmox status before retrying. {exc}") from None
-            else:
-                if "status: running" not in status:
-                    remote(client, f"pct start {ctid}", timeout=120)
-                print(f"Verified and reused {role} (CTID {ctid}).")
-                continue
-        elif role == recreate_role:
-            print(f"{role} (CTID {ctid}) is absent; creating it cleanly. No existing data will be deleted.")
-
-        password_file = f"{stage}/{role}.root-password"
-        profile = f"{stage}/{role}.profile.sh"
-        command = f"HOMELAB_LXC_ROOT_PASSWORD_FILE={shlex.quote(password_file)} bash {shlex.quote(stage + '/create-lxc.sh')} {shlex.quote(profile)}"
-        try:
-            remote(client, command, timeout=3600)
-        except Exception as exc:
-            if role == recreate_role:
-                raise RuntimeError(f"{role} recreation was selected, but its clean replacement could not be created after removal; check CTID {ctid} on Proxmox. {exc}") from None
-            raise
-
-    # Wait for LXC service startup and verify the expected DHCP reservation is active.
-    for role, (ctid, _mac, _profile) in PROFILES.items():
-        expected_ip = values[f"{role.upper()}_IPV4"]
-        deadline = time.monotonic() + 900
-        while time.monotonic() < deadline:
-            guest_ip = remote(client, f"pct exec {ctid} -- hostname -I", timeout=30)
-            if expected_ip in guest_ip.split():
-                break
-            time.sleep(10)
-        else:
-            raise RuntimeError(f"{role} did not receive its configured DHCP reservation {expected_ip}")
-        remote(client, f"pct exec {ctid} -- test -x /usr/bin/python3", timeout=30)
-
-    # Install credentials/config only inside guest /run (tmpfs); configure local API over loopback.
-    for role, (ctid, _mac, _profile) in PROFILES.items():
-        admin_password = values[f"{role.upper()}_ADMIN_PASSWORD"]
-        action = "verify"
-        config = {"admin_password": admin_password, "action": action}
-        execute_in_ct(client, ctid, f"{stage}/manage-technitium.py", config, action)
-
+def configure_zone_replication(client, stage, values, preserved_zone_files=None):
     hosted_zones = [item.strip().rstrip(".").lower() for item in values["DNS_HOSTED_ZONES"].split(",") if item.strip()]
     if len(hosted_zones) != len(set(hosted_zones)):
         raise RuntimeError("DNS_HOSTED_ZONES contains duplicate names")
@@ -432,6 +390,12 @@ def provision(client, stage, values, recreate_role):
         execute_in_ct(client, 150, f"{stage}/manage-technitium.py", {
             "admin_password": values["DNS01_ADMIN_PASSWORD"], "action": "ensure-primary-zones", "zones": hosted_zones,
         }, "ensure-primary-zones")
+    if preserved_zone_files:
+        execute_in_ct(client, 150, f"{stage}/manage-technitium.py", {
+            "admin_password": values["DNS01_ADMIN_PASSWORD"],
+            "action": "import-zones",
+            "zone_files": preserved_zone_files,
+        }, "import-zones")
 
     primary_zones_raw = execute_in_ct(
         client, 150, f"{stage}/manage-technitium.py",
@@ -460,13 +424,131 @@ def provision(client, stage, values, recreate_role):
     if not primary_zones:
         print("No hosted primary zones exist yet. Future runs create secondary zones for each primary zone found on dns01.")
 
+
+def provision(client, stage, values, recreate_roles):
+    remote(client, "command -v pct >/dev/null && command -v curl >/dev/null && command -v python3 >/dev/null", timeout=30)
+    # main() creates this directory with mktemp -d; only tighten its mode here.
+    remote(client, f"chmod 700 {shlex.quote(stage)}", timeout=30)
+    sftp = client.open_sftp()
+    try:
+        upload(sftp, ROOT / "proxmox_helper_script/create-lxc.sh", f"{stage}/create-lxc.sh", 0o700)
+        upload(sftp, ROOT / "jenkins/pipelines/dns-deploy/manage-technitium.py", f"{stage}/manage-technitium.py", 0o700)
+        for role, (ctid, _mac, profile_name) in PROFILES.items():
+            upload(sftp, ROOT / "proxmox_helper_script/lxc/technitium_dns" / profile_name, f"{stage}/{role}.profile.sh", 0o600)
+            with sftp.file(f"{stage}/{role}.root-password", "wb") as handle:
+                handle.write((values[f"{role.upper()}_ROOT_PASSWORD"] + "\n").encode())
+            sftp.chmod(f"{stage}/{role}.root-password", 0o600)
+    finally:
+        sftp.close()
+
+    preserved_dns01_zones = None
+    ordered_roles = recreation_order(client, recreate_roles)
+    role_items = list(PROFILES.items())
+    if ordered_roles == ["dns02", "dns01"]:
+        role_items.reverse()
+        print("dns02 is absent, so Jenkins will create it first before rebuilding the currently online dns01.")
+    for role, (ctid, mac, _profile) in role_items:
+        recreate_role = role in recreate_roles
+        hostname = role
+        is_present = remote(client, f"if pct status {ctid} >/dev/null 2>&1; then printf yes; else printf no; fi", timeout=30)
+        if is_present == "yes":
+            existing = remote(client, f"pct config {ctid}", timeout=30)
+            if not matches_container_identity(existing, hostname, mac):
+                raise RuntimeError(f"CTID {ctid} already exists but does not match the {role} profile; refusing to modify or replace it")
+            status = remote(client, f"pct status {ctid}", timeout=30)
+            if recreate_role:
+                print(f"RECREATING {role} (CTID {ctid}): creating and downloading a verified Proxmox backup before deletion.")
+                try:
+                    peer_role = "dns02" if role == "dns01" else "dns01"
+                    print(f"Verifying {peer_role} is healthy before taking {role} offline.")
+                    ensure_peer_dns_online(client, stage, peer_role, values)
+                    if role == "dns01":
+                        preserved_dns01_zones = export_zone_files(client, stage, "dns01", values, ["Primary"])
+                    backup_container(client, stage, role, ctid, values["DNS_BACKUP_ENCRYPTION_PASSWORD"])
+                    if "status: running" in status:
+                        try:
+                            remote(client, f"pct shutdown {ctid} --timeout 120", timeout=180)
+                        except RuntimeError:
+                            pass
+                        status = remote(client, f"pct status {ctid}", timeout=30)
+                        if "status: stopped" not in status:
+                            remote(client, f"pct stop {ctid}", timeout=120)
+                    remote(client, f"pct destroy {ctid} --purge 1", timeout=600)
+                    still_present = remote(
+                        client,
+                        f"if pct status {ctid} >/dev/null 2>&1; then printf present; else printf absent; fi",
+                        timeout=30,
+                    )
+                    if still_present != "absent":
+                        raise RuntimeError(f"Proxmox still reports CTID {ctid} after destroy")
+                except Exception as exc:
+                    raise RuntimeError(f"Could not safely remove {role} CTID {ctid}; check its Proxmox status before retrying. {exc}") from None
+            else:
+                if "status: running" not in status:
+                    remote(client, f"pct start {ctid}", timeout=120)
+                print(f"Verified and reused {role} (CTID {ctid}).")
+                continue
+        elif recreate_role:
+            print(f"{role} (CTID {ctid}) is absent; creating it cleanly. No existing data will be deleted.")
+            peer_role = "dns02" if role == "dns01" else "dns01"
+            print(f"Verifying {peer_role} is healthy before creating/replacing {role}.")
+            ensure_peer_dns_online(client, stage, peer_role, values)
+            if role == "dns01":
+                preserved_dns01_zones = export_zone_files(client, stage, peer_role, values, ["Secondary"])
+        elif role == "dns01":
+            peer_present = remote(client, "if pct status 151 >/dev/null 2>&1; then printf yes; else printf no; fi", timeout=30)
+            if peer_present == "yes":
+                print("dns01 is absent; verifying dns02 and preserving its secondary zones before creating dns01.")
+                ensure_peer_dns_online(client, stage, "dns02", values)
+                preserved_dns01_zones = export_zone_files(client, stage, "dns02", values, ["Secondary"])
+            else:
+                print("dns01 and dns02 are both absent; creating dns01 first, then dns02. No active DNS server is available to preserve.")
+
+        password_file = f"{stage}/{role}.root-password"
+        profile = f"{stage}/{role}.profile.sh"
+        command = f"HOMELAB_LXC_ROOT_PASSWORD_FILE={shlex.quote(password_file)} bash {shlex.quote(stage + '/create-lxc.sh')} {shlex.quote(profile)}"
+        try:
+            remote(client, command, timeout=3600)
+        except Exception as exc:
+            if recreate_role:
+                raise RuntimeError(f"{role} recreation was selected, but its clean replacement could not be created after removal; check CTID {ctid} on Proxmox. {exc}") from None
+            raise
+
+        wait_for_dns_guest_ready(client, stage, role, values)
+        if role == "dns01" and "dns02" in recreate_roles:
+            print("dns01 is healthy; synchronizing zones before dns02 is recreated.")
+            configure_zone_replication(client, stage, values, preserved_dns01_zones)
+
+    # Wait for LXC service startup and verify the expected DHCP reservation is active.
+    for role, (ctid, _mac, _profile) in PROFILES.items():
+        expected_ip = values[f"{role.upper()}_IPV4"]
+        deadline = time.monotonic() + 900
+        while time.monotonic() < deadline:
+            guest_ip = remote(client, f"pct exec {ctid} -- hostname -I", timeout=30)
+            if expected_ip in guest_ip.split():
+                break
+            time.sleep(10)
+        else:
+            raise RuntimeError(f"{role} did not receive its configured DHCP reservation {expected_ip}")
+        remote(client, f"pct exec {ctid} -- test -x /usr/bin/python3", timeout=30)
+
+    # Install credentials/config only inside guest /run (tmpfs); configure local API over loopback.
+    for role, (ctid, _mac, _profile) in PROFILES.items():
+        admin_password = values[f"{role.upper()}_ADMIN_PASSWORD"]
+        action = "verify"
+        config = {"admin_password": admin_password, "action": action}
+        execute_in_ct(client, ctid, f"{stage}/manage-technitium.py", config, action)
+
+    configure_zone_replication(client, stage, values, preserved_dns01_zones)
+
     # Remove staged credentials and code regardless of successful config.
     remote(client, f"rm -f -- {shlex.quote(stage)}/*.root-password {shlex.quote(stage)}/*.json && rm -rf -- {shlex.quote(stage)}", timeout=60)
 
 
-def review_plan(client, values, recreate_role):
+def review_plan(client, values, recreate_roles):
     """Show the DNS deployment operations without changing Proxmox or DNS."""
     remote(client, "command -v pct >/dev/null && command -v curl >/dev/null && command -v python3 >/dev/null", timeout=30)
+    ordered_roles = recreation_order(client, recreate_roles)
     print("Read-only DNS deployment plan (no containers or DNS settings changed):")
     for role, (ctid, mac, _profile) in PROFILES.items():
         expected_ip = values[f"{role.upper()}_IPV4"]
@@ -476,14 +558,19 @@ def review_plan(client, values, recreate_role):
             if not matches_container_identity(config, role, mac):
                 raise RuntimeError(f"CTID {ctid} exists but does not match the {role} identity; refusing to approve deployment")
             state = remote(client, f"pct status {ctid}", timeout=30).replace("status: ", "").strip()
-            if role == recreate_role:
+            if role in recreate_roles:
                 other_role = "dns02" if role == "dns01" else "dns01"
-                print(f"- {role}: DESTRUCTIVE — create and verify a Proxmox backup, then delete verified CTID {ctid} ({state}) and create a clean replacement at {expected_ip}; {other_role} remains in place")
+                print(f"- {role}: DESTRUCTIVE — create and verify a Proxmox backup, then delete verified CTID {ctid} ({state}) and create a clean replacement at {expected_ip}; {other_role} stays online during this recreation")
             else:
                 print(f"- {role}: reuse verified CTID {ctid} ({state}); verify its address is {expected_ip}")
         else:
-            suffix = " (selected for clean recreation; no existing container or data to delete)" if role == recreate_role else ""
+            suffix = " (selected for clean recreation; no existing container or data to delete)" if role in recreate_roles else ""
             print(f"- {role}: create CTID {ctid} with reserved address {expected_ip}{suffix}")
+
+    if recreate_roles:
+        print(f"- Sequential recreation order: {', '.join(ordered_roles)}; the peer must pass DNS health checks before each destructive step")
+        if "dns01" in recreate_roles and "dns02" in recreate_roles:
+            print("- dns01 primary zones will be synchronized to dns02 before dns02 is taken offline")
 
     hosted_zones = [item.strip().rstrip(".").lower() for item in values["DNS_HOSTED_ZONES"].split(",") if item.strip()]
     if len(hosted_zones) != len(set(hosted_zones)):
@@ -498,8 +585,8 @@ def main():
     arguments = sys.argv[1:]
     if arguments not in ([], ["--plan"]):
         raise RuntimeError("Usage: deploy-dns.py [--plan]")
-    recreate_role = selected_recreate_role()
-    values = read_infisical(require_backup_password=recreate_role != "none")
+    recreate_roles = selected_recreate_roles()
+    values = read_infisical(require_backup_password=bool(recreate_roles))
     host = required("PROXMOX_HOST")
     if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
         raise RuntimeError("PROXMOX_HOST must be a hostname or IPv4 address")
@@ -507,13 +594,13 @@ def main():
     stage = ""
     try:
         if arguments == ["--plan"]:
-            review_plan(client, values, recreate_role)
+            review_plan(client, values, recreate_roles)
             return
         candidate_stage = remote(client, "umask 077; mktemp -d /tmp/homelab-dns-deploy.XXXXXX", timeout=30)
         if not re.fullmatch(r"/tmp/homelab-dns-deploy\.[A-Za-z0-9]{6}", candidate_stage):
             raise RuntimeError("Proxmox returned an unexpected temporary directory")
         stage = candidate_stage
-        provision(client, stage, values, recreate_role)
+        provision(client, stage, values, recreate_roles)
     finally:
         if stage:
             try:

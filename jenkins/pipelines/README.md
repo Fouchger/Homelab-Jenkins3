@@ -97,10 +97,13 @@ already downloaded. Job 006 provisions/configures dns01 and dns02
 before changing router DHCP DNS, so a router backup or sync failure can leave
 the DNS servers updated while DHCP continues using its previous settings.
 Job 006 asks for an action per DNS server: `reuse` or `destroy-and-recreate`.
-Only one server can be selected for recreation in a build; the other server is
-kept online. To recreate both, complete one successful build first, then run a
-second build selecting the other server. Each selected container is backed up,
-downloaded, encrypted, and verified before it can be destroyed.
+Both servers may be selected for recreation in one build. Jenkins handles them
+sequentially, checks that the peer is online before each deletion, and
+saves/restores dns01 zone files and synchronizes the restored primary zones to
+dns02 before taking dns02 offline. Each selected container is backed up,
+downloaded, encrypted, and verified before it can be destroyed. The apply stage
+stops before deletion if the peer fails its container, address, Technitium
+authentication, or DNS listener health checks.
 
 Job 005 takes Wi-Fi passphrases from `/mikrotik/wifi_security` and the RouterOS
 scheduled-backup password from `/mikrotik/backup`, then replaces placeholders
