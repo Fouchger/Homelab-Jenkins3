@@ -280,10 +280,60 @@ def execute_in_ct(client, ct, remote_script, config, action):
 
 
 def selected_recreate_role():
-    role = os.environ.get("HOMELAB_RECREATE_DNS_SERVER", "none").strip().lower() or "none"
-    if role != "none" and role not in PROFILES:
-        raise RuntimeError("HOMELAB_RECREATE_DNS_SERVER must be none, dns01, or dns02")
-    return role
+    actions = {
+        role: os.environ.get(f"HOMELAB_{role.upper()}_ACTION", "reuse").strip().lower() or "reuse"
+        for role in PROFILES
+    }
+    invalid = [f"{role}={action}" for role, action in actions.items()
+               if action not in ("reuse", "destroy-and-recreate")]
+    if invalid:
+        raise RuntimeError(
+            "DNS server actions must be reuse or destroy-and-recreate: " + ", ".join(invalid)
+        )
+    selected = [role for role, action in actions.items() if action == "destroy-and-recreate"]
+    if len(selected) > 1:
+        raise RuntimeError(
+            "Only one DNS server may be destroyed and recreated per build. "
+            "Keep the other server on reuse, then run a separate build to recreate it."
+        )
+    return selected[0] if selected else "none"
+
+
+def ensure_peer_dns_online(client, stage, role, values):
+    """Verify the non-selected server is healthy before taking its peer offline."""
+    ctid, mac, _profile = PROFILES[role]
+    present = remote(client, f"if pct status {ctid} >/dev/null 2>&1; then printf yes; else printf no; fi", timeout=30)
+    if present != "yes":
+        raise RuntimeError(
+            f"Cannot safely recreate the other DNS server: {role} CTID {ctid} is absent, "
+            "so there would be no verified DNS server to keep online."
+        )
+    config = remote(client, f"pct config {ctid}", timeout=30)
+    if not matches_container_identity(config, role, mac):
+        raise RuntimeError(f"Cannot safely recreate the other DNS server: CTID {ctid} does not match {role} identity")
+    status = remote(client, f"pct status {ctid}", timeout=30)
+    if "status: running" not in status:
+        print(f"Starting {role} (CTID {ctid}) so it can remain online during peer recreation.")
+        remote(client, f"pct start {ctid}", timeout=120)
+
+    expected_ip = values[f"{role.upper()}_IPV4"]
+    deadline = time.monotonic() + 900
+    while time.monotonic() < deadline:
+        guest_ips = remote(client, f"pct exec {ctid} -- hostname -I", timeout=30).split()
+        if expected_ip in guest_ips:
+            break
+        time.sleep(10)
+    else:
+        raise RuntimeError(f"Cannot safely recreate the peer: {role} did not receive expected address {expected_ip}")
+
+    config_path = {
+        "admin_password": values[f"{role.upper()}_ADMIN_PASSWORD"],
+        "action": "verify",
+    }
+    result = execute_in_ct(client, ctid, f"{stage}/manage-technitium.py", config_path, "peer-health-check")
+    if "DNS listener verified" not in result:
+        raise RuntimeError(f"Cannot safely recreate the peer: {role} DNS health check did not confirm service")
+    print(f"Safety check passed: {role} (CTID {ctid}, {expected_ip}) is running and answering DNS queries.")
 
 
 def provision(client, stage, values, recreate_role):
@@ -301,6 +351,11 @@ def provision(client, stage, values, recreate_role):
             sftp.chmod(f"{stage}/{role}.root-password", 0o600)
     finally:
         sftp.close()
+
+    if recreate_role != "none":
+        peer_role = "dns02" if recreate_role == "dns01" else "dns01"
+        print(f"Verifying {peer_role} is healthy before taking {recreate_role} offline.")
+        ensure_peer_dns_online(client, stage, peer_role, values)
 
     for role, (ctid, mac, _profile) in PROFILES.items():
         hostname = role

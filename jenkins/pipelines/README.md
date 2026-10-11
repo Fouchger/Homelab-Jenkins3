@@ -96,6 +96,11 @@ A failed check stops before reset; the Jenkins artifact is retained when it was
 already downloaded. Job 006 provisions/configures dns01 and dns02
 before changing router DHCP DNS, so a router backup or sync failure can leave
 the DNS servers updated while DHCP continues using its previous settings.
+Job 006 asks for an action per DNS server: `reuse` or `destroy-and-recreate`.
+Only one server can be selected for recreation in a build; the other server is
+kept online. To recreate both, complete one successful build first, then run a
+second build selecting the other server. Each selected container is backed up,
+downloaded, encrypted, and verified before it can be destroyed.
 
 Job 005 takes Wi-Fi passphrases from `/mikrotik/wifi_security` and the RouterOS
 scheduled-backup password from `/mikrotik/backup`, then replaces placeholders

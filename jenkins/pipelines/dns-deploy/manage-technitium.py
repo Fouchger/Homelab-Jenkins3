@@ -2,6 +2,8 @@
 """Run within a DNS LXC to initialize its admin password and manage zone replication."""
 
 import json
+import os
+import socket
 import sys
 import time
 import urllib.error
@@ -76,6 +78,24 @@ def zones(token):
     ]
 
 
+def verify_dns_listener():
+    """Require Technitium's local DNS listener to return a valid DNS response."""
+    transaction_id = os.urandom(2)
+    # Query the root NS record over loopback so this health check does not
+    # depend on WAN connectivity or a particular hosted zone being present.
+    header = transaction_id + b"\x01\x00\x00\x01" + b"\x00" * 6
+    query = header + b"\x00" + b"\x00\x02\x00\x01"
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as dns_socket:
+            dns_socket.settimeout(5)
+            dns_socket.sendto(query, ("127.0.0.1", 53))
+            response, _peer = dns_socket.recvfrom(4096)
+    except OSError:
+        raise RuntimeError("Technitium DNS listener did not answer a UDP query on 127.0.0.1:53") from None
+    if len(response) < 12 or response[:2] != transaction_id or not (response[2] & 0x80):
+        raise RuntimeError("Technitium DNS listener returned an invalid DNS response")
+
+
 def main():
     if len(sys.argv) != 2:
         raise RuntimeError("Expected one JSON configuration file")
@@ -87,7 +107,8 @@ def main():
     token = authenticate(password)
     mode = config.get("action")
     if mode == "verify":
-        print("Technitium admin authentication verified.")
+        verify_dns_listener()
+        print("Technitium admin authentication and DNS listener verified.")
         return
     if mode == "list-zones":
         print(json.dumps(zones(token)))
