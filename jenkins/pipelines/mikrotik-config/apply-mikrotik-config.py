@@ -318,59 +318,71 @@ def connect_ssh(host, username, host_key, private_key):
                 pass
 
 
+def redact_routeros_output(value):
+    """Redact known secrets and RouterOS password assignments before logging."""
+    safe_output = value
+    for variable in (
+        "BINARY_BACKUP_PASSWORD",
+        "MIKROTIK_PASSWORD",
+        "MIKROTIK_BOOTSTRAP_PASSWORD",
+    ):
+        secret = os.environ.get(variable, "")
+        if secret:
+            safe_output = safe_output.replace(secret, "[REDACTED]")
+    return re.sub(
+        r"(?i)(\bpassword\s*=\s*)(\"[^\"]*\"|'[^']*'|[^\s]+)",
+        r"\1[REDACTED]",
+        safe_output,
+    )
+
+
+def log_sanitized_stream(source, label, value):
+    safe_output = redact_routeros_output(value.decode("utf-8", errors="replace"))
+    if safe_output.strip():
+        print(f"{source} {label}:\n{safe_output.rstrip()}")
+    else:
+        print(f"{source} {label}: <empty>")
+
+
 def ssh_command(client, command_text, operation):
+    print(f"RouterOS SSH operation: START | {operation}")
     try:
         _stdin, stdout, stderr = client.exec_command(command_text, timeout=60)
         output = stdout.read()
         error = stderr.read()
         status = stdout.channel.recv_exit_status()
-    except Exception:
-        raise RuntimeError(f"RouterOS SSH operation failed ({operation}); command output was suppressed") from None
+    except Exception as exc:
+        print(f"RouterOS SSH operation: TRANSPORT ERROR | {operation} | {type(exc).__name__}: {redact_routeros_output(str(exc))}")
+        raise RuntimeError(f"RouterOS SSH transport failed during {operation}") from None
     combined = (output + b"\n" + error).decode("utf-8", errors="replace")
-    if status != 0 or re.search(r"(?im)^\s*(failure|error|script error):|not enough permissions", combined):
-        # RouterOS may include the submitted command in its error response. Keep
-        # the complete diagnostic output, but never expose credentials or
-        # password parameters in the Jenkins console log.
-        safe_output = combined
-        for variable in (
-            "BINARY_BACKUP_PASSWORD",
-            "MIKROTIK_PASSWORD",
-            "MIKROTIK_BOOTSTRAP_PASSWORD",
-        ):
-            secret = os.environ.get(variable, "")
-            if secret:
-                safe_output = safe_output.replace(secret, "[REDACTED]")
-        safe_output = re.sub(
-            r"(?i)(\bpassword\s*=\s*)(\"[^\"]*\"|'[^']*'|[^\s]+)",
-            r"\1[REDACTED]",
-            safe_output,
-        )
-        details = safe_output.rstrip() or "<no stdout or stderr returned>"
+    failed = status != 0 or re.search(r"(?im)^\s*(failure|error|script error):|not enough permissions", combined)
+    print(f"RouterOS SSH operation: {'FAIL' if failed else 'SUCCESS'} | {operation} | exit status {status}")
+    log_sanitized_stream("RouterOS", "stdout", output)
+    log_sanitized_stream("RouterOS", "stderr", error)
+    if failed:
         if "not enough permissions" in combined.lower():
-            raise RuntimeError(
-                f"RouterOS denied the SSH operation ({operation}).\n"
-                f"RouterOS stdout/stderr:\n{details}"
-            )
-        raise RuntimeError(
-            f"RouterOS rejected the SSH operation ({operation}).\n"
-            f"RouterOS stdout/stderr:\n{details}"
-        )
+            raise RuntimeError(f"RouterOS denied the SSH operation ({operation}); review the stdout/stderr above")
+        raise RuntimeError(f"RouterOS rejected the SSH operation ({operation}); review the stdout/stderr above")
     return combined
 
 
 def fetch_router_file(client, remote_name, local_path):
+    print(f"RouterOS SFTP download: START | {remote_name}")
     sftp = client.open_sftp()
     try:
         try:
             sftp.get(remote_name, str(local_path))
         except OSError:
             sftp.get("/" + remote_name, str(local_path))
-    except Exception:
-        raise RuntimeError("RouterOS created the pre-change backup but Jenkins could not download it over SFTP") from None
+    except Exception as exc:
+        print(f"RouterOS SFTP download: FAIL | {remote_name} | {type(exc).__name__}: {redact_routeros_output(str(exc))}")
+        raise RuntimeError(f"RouterOS created {remote_name}, but Jenkins could not download it over SFTP") from None
     finally:
         sftp.close()
     if not local_path.is_file() or local_path.stat().st_size == 0:
+        print(f"RouterOS SFTP download: FAIL | {remote_name} | downloaded file is missing or empty")
         raise RuntimeError("RouterOS returned an empty pre-change backup file")
+    print(f"RouterOS SFTP download: SUCCESS | {remote_name} | {local_path.stat().st_size} bytes")
 
 
 def remove_router_files(client, names):
@@ -384,8 +396,11 @@ def remove_router_files(client, names):
         if name in existing_files:
             try:
                 ssh_command(client, f"/file/remove [find where name={ros_quote(name)}]", "remove temporary backup files")
-            except RuntimeError:
+            except RuntimeError as exc:
+                print(f"RouterOS cleanup: FAIL | {name} | {exc}")
                 failed = True
+        else:
+            print(f"RouterOS cleanup: already absent | {name}")
     if failed:
         raise RuntimeError("RouterOS could not remove one or more temporary backup files")
 
@@ -453,10 +468,16 @@ def create_encrypted_backup(client, backup_password):
                 [openssl, "enc", "-aes-256-cbc", "-pbkdf2", "-iter", "600000", "-salt",
                  "-in", str(plaintext_archive), "-out", str(temporary_artifact), "-pass", "stdin"],
                 input=(backup_password + "\n").encode("utf-8"),
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180, check=False,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180, check=False,
             )
             if encrypted.returncode != 0 or not temporary_artifact.is_file() or temporary_artifact.stat().st_size < 32:
+                print(f"OpenSSL encryption: FAIL | exit status {encrypted.returncode}")
+                log_sanitized_stream("OpenSSL", "stdout", encrypted.stdout)
+                log_sanitized_stream("OpenSSL", "stderr", encrypted.stderr)
                 raise RuntimeError("Could not encrypt the RouterOS pre-change backup; no router settings were changed")
+            print(f"OpenSSL encryption: SUCCESS | exit status {encrypted.returncode}")
+            if encrypted.stderr:
+                log_sanitized_stream("OpenSSL", "stderr", encrypted.stderr)
             with temporary_artifact.open("rb") as result:
                 if result.read(8) != b"Salted__":
                     raise RuntimeError("OpenSSL produced an unexpected encrypted backup format")
