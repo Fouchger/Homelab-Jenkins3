@@ -68,8 +68,8 @@ def infisical_values():
             "MIKROTIK_SSH_PUBLIC_KEY", "MIKROTIK_SSH_HOST_KEY",
         ),
         "/dns": ("MIKROTIK_DHCP_DNS_MODE", "DNS_PUBLIC_FALLBACKS"),
-        "/dns/dns01": ("DSN_IP4",),
-        "/dns/dns02": ("DSN_IP4",),
+        "/dns/dns01": ("DNS_IPV4",),
+        "/dns/dns02": ("DNS_IPV4",),
         "/mikrotik/backup": ("BINARY_BACKUP_PASSWORD",),
         "/mikrotik/wifi_security": (
             "SEC_USERS_PASSWORD", "SEC_MGMT_PASSWORD", "SEC_IOT_PASSWORD", "SEC_GUEST_PASSWORD",
@@ -88,7 +88,7 @@ def infisical_values():
             secret = record.get("secret", {}) if isinstance(record, dict) else {}
             value = secret.get("secretValue") if isinstance(secret, dict) else None
             if isinstance(value, str):
-                key = f"{path.rsplit('/', 1)[-1].upper()}_IPV4" if name == "DSN_IP4" else name
+                key = f"{path.rsplit('/', 1)[-1].upper()}_IPV4" if name == "DNS_IPV4" else name
                 result[key] = value
     return result
 
@@ -306,7 +306,7 @@ def review(values, router):
         print("Wi-Fi: no password updates configured")
     if os.environ.get("HOMELAB_REQUIRE_MIKROTIK_REVIEW", "").strip().lower() in ("1", "yes", "true"):
         if missing_dns:
-            raise RuntimeError("Set both DSN_IP4 values in Infisical before approving router changes")
+            raise RuntimeError("Set both DNS_IPV4 values in Infisical before approving router changes")
         if mode not in ("router", "direct"):
             raise RuntimeError("Set MIKROTIK_DHCP_DNS_MODE to router or direct in Settings before approving router changes")
         ssh_blocker = ssh_backup_blocker(values)

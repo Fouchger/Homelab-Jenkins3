@@ -367,8 +367,8 @@ def load_settings():
             "SEC_USERS_PASSWORD", "SEC_MGMT_PASSWORD", "SEC_IOT_PASSWORD", "SEC_GUEST_PASSWORD",
         ),
         "/dns": ("MIKROTIK_DHCP_DNS_MODE", "DNS_PUBLIC_FALLBACKS"),
-        "/dns/dns01": ("DSN_IP4",),
-        "/dns/dns02": ("DSN_IP4",),
+        "/dns/dns01": ("DNS_IPV4",),
+        "/dns/dns02": ("DNS_IPV4",),
     }.items():
         query = urllib.parse.urlencode({"projectId": project_id, "environment": environment, "secretPath": path})
         for name in names:
@@ -376,7 +376,7 @@ def load_settings():
             result = api_json(url, token=token, allow_404=True)
             secret = result.get("secret", {}) if isinstance(result, dict) else {}
             value = secret.get("secretValue") if isinstance(secret, dict) else None
-            key = f"{path.rsplit('/', 1)[-1].upper()}_IPV4" if name == "DSN_IP4" else name
+            key = f"{path.rsplit('/', 1)[-1].upper()}_IPV4" if name == "DNS_IPV4" else name
             values[key] = value if isinstance(value, str) else ""
     return values
 

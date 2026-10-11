@@ -87,8 +87,8 @@ def read_infisical():
         "DNS_PUBLIC_FALLBACKS", "MIKROTIK_DHCP_DNS_MODE", "DNS_HOSTED_ZONES",
     ), optional=("DNS_PUBLIC_FALLBACKS", "DNS_HOSTED_ZONES"))
     for role in ("dns01", "dns02"):
-        fetch(f"/dns/{role}", ("DSN_IP4", "DNS_SERVER_ADMIN_PASSWORD"))
-        values[f"{role.upper()}_IPV4"] = values.pop("DSN_IP4")
+        fetch(f"/dns/{role}", ("DNS_IPV4", "DNS_SERVER_ADMIN_PASSWORD"))
+        values[f"{role.upper()}_IPV4"] = values.pop("DNS_IPV4")
         values[f"{role.upper()}_ADMIN_PASSWORD"] = values.pop("DNS_SERVER_ADMIN_PASSWORD")
     for role in ("dns01", "dns02"):
         fetch(f"/proxmox/lxc/{role}", ("LXC_ROOT_PASSWORD",))

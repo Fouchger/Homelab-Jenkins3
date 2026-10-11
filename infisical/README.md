@@ -37,8 +37,8 @@ The current secret layout is:
 | `/proxmox/pve01` | `PROXMOX_ROOT_PASSWORD` |
 | `/proxmox/lxc/controlplane`, `/proxmox/lxc/jenkins-agent`, and other LXC folders | `LXC_ROOT_PASSWORD` only |
 | `/dns` | `DNS_PUBLIC_FALLBACKS`, `MIKROTIK_DHCP_DNS_MODE`, optional `DNS_HOSTED_ZONES` |
-| `/dns/dns01` | `DSN_IP4`, `DNS_SERVER_ADMIN_PASSWORD` |
-| `/dns/dns02` | `DSN_IP4`, `DNS_SERVER_ADMIN_PASSWORD` |
+| `/dns/dns01` | `DNS_IPV4`, `DNS_SERVER_ADMIN_PASSWORD` |
+| `/dns/dns02` | `DNS_IPV4`, `DNS_SERVER_ADMIN_PASSWORD` |
 | `/proxmox/lxc/dns01`, `/proxmox/lxc/dns02` | `LXC_ROOT_PASSWORD` only |
 | `/mikrotik/router01` | `MIKROTIK_HOST`, `MIKROTIK_IP`, `MIKROTIK_USERNAME`, `MIKROTIK_PASSWORD`, `MIKROTIK_BOOTSTRAP_USERNAME`, `MIKROTIK_BOOTSTRAP_PASSWORD`, `MIKROTIK_SSH_USER`, `MIKROTIK_SSH_PRIVATE_KEY`, `MIKROTIK_SSH_PUBLIC_KEY`, `MIKROTIK_SSH_HOST_KEY`, `MIKROTIK_TLS_CERT_SHA256` |
 | `/mikrotik/backup` | `BINARY_BACKUP_PASSWORD` |
