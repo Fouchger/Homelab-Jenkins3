@@ -317,19 +317,22 @@ def connect_ssh(host, username, host_key, private_key):
                 pass
 
 
-def ssh_command(client, command_text):
+def ssh_command(client, command_text, operation):
     try:
         _stdin, stdout, stderr = client.exec_command(command_text, timeout=60)
         output = stdout.read()
         error = stderr.read()
         status = stdout.channel.recv_exit_status()
     except Exception:
-        raise RuntimeError("RouterOS SSH command failed; command output was suppressed") from None
+        raise RuntimeError(f"RouterOS SSH operation failed ({operation}); command output was suppressed") from None
     combined = (output + b"\n" + error).decode("utf-8", errors="replace")
     if status != 0 or re.search(r"(?im)^\s*(failure|error|script error):|not enough permissions", combined):
         if "not enough permissions" in combined.lower():
-            raise RuntimeError("RouterOS denied the backup command. The SSH backup account needs ssh, read, write, sensitive, and ftp permissions.")
-        raise RuntimeError("RouterOS rejected a backup command; command output was suppressed")
+            raise RuntimeError(
+                f"RouterOS denied the SSH operation ({operation}). The backup account needs "
+                "ssh, read, write, sensitive, and ftp permissions."
+            )
+        raise RuntimeError(f"RouterOS rejected the SSH operation ({operation}); command output was suppressed")
     return combined
 
 
@@ -358,7 +361,7 @@ def remove_router_files(client, names):
     for name in names:
         if name in existing_files:
             try:
-                ssh_command(client, f"/file/remove [find where name={ros_quote(name)}]")
+                ssh_command(client, f"/file/remove [find where name={ros_quote(name)}]", "remove temporary backup files")
             except RuntimeError:
                 failed = True
     if failed:
@@ -393,13 +396,25 @@ def create_encrypted_backup(client, backup_password):
     remote_files = (base_name + ".backup", base_name + ".rsc")
     backup_complete = False
     try:
+        print("Checking for leftover temporary backup files on RouterOS.")
         cleanup_orphaned_router_backups(client)
-        ssh_command(client, f"/system/backup/save name={ros_quote(base_name)} password={ros_quote(backup_password)}")
-        ssh_command(client, f"/export show-sensitive file={ros_quote(base_name)}")
+        print("Creating the encrypted binary pre-change backup on RouterOS.")
+        ssh_command(
+            client,
+            f"/system/backup/save name={ros_quote(base_name)} password={ros_quote(backup_password)}",
+            "create encrypted binary backup (/system/backup/save)",
+        )
+        print("Exporting the sensitive text configuration on RouterOS.")
+        ssh_command(
+            client,
+            f"/export show-sensitive file={ros_quote(base_name)}",
+            "export sensitive text configuration (/export show-sensitive)",
+        )
         with tempfile.TemporaryDirectory(prefix="homelab-router-backup-") as temporary_dir:
             private_dir = Path(temporary_dir)
             os.chmod(private_dir, 0o700)
             local_files = [private_dir / name for name in remote_files]
+            print("Downloading both pre-change backup files over the pinned SSH connection.")
             for remote_name, local_path in zip(remote_files, local_files):
                 fetch_router_file(client, remote_name, local_path)
                 os.chmod(local_path, 0o600)
@@ -411,6 +426,7 @@ def create_encrypted_backup(client, backup_password):
             openssl = shutil.which("openssl")
             if not openssl:
                 raise RuntimeError("OpenSSL is required on the Jenkins agent to encrypt the pre-change backup")
+            print("Encrypting the pre-change backups on the Jenkins agent.")
             encrypted = subprocess.run(
                 [openssl, "enc", "-aes-256-cbc", "-pbkdf2", "-iter", "600000", "-salt",
                  "-in", str(plaintext_archive), "-out", str(temporary_artifact), "-pass", "stdin"],
