@@ -5,6 +5,9 @@ set -Eeuo pipefail
 INSTALL_ROLE=controller
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/guest-common.sh"
+progress() {
+  printf '[%s] %s\n' "$(date -Is)" "$*"
+}
 JENKINS_PORT=${JENKINS_PORT:-8080}
 [[ $JENKINS_PORT =~ ^[0-9]+$ && ${#JENKINS_PORT} -le 5 ]] || exit 2
 (( 10#$JENKINS_PORT >= 1024 && 10#$JENKINS_PORT <= 65535 )) || exit 2
@@ -15,7 +18,9 @@ if command -v java >/dev/null 2>&1; then
   current_java_path="$(readlink -f "$(command -v java)")"
   update-alternatives --set java "$current_java_path"
 fi
+progress 'Installing controller operating-system dependencies and OpenJDK 25.'
 apt-get install -y ca-certificates curl fontconfig jq openssl openssh-client python3 openjdk-25-jre
+progress 'Controller operating-system dependencies are installed.'
 
 JENKINS_URL=${HOMELAB_JENKINS_URL:-https://192.168.20.5:8443}
 JENKINS_URL=${JENKINS_URL%/}
@@ -28,6 +33,7 @@ JENKINS_HTTPS_PORT=${BASH_REMATCH[2]}
 JENKINS_HTTPS_PORT=$((10#$JENKINS_HTTPS_PORT))
 
 install -d -m 0755 /etc/apt/keyrings
+progress 'Downloading and verifying the Jenkins package signing key.'
 key_tmp="$(mktemp)"
 trap 'rm -f -- "$key_tmp"' EXIT
 curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 120 \
@@ -44,13 +50,16 @@ cat >/etc/apt/sources.list.d/jenkins.list <<'JENKINS_REPO'
 deb [signed-by=/etc/apt/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/
 JENKINS_REPO
 
+progress 'Refreshing package indexes, including the Jenkins repository.'
 apt-get update
+progress 'Installing Git and the Jenkins controller package.'
 apt-get install -y git
 if [[ -n ${JENKINS_VERSION:-} ]]; then
   apt_install "jenkins=$JENKINS_VERSION"
 else
   apt_install jenkins
 fi
+progress 'Jenkins package installation completed.'
 
 # Jenkins supports Java 25 starting with LTS 2.541.1. Keep Java 21 available
 # for rollback, but make the runtime used by Jenkins explicitly Java 25.
@@ -63,6 +72,7 @@ java25_path="$(update-alternatives --list java | awk '/java-25-openjdk/ { print;
 [[ -x "$java25_path" ]] || { echo "OpenJDK 25 is installed but its java alternative is missing." >&2; exit 1; }
 update-alternatives --set java "$java25_path"
 java -version
+progress 'Java 25 is selected. Preparing controller configuration and plugins.'
 
 jenkins_home=/var/lib/jenkins
 settings_dir=/etc/homelab
@@ -111,6 +121,7 @@ for plugin_name in git workflow-job workflow-cps workflow-scm-step ssh-credentia
   fi
 done
 if [[ "$plugins_present" == no ]]; then
+  progress 'Downloading the Jenkins plugin manager. This step needs internet access from the controller LXC.'
   plugin_stage="$(mktemp -d /tmp/jenkins-plugin-stage.XXXXXX)"
   trap 'rm -rf -- "$plugin_stage"' EXIT
   plugin_manager_jar="$plugin_stage/jenkins-plugin-manager.jar"
@@ -118,8 +129,11 @@ if [[ "$plugins_present" == no ]]; then
     https://api.github.com/repos/jenkinsci/plugin-installation-manager-tool/releases/latest \
     | jq -r '[.assets[] | select(.name | startswith("jenkins-plugin-manager-") and endswith(".jar")) | .browser_download_url] | first // empty')"
   [[ -n "$plugin_manager_url" ]] || { echo "Could not locate the Jenkins plugin installation manager release." >&2; exit 1; }
-  curl --fail --silent --show-error --location "$plugin_manager_url" --output "$plugin_manager_jar"
+  progress 'Downloading the Jenkins plugin manager tool.'
+  curl --fail --show-error --location --connect-timeout 15 --max-time 300 "$plugin_manager_url" --output "$plugin_manager_jar"
+  progress 'Resolving and downloading required Jenkins plugins and dependencies; plugin manager output follows.'
   java -jar "$plugin_manager_jar" \
+    --verbose \
     --war /usr/share/java/jenkins.war \
     --plugin-download-directory "$plugin_stage/plugins" \
     --plugins git workflow-aggregator ssh-credentials credentials-binding infisical extended-timer-trigger mask-passwords
@@ -127,6 +141,9 @@ if [[ "$plugins_present" == no ]]; then
     -exec install -o jenkins -g jenkins -m 0644 {} "$plugin_dir/" \;
   rm -rf -- "$plugin_stage"
   trap - EXIT
+  progress 'Jenkins plugins are installed.'
+else
+  progress 'Required Jenkins plugins are already present; skipping plugin downloads.'
 fi
 
 # Create the inbound automation node from a core Jenkins startup hook. This
@@ -866,14 +883,17 @@ Environment="JAVA_HOME=${java25_path%/bin/java}"
 EOF
 unset keystore_password
 chmod 0600 /etc/systemd/system/jenkins.service.d/20-homelab.conf
+progress 'Starting Jenkins HTTPS service; first boot can take several minutes while plugins initialize.'
 systemctl daemon-reload
 systemctl enable jenkins
 systemctl restart jenkins
 systemctl is-active --quiet jenkins || { systemctl --no-pager --full status jenkins; exit 1; }
+progress 'Jenkins service is active; waiting for the first-start enrollment hook.'
 
 secret_file="$jenkins_home/secrets/homelab-agent-bootstrap.secret"
 for attempt in {1..120}; do
   [[ -s "$secret_file" ]] && break
+  if (( attempt % 15 == 0 )); then progress "Still waiting for Jenkins startup hook ($attempt/120 seconds)."; fi
   sleep 1
 done
 [[ -s "$secret_file" ]] || {
@@ -889,10 +909,12 @@ for ((attempt=1; attempt<=60; attempt++)); do
     --dump-header /tmp/homelab-jenkins-headers --output /dev/null \
     "$JENKINS_URL/login" && \
     grep -qi '^X-Jenkins:' /tmp/homelab-jenkins-headers; then healthy=yes; break; fi
+  if (( attempt % 6 == 0 )); then progress "Jenkins HTTPS health check is still starting ($((attempt * 5))/300 seconds)."; fi
   sleep 5
 done
 rm -f /tmp/homelab-jenkins-headers
 [[ $healthy == yes ]] || { printf 'Jenkins HTTPS health check failed.\n' >&2; exit 1; }
+progress 'Jenkins HTTPS health check passed.'
 date -Is > /var/lib/homelab/jenkins-controller-installed
 printf 'Controller installed: Java 25, plugins, inbound node and homelab-check job.\n'
 printf 'Complete the first administrator wizard; no passwords are printed.\n'
