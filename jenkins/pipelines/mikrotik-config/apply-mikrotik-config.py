@@ -327,12 +327,33 @@ def ssh_command(client, command_text, operation):
         raise RuntimeError(f"RouterOS SSH operation failed ({operation}); command output was suppressed") from None
     combined = (output + b"\n" + error).decode("utf-8", errors="replace")
     if status != 0 or re.search(r"(?im)^\s*(failure|error|script error):|not enough permissions", combined):
+        # RouterOS may include the submitted command in its error response. Keep
+        # the complete diagnostic output, but never expose credentials or
+        # password parameters in the Jenkins console log.
+        safe_output = combined
+        for variable in (
+            "BINARY_BACKUP_PASSWORD",
+            "MIKROTIK_PASSWORD",
+            "MIKROTIK_BOOTSTRAP_PASSWORD",
+        ):
+            secret = os.environ.get(variable, "")
+            if secret:
+                safe_output = safe_output.replace(secret, "[REDACTED]")
+        safe_output = re.sub(
+            r"(?i)(\bpassword\s*=\s*)(\"[^\"]*\"|'[^']*'|[^\s]+)",
+            r"\1[REDACTED]",
+            safe_output,
+        )
+        details = safe_output.rstrip() or "<no stdout or stderr returned>"
         if "not enough permissions" in combined.lower():
             raise RuntimeError(
-                f"RouterOS denied the SSH operation ({operation}). The backup account needs "
-                "ssh, read, write, sensitive, and ftp permissions."
+                f"RouterOS denied the SSH operation ({operation}).\n"
+                f"RouterOS stdout/stderr:\n{details}"
             )
-        raise RuntimeError(f"RouterOS rejected the SSH operation ({operation}); command output was suppressed")
+        raise RuntimeError(
+            f"RouterOS rejected the SSH operation ({operation}).\n"
+            f"RouterOS stdout/stderr:\n{details}"
+        )
     return combined
 
 
