@@ -73,7 +73,9 @@ def read_infisical():
                 if name in optional and "HTTP 404" in str(exc):
                     values[name] = ""
                     continue
-                raise
+                if "HTTP 404" in str(exc):
+                    raise RuntimeError(f"Required Infisical secret {path}/{name} was not found (HTTP 404)") from None
+                raise RuntimeError(f"Could not read Infisical secret {path}/{name}: {exc}") from None
             secret = response.get("secret", {}) if isinstance(response, dict) else {}
             value = secret.get("secretValue") if isinstance(secret, dict) else None
             if not isinstance(value, str) or not value.strip():
