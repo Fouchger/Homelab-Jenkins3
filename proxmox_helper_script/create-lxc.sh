@@ -176,9 +176,19 @@ bash -n "$temp_dir/installer.sh"
 # community silent-mode setting profile-specific: this launcher is also used by
 # interactive controlplane and Jenkins-agent workflows.
 installer_env=()
-[[ ${LXC_DEFAULT_SILENT_INSTALL:-no} == yes ]] && installer_env+=(PHS_SILENT=1)
+if [[ ${LXC_DEFAULT_SILENT_INSTALL:-no} == yes ]]; then
+  installer_bin="$temp_dir/noninteractive-bin"
+  mkdir -m 700 -- "$installer_bin"
+  cat >"$installer_bin/clear" <<'EOF'
+#!/bin/sh
+# The installer has no terminal in Jenkins SSH mode; clearing its screen is cosmetic.
+exit 0
+EOF
+  chmod 700 "$installer_bin/clear"
+  installer_env+=(PHS_SILENT=1 "PATH=$installer_bin:$PATH")
+fi
 run_installer() {
-  TERM="${TERM:-xterm}" env "${env_args[@]}" "${installer_env[@]}" \
+  TERM=xterm env "${env_args[@]}" "${installer_env[@]}" \
     var_post_install= MODE=generated mode=generated bash "$@"
 }
 if [[ ${LXC_DEFAULT_TRACE_INSTALLER:-no} == yes ]]; then
