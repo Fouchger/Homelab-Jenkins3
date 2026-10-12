@@ -172,8 +172,29 @@ curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --ma
 bash -n "$temp_dir/installer.sh"
 # Explicit empty value suppresses an inherited hook in the installer environment.
 # SSH/Jenkins sessions do not necessarily define TERM. Some generated-mode
-# community installers still invoke terminal helpers that require it.
-TERM="${TERM:-xterm}" PHS_SILENT=1 env "${env_args[@]}" var_post_install= MODE=generated mode=generated bash "$temp_dir/installer.sh"
+# community installers still invoke terminal helpers that require it. Keep the
+# community silent-mode setting profile-specific: this launcher is also used by
+# interactive controlplane and Jenkins-agent workflows.
+installer_env=()
+[[ ${LXC_DEFAULT_SILENT_INSTALL:-no} == yes ]] && installer_env+=(PHS_SILENT=1)
+run_installer() {
+  TERM="${TERM:-xterm}" env "${env_args[@]}" "${installer_env[@]}" \
+    var_post_install= MODE=generated mode=generated bash "$@"
+}
+if [[ ${LXC_DEFAULT_TRACE_INSTALLER:-no} == yes ]]; then
+  installer_log="$temp_dir/installer.log"
+  if run_installer -x "$temp_dir/installer.sh" >"$installer_log" 2>&1; then
+    printf 'Installer completed; final output follows.\n'
+    tail -n 40 "$installer_log"
+  else
+    installer_status=$?
+    printf 'Installer failed with status %s; diagnostic trace follows.\n' "$installer_status" >&2
+    tail -n 160 "$installer_log" >&2
+    exit "$installer_status"
+  fi
+else
+  run_installer "$temp_dir/installer.sh"
+fi
 if [[ -n ${HOMELAB_LXC_ROOT_PASSWORD_FILE:-} ]]; then
   container_id=${LXC_DEFAULT_CTID:-${var_ctid:-}}
   password_file=$HOMELAB_LXC_ROOT_PASSWORD_FILE

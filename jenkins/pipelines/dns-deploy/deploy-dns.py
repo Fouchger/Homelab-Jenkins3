@@ -159,8 +159,8 @@ def remote(client, command, timeout=900, operation="operation"):
             r"\1\2[REDACTED]",
             safe_output,
         )
-        if len(safe_output) > 4000:
-            safe_output = safe_output[-4000:]
+        if len(safe_output) > 12000:
+            safe_output = safe_output[-12000:]
         detail = f"; Proxmox output: {safe_output}" if safe_output else "; Proxmox returned no diagnostic output"
         raise RuntimeError(f"Proxmox {operation} failed with exit status {status}{detail}")
     return out.strip()
