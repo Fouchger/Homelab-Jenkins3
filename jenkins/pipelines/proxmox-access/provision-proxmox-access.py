@@ -4,6 +4,7 @@
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -58,17 +59,17 @@ def infisical_login(base_url, client_id, client_secret):
     return access_token
 
 
-def secret_url(base_url, secret_name):
+def secret_url(base_url, secret_name, secret_path="/proxmox/automation"):
     query = urllib.parse.urlencode({
         "projectId": required("INFISICAL_PROJECT_ID"),
         "environment": required("INFISICAL_ENVIRONMENT"),
-        "secretPath": "/proxmox/automation",
+        "secretPath": secret_path,
     })
     return f"{base_url}/api/v4/secrets/{urllib.parse.quote(secret_name)}?{query}"
 
 
-def read_secret(base_url, bearer, name):
-    result = request_json(secret_url(base_url, name), token=bearer, allow_404=True)
+def read_secret(base_url, bearer, name, secret_path="/proxmox/automation"):
+    result = request_json(secret_url(base_url, name, secret_path), token=bearer, allow_404=True)
     if not result:
         return None
     secret = result.get("secret", {})
@@ -117,8 +118,123 @@ def ssh_script(host, script, private_key, known_hosts, timeout=90):
             timeout=timeout, check=False,
         )
     if proc.returncode:
+        marker = next((line for line in proc.stdout.splitlines() if line.startswith("__PVE_SETUP_ERROR__:")), "")
+        known_errors = {
+            "ACCOUNT": "No usable Proxmox ACME account is configured. Register/accept the existing Let's Encrypt account in Proxmox Datacenter → ACME, then rerun Job 002.",
+            "CONFIG": "Could not safely read Proxmox ACME domain configuration; no certificate changes were completed.",
+            "PLUGIN": "Cloudflare DNS plugin configuration failed. Check the Infisical token has zone:read and DNS:edit on the fouchger.uk zone, then review the Proxmox task log.",
+            "DOMAIN": "No free Proxmox ACME domain slot is available; review existing node certificate domains before retrying.",
+            "ORDER": "Let's Encrypt certificate issuance failed. Check the Cloudflare token, ACME account, DNS propagation, and Proxmox task log.",
+            "VERIFY": "Proxmox certificate order completed but the served certificate still does not cover the requested hostname.",
+        }
+        if marker:
+            code = marker.partition(":")[2]
+            if code in known_errors:
+                raise RuntimeError(known_errors[code])
         raise RuntimeError("Proxmox rejected the SSH or account command; output was suppressed")
     return proc.stdout
+
+
+def resolve_ipv4(host):
+    try:
+        return {item[4][0] for item in socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)}
+    except socket.gaierror:
+        return set()
+
+
+def ensure_api_certificate(host, api_hostname, cloudflare_token, private_key, known_hosts):
+    if not re.fullmatch(r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}", api_hostname):
+        raise RuntimeError("PROXMOX_API_HOSTNAME must be a fully qualified DNS name")
+    host_ips = resolve_ipv4(host)
+    api_ips = resolve_ipv4(api_hostname)
+    if not host_ips or not api_ips or not (host_ips & api_ips):
+        raise RuntimeError("PROXMOX_API_HOSTNAME must resolve to the Proxmox SSH host address before ACME can be configured")
+    if not cloudflare_token or "\n" in cloudflare_token or "\r" in cloudflare_token:
+        raise RuntimeError("/cloudflare/CLOUDFLARE_API_TOKEN is missing or is not a single-line token")
+
+    # The secret travels only in SSH stdin and is written remotely to a 0600
+    # temporary file, which pvenode encodes into its protected plugin store.
+    remote_script = f"""set -eu
+hostname={shell_quote(api_hostname)}
+plugin=homelab-cloudflare
+token_file=$(mktemp /root/.homelab-cloudflare.XXXXXX)
+trap 'rm -f "$token_file"' EXIT
+chmod 600 "$token_file"
+printf 'CF_Token=%s\\n' {shell_quote(cloudflare_token)} > "$token_file"
+
+# ACME account creation requires an operator-selected contact and ToS consent.
+# Reuse the selected account; never register or replace it automatically.
+acme_json=$(pvenode config get --property acme --output-format json 2>/dev/null || true)
+account=$(printf '%s' "$acme_json" | python3 -c 'import json,sys; d=json.load(sys.stdin) if sys.stdin.readable() else {{}}; print((d.get("account") if isinstance(d,dict) else "") or "default")' 2>/dev/null || printf default)
+account=${{account:-default}}
+if ! pvenode acme account info "$account" >/dev/null 2>&1; then
+  echo '__PVE_SETUP_ERROR__:ACCOUNT'
+  exit 31
+fi
+
+if pvenode acme plugin config "$plugin" >/dev/null 2>&1; then
+  pvenode acme plugin set "$plugin" --api cf --data "$token_file" --validation-delay 60 >/dev/null 2>&1 || {{ echo '__PVE_SETUP_ERROR__:PLUGIN'; exit 32; }}
+else
+  pvenode acme plugin add dns "$plugin" --api cf --data "$token_file" --validation-delay 60 >/dev/null 2>&1 || {{ echo '__PVE_SETUP_ERROR__:PLUGIN'; exit 32; }}
+fi
+
+certificate=/etc/pve/local/pveproxy-ssl.pem
+python3 - "$hostname" "$certificate" "$plugin" <<'PY'
+import json, re, subprocess, sys
+hostname, certificate, plugin = sys.argv[1:]
+try:
+    config = json.loads(subprocess.check_output(
+        ["pvenode", "config", "get", "--output-format", "json"], stderr=subprocess.DEVNULL
+    ))
+    san_output = subprocess.check_output(
+        ["openssl", "x509", "-in", certificate, "-noout", "-ext", "subjectAltName"],
+        stderr=subprocess.DEVNULL, text=True
+    )
+except Exception:
+    print("__PVE_SETUP_ERROR__:CONFIG")
+    sys.exit(33)
+existing = {{}}
+for key, value in config.items():
+    if re.fullmatch(r"acmedomain[0-5]", key) and isinstance(value, str):
+        domain = value.split(",", 1)[0].removeprefix("domain=")
+        existing[domain] = key
+# Keep the currently served fouchger.uk names so issuing the missing API SAN
+# does not silently remove a name that operators already use for Proxmox.
+preserve = re.findall(r"DNS:((?:\\*\\.)?[A-Za-z0-9.-]+)", san_output)
+domains = [name for name in preserve if name == "fouchger.uk" or name.endswith(".fouchger.uk")]
+domains.append(hostname)
+for domain in dict.fromkeys(domains):
+    slot = existing.get(domain)
+    if slot is None:
+        slot = next((f"acmedomain{{i}}" for i in range(6) if f"acmedomain{{i}}" not in config), None)
+    if slot is None:
+        print("__PVE_SETUP_ERROR__:DOMAIN")
+        sys.exit(34)
+    result = subprocess.run(
+        ["pvenode", "config", "set", f"--{{slot}}", f"domain={{domain}},plugin={{plugin}}"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    if result.returncode:
+        print("__PVE_SETUP_ERROR__:CONFIG")
+        sys.exit(33)
+    config[slot] = f"domain={{domain}},plugin={{plugin}}"
+    existing[domain] = slot
+PY
+
+if [ -r "$certificate" ] && openssl x509 -in "$certificate" -noout -ext subjectAltName 2>/dev/null | grep -Fq "DNS:$hostname"; then
+  echo 'Certificate SAN already covers the API hostname; ACME plugin and renewal configuration are in place.'
+else
+  pvenode acme cert order --force 1 >/dev/null 2>&1 || {{ echo '__PVE_SETUP_ERROR__:ORDER'; exit 35; }}
+  if ! openssl x509 -in "$certificate" -noout -ext subjectAltName 2>/dev/null | grep -Fq "DNS:$hostname"; then
+    echo '__PVE_SETUP_ERROR__:VERIFY'
+    exit 36
+  fi
+  echo 'Issued and verified the ACME certificate; pveproxy restarted and Proxmox will renew it automatically.'
+fi
+"""
+    result = ssh_script(host, remote_script, private_key, known_hosts, timeout=600)
+    if result.strip():
+        print(result.strip())
 
 
 def create_remote_token(host, user, role, token_name, storage_ids, private_key, known_hosts):
@@ -220,6 +336,13 @@ def main():
     storage_ids = [item.strip() for item in os.environ.get("PROXMOX_STORAGE_IDS", "").split(",") if item.strip()]
     if not storage_ids or any(not re.fullmatch(r"[A-Za-z0-9_.-]+", item) for item in storage_ids):
         raise RuntimeError("Provide comma-separated Proxmox storage IDs in PROXMOX_STORAGE_IDS")
+    ensure_certificate = os.environ.get("ENSURE_API_CERTIFICATE", "true").lower() in {"1", "true", "yes"}
+    if ensure_certificate:
+        api_hostname = required("PROXMOX_API_HOSTNAME")
+        cloudflare_token = read_secret(base_url, read_token, "CLOUDFLARE_API_TOKEN", "/cloudflare")
+        if not cloudflare_token:
+            raise RuntimeError("Infisical secret /cloudflare/CLOUDFLARE_API_TOKEN is required for Proxmox ACME DNS validation")
+        ensure_api_certificate(host, api_hostname, cloudflare_token, private_key, known_hosts)
     build_number = required("BUILD_NUMBER")
     if not build_number.isdecimal():
         raise RuntimeError("Jenkins BUILD_NUMBER must be numeric")

@@ -11,6 +11,7 @@ pipeline {
         buildDiscarder(logRotator(numToKeepStr: '20'))
     }
     parameters {
+        string(name: 'PROXMOX_API_HOSTNAME', defaultValue: 'pve01.fouchger.uk', description: 'DNS hostname covered by the Proxmox API certificate. Job 002 ensures this certificate before Kubernetes provisioning.')
         text(name: 'CLUSTER_TFVARS', defaultValue: '''proxmox_bridge           = "vmbr0"
 kubernetes_api_vip       = "192.168.80.200"
 talos_iso_datastore_id   = "local"
@@ -108,10 +109,10 @@ tofu -chdir=tofu/environments/kubernetes validate
                     usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
                     string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
                     string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
-                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT'),
-                    string(credentialsId: 'homelab-proxmox-host', variable: 'PROXMOX_HOST')
+                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT')
                 ]) {
                     withEnv([
+                        "PROXMOX_API_HOSTNAME=${params.PROXMOX_API_HOSTNAME}",
                         "HOMELAB_KUBERNETES_TFVARS=${env.WORKSPACE}/.review-tmp/cluster.tfvars",
                         'TOFU_ACTION=plan',
                         "TOFU_PLAN_FILE=${env.WORKSPACE}/.review-tmp/kubernetes-${env.BUILD_NUMBER}.tfplan"
@@ -141,10 +142,10 @@ tofu -chdir=tofu/environments/kubernetes show -no-color "${WORKSPACE}/.review-tm
                     usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
                     string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
                     string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
-                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT'),
-                    string(credentialsId: 'homelab-proxmox-host', variable: 'PROXMOX_HOST')
+                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT')
                 ]) {
                     withEnv([
+                        "PROXMOX_API_HOSTNAME=${params.PROXMOX_API_HOSTNAME}",
                         "HOMELAB_KUBERNETES_TFVARS=${env.WORKSPACE}/.review-tmp/cluster.tfvars",
                         'TOFU_ACTION=apply',
                         "TOFU_PLAN_FILE=${env.WORKSPACE}/.review-tmp/kubernetes-${env.BUILD_NUMBER}.tfplan"

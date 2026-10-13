@@ -546,7 +546,7 @@ if (job == null) {
     println("Updating managed Pipeline '${jobName}' to use the repository's Jenkins pipeline folder.")
 }
 job.setDefinition(definition)
-job.setDescription('002 - Applies the existing HomelabLxcOperator role to the Proxmox automation account and selected guest/storage paths, creates or rotates its API token, updates /proxmox/automation in Infisical, verifies the saved values, then removes the prior token when it belongs to this account. Start manually when needed.')
+job.setDescription('002 - Ensures the selected Proxmox API hostname has an ACME certificate using the Cloudflare DNS token in /cloudflare (pveproxy restarts briefly only when issuance is needed), then applies the existing HomelabLxcOperator role, rotates the Proxmox API token, updates /proxmox/automation in Infisical, verifies the saved values, and removes the prior token when it belongs to this account. Requires a registered Proxmox ACME account; account registration and ToS consent are not automated. Start manually when needed.')
 job.save()
 JENKINS_PVE_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/96-homelab-proxmox-access-pipeline.groovy"
@@ -818,7 +818,7 @@ if (job == null) {
     throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
 }
 job.setDefinition(definition)
-job.setDescription('Accepts the complete non-secret cluster configuration as a build parameter, plans Talos VM changes on Proxmox, and applies only when APPLY is selected and the exact OpenTofu plan is approved. Proxmox credentials come from Infisical; durable OpenTofu state is stored on the automation agent.')
+job.setDescription('Accepts the Proxmox API hostname and complete non-secret Talos cluster configuration as build parameters, verifies the trusted Proxmox certificate, plans VM changes, and applies only when APPLY is selected and the exact OpenTofu plan is approved. Job 002 provisions the ACME certificate through Cloudflare DNS-01. Proxmox API credentials come from Infisical; durable OpenTofu state is stored on the automation agent.')
 job.save()
 JENKINS_KUBERNETES_INFRA_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/104-homelab-kubernetes-infra-pipeline.groovy"

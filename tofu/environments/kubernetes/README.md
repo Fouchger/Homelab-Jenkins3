@@ -30,13 +30,17 @@ applied by this stack.
    Proxmox node, bridge, datastore, and sizing against the live host before use.
 2. Ensure the selected ISO-capable datastore is available to every target VM
    node, or use a separate accessible ISO datastore per PVE node.
-3. Provide `PROXMOX_VE_ENDPOINT` and `PROXMOX_VE_API_TOKEN` through the process
-   environment. The API token needs the minimum permissions required to audit
-   the target node and datastore, allocate an ISO template, modify VM settings,
-   and create VMs. Use a Proxmox API hostname whose TLS certificate is valid for
-   that hostname and trusted by the Jenkins agent; do not disable certificate
-   verification. Do not put credentials in `.tfvars`.
-4. Initialize and inspect a plan. VM destruction is guarded by both Proxmox
+3. Use `pve01.fouchger.uk` as the Proxmox API hostname. Job `002 - Proxmox
+   Access Setup` ensures that hostname is covered by a trusted Let's Encrypt
+   certificate using the Cloudflare DNS token in `/cloudflare`; Proxmox renews
+   the ACME certificate automatically. The Jenkins agent verifies the
+   certificate chain and hostname before each Kubernetes plan/apply.
+4. Provide `PROXMOX_VE_ENDPOINT` (using `pve01.fouchger.uk`) and
+   `PROXMOX_VE_API_TOKEN` through the process environment. The API token needs
+   the minimum permissions required to audit the target node and datastore,
+   allocate an ISO template, modify VM settings, and create VMs. Do not disable
+   certificate verification or put credentials in `.tfvars`.
+5. Initialize and inspect a plan. VM destruction is guarded by both Proxmox
    protection and OpenTofu `prevent_destroy`; intentional rebuilds need an
    explicit reviewed change to those guards.
 
@@ -54,7 +58,8 @@ ephemeral Jenkins workspace; protect and back up this directory. Jenkins job
 plan is read-only unless `APPLY` is selected, and apply then requires explicit
 approval of the exact displayed plan. Proxmox API TLS is preflighted before
 planning so a hostname or trust failure blocks the build before the approval
-step.
+step. The `PROXMOX_API_HOSTNAME` build parameter defaults to
+`pve01.fouchger.uk` and must match the certificate SAN.
 
 The local backend is an initial single-operator backend. Jenkins overrides its
 default path with the durable agent path above. Local backend locking is

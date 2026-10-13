@@ -91,8 +91,8 @@ def verify_proxmox_tls(host):
         reason = getattr(exc, "reason", exc)
         raise RuntimeError(
             "Proxmox API TLS preflight failed "
-            f"({type(reason).__name__}). Set PROXMOX_HOST to a DNS name present in the "
-            "certificate SAN and trust that certificate's issuing CA on the Jenkins agent."
+            f"({type(reason).__name__}). Set PROXMOX_API_HOSTNAME to a DNS name present in "
+            "the certificate SAN; Job 002 manages the certificate for pve01.fouchger.uk."
         ) from None
 
 
@@ -119,9 +119,9 @@ def main():
     os.chmod(state_dir, 0o700)
     state_file = state_dir / "terraform.tfstate"
 
-    host = required("PROXMOX_HOST")
+    host = required("PROXMOX_API_HOSTNAME")
     if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
-        raise RuntimeError("PROXMOX_HOST must be a hostname or IPv4 address without a scheme")
+        raise RuntimeError("PROXMOX_API_HOSTNAME must be a DNS hostname or IPv4 address without a scheme")
     verify_proxmox_tls(host)
 
     infisical_url = required("INFISICAL_URL").rstrip("/")
