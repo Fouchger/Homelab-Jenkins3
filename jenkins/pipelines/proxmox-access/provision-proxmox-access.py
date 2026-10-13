@@ -120,7 +120,8 @@ def ssh_script(host, script, private_key, known_hosts, timeout=90):
     if proc.returncode:
         marker = next((line for line in proc.stdout.splitlines() if line.startswith("__PVE_SETUP_ERROR__:")), "")
         known_errors = {
-            "ACCOUNT": "No usable Proxmox ACME account is configured. Register/accept the existing Let's Encrypt account in Proxmox Datacenter → ACME, then rerun Job 002.",
+            "ACCOUNT": "No usable Proxmox ACME account is configured. Confirm /proxmox/acme/ACME_EMAIL exists in Infisical and rerun Job 002 with ACCEPT_LETSENCRYPT_TOS checked to register it automatically.",
+            "ACCOUNT_REGISTER": "Proxmox could not register the Let’s Encrypt account. Check outbound access and the current Let’s Encrypt terms or registration response, then retry Job 002.",
             "CONFIG": "Could not safely read Proxmox ACME domain configuration; no certificate changes were completed.",
             "PLUGIN": "Cloudflare DNS plugin configuration failed. Check the Infisical token has zone:read and DNS:edit on the fouchger.uk zone, then review the Proxmox task log.",
             "DOMAIN": "No free Proxmox ACME domain slot is available; review existing node certificate domains before retrying.",
@@ -142,7 +143,7 @@ def resolve_ipv4(host):
         return set()
 
 
-def ensure_api_certificate(host, api_hostname, cloudflare_token, private_key, known_hosts):
+def ensure_api_certificate(host, api_hostname, cloudflare_token, contact_email, accept_tos, private_key, known_hosts):
     if not re.fullmatch(r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}", api_hostname):
         raise RuntimeError("PROXMOX_API_HOSTNAME must be a fully qualified DNS name")
     host_ips = resolve_ipv4(host)
@@ -157,6 +158,8 @@ def ensure_api_certificate(host, api_hostname, cloudflare_token, private_key, kn
         )
     if not cloudflare_token or "\n" in cloudflare_token or "\r" in cloudflare_token:
         raise RuntimeError("/cloudflare/CLOUDFLARE_API_TOKEN is missing or is not a single-line token")
+    if contact_email and not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", contact_email):
+        raise RuntimeError("/proxmox/acme/ACME_EMAIL must contain a valid email address")
 
     # The secret travels only in SSH stdin and is written remotely to a 0600
     # temporary file, which pvenode encodes into its protected plugin store.
@@ -168,14 +171,19 @@ trap 'rm -f "$token_file"' EXIT
 chmod 600 "$token_file"
 printf 'CF_Token=%s\\n' {shell_quote(cloudflare_token)} > "$token_file"
 
-# ACME account creation requires an operator-selected contact and ToS consent.
-# Reuse the selected account; never register or replace it automatically.
+# Reuse the current cluster account. If none is usable, only register when the
+# Infisical contact and explicit build-time ToS acceptance are both present.
 acme_json=$(pvenode config get --property acme --output-format json 2>/dev/null || true)
 account=$(printf '%s' "$acme_json" | python3 -c 'import json,sys; d=json.load(sys.stdin) if sys.stdin.readable() else {{}}; print((d.get("account") if isinstance(d,dict) else "") or "default")' 2>/dev/null || printf default)
 account=${{account:-default}}
 if ! pvenode acme account info "$account" >/dev/null 2>&1; then
-  echo '__PVE_SETUP_ERROR__:ACCOUNT'
-  exit 31
+  contact={shell_quote(contact_email)}
+  accept_tos={"true" if accept_tos else "false"}
+  if [ -z "$contact" ] || [ "$accept_tos" != true ]; then
+    echo '__PVE_SETUP_ERROR__:ACCOUNT'
+    exit 31
+  fi
+  printf '0\\ny\\n' | pvenode acme account register "$account" "$contact" >/dev/null 2>&1 || {{ echo '__PVE_SETUP_ERROR__:ACCOUNT_REGISTER'; exit 37; }}
 fi
 
 if pvenode acme plugin config "$plugin" >/dev/null 2>&1; then
@@ -348,7 +356,9 @@ def main():
         cloudflare_token = read_secret(base_url, read_token, "CLOUDFLARE_API_TOKEN", "/cloudflare")
         if not cloudflare_token:
             raise RuntimeError("Infisical secret /cloudflare/CLOUDFLARE_API_TOKEN is required for Proxmox ACME DNS validation")
-        ensure_api_certificate(host, api_hostname, cloudflare_token, private_key, known_hosts)
+        contact_email = read_secret(base_url, read_token, "ACME_EMAIL", "/proxmox/acme")
+        accept_tos = os.environ.get("ACCEPT_LETSENCRYPT_TOS", "false").lower() in {"1", "true", "yes"}
+        ensure_api_certificate(host, api_hostname, cloudflare_token, contact_email, accept_tos, private_key, known_hosts)
     build_number = required("BUILD_NUMBER")
     if not build_number.isdecimal():
         raise RuntimeError("Jenkins BUILD_NUMBER must be numeric")

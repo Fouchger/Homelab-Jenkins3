@@ -13,7 +13,8 @@ pipeline {
         string(name: 'PROXMOX_ROLE', defaultValue: 'HomelabLxcOperator', description: 'Existing custom role shown in the cluster roles list.')
         string(name: 'PROXMOX_STORAGE_IDS', defaultValue: 'local,local-lvm', description: 'Storage IDs the automation account may allocate space on.')
         string(name: 'PROXMOX_API_HOSTNAME', defaultValue: 'pve01.fouchger.uk', description: 'DNS name used by API clients; it must resolve to the Proxmox host and be covered by its HTTPS certificate.')
-        booleanParam(name: 'ENSURE_API_CERTIFICATE', defaultValue: true, description: 'Ensure the Proxmox API certificate includes PROXMOX_API_HOSTNAME using the existing ACME account and Cloudflare DNS token in Infisical. Issuing a certificate restarts pveproxy briefly.')
+        booleanParam(name: 'ENSURE_API_CERTIFICATE', defaultValue: true, description: 'Ensure the Proxmox API certificate includes PROXMOX_API_HOSTNAME using the Cloudflare DNS token in Infisical. Issuing a certificate restarts pveproxy briefly.')
+        booleanParam(name: 'ACCEPT_LETSENCRYPT_TOS', defaultValue: false, description: 'Check to accept the current Let’s Encrypt Terms of Service if Job 002 needs to register an ACME account. The contact email is read from Infisical /proxmox/acme/ACME_EMAIL. https://letsencrypt.org/repository/')
     }
 
     stages {
@@ -33,7 +34,8 @@ pipeline {
                         "PROXMOX_ROLE=${params.PROXMOX_ROLE}",
                         "PROXMOX_STORAGE_IDS=${params.PROXMOX_STORAGE_IDS}",
                         "PROXMOX_API_HOSTNAME=${params.PROXMOX_API_HOSTNAME}",
-                        "ENSURE_API_CERTIFICATE=${params.ENSURE_API_CERTIFICATE}"
+                        "ENSURE_API_CERTIFICATE=${params.ENSURE_API_CERTIFICATE}",
+                        "ACCEPT_LETSENCRYPT_TOS=${params.ACCEPT_LETSENCRYPT_TOS}"
                     ]) {
                         sh(label: 'Ensure Proxmox ACME certificate and rotate API token', script: '''#!/bin/sh
 set +x
