@@ -22,6 +22,13 @@ PROFILES = {
     "dns01": (150, "02:00:00:00:01:50", "dns01.profile.sh"),
     "dns02": (151, "02:00:00:00:01:51", "dns02.profile.sh"),
 }
+JENKINS_AGENT_CTID = 101
+JENKINS_AGENT_MAC = "BC:24:11:5E:D9:F9"
+JENKINS_AGENT_IPV4 = "192.168.20.6"
+JENKINS_AGENT_NAMESERVERS = ("192.168.30.2", "192.168.30.3")
+JENKINS_AGENT_SEARCHDOMAIN = "fouchger.uk"
+PROXMOX_API_HOSTNAME = "pve01.fouchger.uk"
+PROXMOX_API_IPV4 = "192.168.20.10"
 SENSITIVE_VALUES = []
 
 
@@ -193,6 +200,91 @@ def matches_container_identity(config, role, mac):
         and network.get("ip") == "dhcp"
         and network.get("tag") == "30"
         and {"community-script", "dns", "homelab", "managed-by-jenkins"}.issubset(tags)
+    )
+
+
+def jenkins_agent_config(client):
+    if remote(client, f"pct status {JENKINS_AGENT_CTID}", timeout=30).strip() != "status: running":
+        raise RuntimeError(f"Jenkins agent CTID {JENKINS_AGENT_CTID} must be running to update its DNS safely")
+    config_text = remote(client, f"pct config {JENKINS_AGENT_CTID}", timeout=30)
+    lines = {}
+    for line in config_text.splitlines():
+        if ":" in line:
+            key, value = line.split(":", 1)
+            lines[key.strip()] = value.strip()
+    network = {}
+    for item in lines.get("net0", "").split(","):
+        if "=" in item:
+            key, value = item.strip().split("=", 1)
+            network[key] = value
+    tags = {tag.strip() for tag in lines.get("tags", "").split(";") if tag.strip()}
+    identity_matches = (
+        lines.get("hostname") == "jenkins-agent"
+        and network.get("hwaddr", "").upper() == JENKINS_AGENT_MAC
+        and network.get("bridge") == "vmbr0"
+        and network.get("ip") == "dhcp"
+        and network.get("tag") == "20"
+        and "jenkins-agent" in tags
+    )
+    if not identity_matches:
+        raise RuntimeError(
+            f"CTID {JENKINS_AGENT_CTID} does not match the expected Jenkins agent identity; refusing to change its DNS"
+        )
+    guest_addresses = remote(
+        client,
+        f"pct exec {JENKINS_AGENT_CTID} -- ip -o -4 addr show scope global",
+        timeout=30,
+    )
+    if f"inet {JENKINS_AGENT_IPV4}/" not in guest_addresses:
+        raise RuntimeError(
+            f"CTID {JENKINS_AGENT_CTID} does not currently hold expected address {JENKINS_AGENT_IPV4}; refusing to change its DNS"
+        )
+    return lines
+
+
+def configure_jenkins_agent_dns(client):
+    """Persist and activate the private DNS resolvers without rebooting the running agent."""
+    config = jenkins_agent_config(client)
+    resolver_list = ",".join(JENKINS_AGENT_NAMESERVERS)
+    remote(
+        client,
+        f"pct set {JENKINS_AGENT_CTID} --searchdomain {shlex.quote(JENKINS_AGENT_SEARCHDOMAIN)} "
+        f"--nameserver {shlex.quote(resolver_list)}",
+        timeout=60,
+        operation="save Jenkins agent DNS settings",
+    )
+    resolv_content = [
+        "# --- BEGIN PVE ---",
+        f"search {JENKINS_AGENT_SEARCHDOMAIN}",
+        *(f"nameserver {server}" for server in JENKINS_AGENT_NAMESERVERS),
+        "# --- END PVE ---",
+    ]
+    guest_command = "test -f /etc/resolv.conf && test ! -L /etc/resolv.conf && printf '%s\\n' " + " ".join(
+        shlex.quote(line) for line in resolv_content
+    ) + " > /etc/resolv.conf"
+    remote(
+        client,
+        f"pct exec {JENKINS_AGENT_CTID} -- bash -lc {shlex.quote(guest_command)}",
+        timeout=60,
+        operation="activate Jenkins agent DNS settings",
+    )
+    resolv_conf = remote(client, f"pct exec {JENKINS_AGENT_CTID} -- cat /etc/resolv.conf", timeout=30)
+    expected_lines = [f"nameserver {server}" for server in JENKINS_AGENT_NAMESERVERS]
+    if any(line not in resolv_conf.splitlines() for line in expected_lines):
+        raise RuntimeError("Jenkins agent resolver file did not retain both Technitium DNS servers")
+    result = remote(
+        client,
+        f"pct exec {JENKINS_AGENT_CTID} -- getent ahostsv4 {PROXMOX_API_HOSTNAME}",
+        timeout=30,
+        operation="verify Jenkins agent DNS resolution",
+    )
+    if not re.search(rf"(?m)^{re.escape(PROXMOX_API_IPV4)}\s", result):
+        raise RuntimeError(
+            f"Jenkins agent DNS does not resolve {PROXMOX_API_HOSTNAME} to {PROXMOX_API_IPV4} after the update"
+        )
+    print(
+        f"Jenkins agent CTID {JENKINS_AGENT_CTID} now uses Technitium DNS "
+        f"{', '.join(JENKINS_AGENT_NAMESERVERS)} and resolves {PROXMOX_API_HOSTNAME} -> {PROXMOX_API_IPV4}."
     )
 
 
@@ -537,6 +629,7 @@ def provision(client, stage, values, recreate_roles):
         execute_in_ct(client, ctid, f"{stage}/manage-technitium.py", config, action)
 
     configure_zone_replication(client, stage, values, preserved_dns01_zones)
+    configure_jenkins_agent_dns(client)
 
     # Remove staged credentials and code regardless of successful config.
     remote(client, f"rm -f -- {shlex.quote(stage)}/*.root-password {shlex.quote(stage)}/*.json && rm -rf -- {shlex.quote(stage)}", timeout=60)
@@ -576,6 +669,15 @@ def review_plan(client, values, recreate_roles):
     print(f"- Technitium dns02 ({values['DNS02_IPV4']}): verify admin access and configure secondary copies of dns01 primary zones")
     print(f"- Configured hosted zones to ensure on dns01: {', '.join(hosted_zones) if hosted_zones else '(none; existing primary zones will be synced)'}")
     print("- Technitium dns01: ensure pve01.fouchger.uk A record -> 192.168.20.10; replicate its zone to dns02")
+    agent_config = jenkins_agent_config(client)
+    current_nameservers = agent_config.get("nameserver", "(inherit from Proxmox host)")
+    current_searchdomain = agent_config.get("searchdomain", "(inherit from Proxmox host)")
+    print(
+        f"- Jenkins agent CTID {JENKINS_AGENT_CTID}: DNS settings "
+        f"[{current_nameservers}; search {current_searchdomain}] -> "
+        f"[{','.join(JENKINS_AGENT_NAMESERVERS)}; search {JENKINS_AGENT_SEARCHDOMAIN}]; "
+        "apply to PVE config and live resolver without reboot"
+    )
     print("- Router DNS and DHCP settings: reviewed separately below; the apply stage creates an encrypted backup before changes.")
 
 
