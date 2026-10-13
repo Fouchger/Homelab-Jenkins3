@@ -83,17 +83,16 @@ def main():
     environment_dir = project_root / "tofu" / "environments" / "kubernetes"
     tfvars_file = Path(required("HOMELAB_KUBERNETES_TFVARS"))
     plan_file = Path(required("TOFU_PLAN_FILE"))
-    if not tfvars_file.is_file():
-        raise RuntimeError(
-            "The private Kubernetes tfvars file is missing: "
-            f"{tfvars_file}. Install the reviewed cluster.tfvars at this path on the Jenkins agent."
-        )
     workspace = Path(required("WORKSPACE")).resolve()
     plan_file = plan_file.resolve()
     if workspace not in plan_file.parents:
         raise RuntimeError("The OpenTofu plan file must remain inside the Jenkins workspace")
+    tfvars_file = tfvars_file.resolve()
+    if workspace not in tfvars_file.parents or not tfvars_file.is_file():
+        raise RuntimeError("The Jenkins cluster configuration file must exist inside the current workspace")
+    os.chmod(tfvars_file, 0o600)
 
-    state_dir = tfvars_file.parent
+    state_dir = Path(required("HOMELAB_KUBERNETES_STATE_DIR"))
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(state_dir, 0o700)
     state_file = state_dir / "terraform.tfstate"

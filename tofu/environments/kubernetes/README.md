@@ -40,15 +40,19 @@ applied by this stack.
    protection and OpenTofu `prevent_destroy`; intentional rebuilds need an
    explicit reviewed change to those guards.
 
-For Jenkins, install the private variables file at
-`/var/lib/jenkins-agent/homelab/kubernetes/cluster.tfvars` on the
-`homelab-automation` agent. The pipeline reads Proxmox token values from
-Infisical and expects the existing Jenkins read identity and Proxmox host
-credentials. The pipeline stores local backend state beside the private inputs
-at `terraform.tfstate`, outside the ephemeral Jenkins workspace; protect and
-back up this directory. Jenkins job `008 - Kubernetes Infrastructure` is
-seeded by the controller installer; the plan is read-only unless `APPLY` is
-selected, and apply then requires explicit approval.
+For Jenkins, review or edit the complete non-secret cluster configuration in
+the `CLUSTER_TFVARS` build parameter before starting the job. The pipeline
+writes that parameter to a temporary workspace file and removes it when the
+build completes. On the first build after the Jenkins parameter form is
+updated, the tracked example is used automatically if the new parameter is not
+available yet; that refresh build is plan-only, and apply is blocked until the
+configuration parameter is available. Proxmox token values still come from Infisical.
+The pipeline stores local backend state at
+`/var/lib/jenkins-agent/homelab/kubernetes/terraform.tfstate`, outside the
+ephemeral Jenkins workspace; protect and back up this directory. Jenkins job
+`008 - Kubernetes Infrastructure` is seeded by the controller installer; the
+plan is read-only unless `APPLY` is selected, and apply then requires explicit
+approval of the exact displayed plan.
 
 The local backend is an initial single-operator backend. Jenkins overrides its
 default path with the durable agent path above. Local backend locking is

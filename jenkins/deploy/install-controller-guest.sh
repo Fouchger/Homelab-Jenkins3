@@ -818,7 +818,7 @@ if (job == null) {
     throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
 }
 job.setDefinition(definition)
-job.setDescription('Plans Talos VM changes on Proxmox. Apply is opt-in and requires review and approval of the exact OpenTofu plan. The Kubernetes private variable file and persistent OpenTofu state must be installed and protected on the automation agent before use.')
+job.setDescription('Accepts the complete non-secret cluster configuration as a build parameter, plans Talos VM changes on Proxmox, and applies only when APPLY is selected and the exact OpenTofu plan is approved. Proxmox credentials come from Infisical; durable OpenTofu state is stored on the automation agent.')
 job.save()
 JENKINS_KUBERNETES_INFRA_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/104-homelab-kubernetes-infra-pipeline.groovy"

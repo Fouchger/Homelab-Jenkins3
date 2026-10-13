@@ -1,8 +1,8 @@
 pipeline {
     agent { label 'homelab-automation' }
     environment {
-        // Keep credentials and variable values on the private Jenkins agent.
-        HOMELAB_KUBERNETES_TFVARS = '/var/lib/jenkins-agent/homelab/kubernetes/cluster.tfvars'
+        // Keep OpenTofu state durable outside the disposable Jenkins workspace.
+        HOMELAB_KUBERNETES_STATE_DIR = '/var/lib/jenkins-agent/homelab/kubernetes'
     }
     options {
         disableConcurrentBuilds()
@@ -11,7 +11,72 @@ pipeline {
         buildDiscarder(logRotator(numToKeepStr: '20'))
     }
     parameters {
-        booleanParam(name: 'APPLY', defaultValue: false, description: 'After reviewing the OpenTofu plan, approve and create/update the Talos VMs.')
+        text(name: 'CLUSTER_TFVARS', defaultValue: '''proxmox_bridge           = "vmbr0"
+kubernetes_api_vip       = "192.168.80.200"
+talos_iso_datastore_id   = "local"
+talos_iso_proxmox_node   = "pve01"
+talos_iso_file_name      = "talos-v1.13.10-metal-amd64.iso"
+talos_iso_url            = "https://factory.talos.dev/image/376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba/v1.13.10/metal-amd64.iso"
+talos_iso_checksum       = "699bfd71094ce138ed8e2013b05b07a1c82fe45bd7cce601e1f5de6ca04168bf"
+
+nodes = {
+  "talos-cp-01" = {
+    role = "controlplane"
+    vm_id = 8101
+    proxmox_node = "pve01"
+    datastore_id = "local-lvm"
+    cores = 2
+    memory_mb = 3072
+    disk_gb = 32
+    mac_address = "02:80:00:00:01:01"
+    ip_address = "192.168.80.101"
+  }
+  "talos-cp-02" = {
+    role = "controlplane"
+    vm_id = 8102
+    proxmox_node = "pve01"
+    datastore_id = "local-lvm"
+    cores = 2
+    memory_mb = 3072
+    disk_gb = 32
+    mac_address = "02:80:00:00:01:02"
+    ip_address = "192.168.80.102"
+  }
+  "talos-cp-03" = {
+    role = "controlplane"
+    vm_id = 8103
+    proxmox_node = "pve01"
+    datastore_id = "local-lvm"
+    cores = 2
+    memory_mb = 3072
+    disk_gb = 32
+    mac_address = "02:80:00:00:01:03"
+    ip_address = "192.168.80.103"
+  }
+  "talos-worker-01" = {
+    role = "worker"
+    vm_id = 8111
+    proxmox_node = "pve01"
+    datastore_id = "local-lvm"
+    cores = 2
+    memory_mb = 3072
+    disk_gb = 64
+    mac_address = "02:80:00:00:02:01"
+    ip_address = "192.168.80.104"
+  }
+  "talos-worker-02" = {
+    role = "worker"
+    vm_id = 8112
+    proxmox_node = "pve01"
+    datastore_id = "local-lvm"
+    cores = 2
+    memory_mb = 3072
+    disk_gb = 64
+    mac_address = "02:80:00:00:02:02"
+    ip_address = "192.168.80.105"
+  }
+}''', description: 'Complete non-secret cluster configuration used for this run. Review or edit the VM IDs, IPs, MACs, host, sizing, VIP, and Talos ISO here before starting. Jenkins validates it and prints the exact infrastructure plan. Do not put credentials here; credentials come from Infisical.')
+        booleanParam(name: 'APPLY', defaultValue: false, description: 'Unchecked: plan only. Checked: after Jenkins displays the plan, a second approval creates or updates the Talos ISO and the five VMs defined in CLUSTER_TFVARS. This does not install Talos or bootstrap Kubernetes.')
     }
     stages {
         stage('Validate OpenTofu configuration') {
@@ -26,6 +91,19 @@ tofu -chdir=tofu/environments/kubernetes validate
         }
         stage('Plan Proxmox VM changes') {
             steps {
+                script {
+                    sh 'mkdir -p .review-tmp'
+                    def clusterConfig = params.CLUSTER_TFVARS
+                    if (!clusterConfig?.trim()) {
+                        if (params.APPLY) {
+                            error('The CLUSTER_TFVARS parameter has not been installed on this job yet. Run once with APPLY unchecked, then review the configuration parameter before any apply.')
+                        }
+                        clusterConfig = readFile('tofu/environments/kubernetes/cluster.tfvars.example')
+                        echo 'CLUSTER_TFVARS is not available yet; using the tracked example for this parameter-refresh build.'
+                    }
+                    writeFile(file: '.review-tmp/cluster.tfvars', text: clusterConfig.trim() + '\n', encoding: 'UTF-8')
+                    sh 'chmod 600 .review-tmp/cluster.tfvars'
+                }
                 withCredentials([
                     usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
                     string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
@@ -34,6 +112,7 @@ tofu -chdir=tofu/environments/kubernetes validate
                     string(credentialsId: 'homelab-proxmox-host', variable: 'PROXMOX_HOST')
                 ]) {
                     withEnv([
+                        "HOMELAB_KUBERNETES_TFVARS=${env.WORKSPACE}/.review-tmp/cluster.tfvars",
                         'TOFU_ACTION=plan',
                         "TOFU_PLAN_FILE=${env.WORKSPACE}/.review-tmp/kubernetes-${env.BUILD_NUMBER}.tfplan"
                     ]) {
@@ -66,6 +145,7 @@ tofu -chdir=tofu/environments/kubernetes show -no-color "${WORKSPACE}/.review-tm
                     string(credentialsId: 'homelab-proxmox-host', variable: 'PROXMOX_HOST')
                 ]) {
                     withEnv([
+                        "HOMELAB_KUBERNETES_TFVARS=${env.WORKSPACE}/.review-tmp/cluster.tfvars",
                         'TOFU_ACTION=apply',
                         "TOFU_PLAN_FILE=${env.WORKSPACE}/.review-tmp/kubernetes-${env.BUILD_NUMBER}.tfplan"
                     ]) {
@@ -76,6 +156,13 @@ python3 jenkins/pipelines/kubernetes-infra/run-tofu.py
                     }
                 }
             }
+        }
+    }
+    post {
+        always {
+            sh(label: 'Remove temporary configuration and plan', script: '''#!/bin/sh
+rm -f -- "$WORKSPACE/.review-tmp/cluster.tfvars" "$WORKSPACE/.review-tmp/kubernetes-$BUILD_NUMBER.tfplan"
+''')
         }
     }
 }
