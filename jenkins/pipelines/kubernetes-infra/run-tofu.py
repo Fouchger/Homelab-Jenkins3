@@ -84,7 +84,10 @@ def main():
     tfvars_file = Path(required("HOMELAB_KUBERNETES_TFVARS"))
     plan_file = Path(required("TOFU_PLAN_FILE"))
     if not tfvars_file.is_file():
-        raise RuntimeError("The private Kubernetes tfvars file is not installed on the Jenkins agent")
+        raise RuntimeError(
+            "The private Kubernetes tfvars file is missing: "
+            f"{tfvars_file}. Install the reviewed cluster.tfvars at this path on the Jenkins agent."
+        )
     workspace = Path(required("WORKSPACE")).resolve()
     plan_file = plan_file.resolve()
     if workspace not in plan_file.parents:

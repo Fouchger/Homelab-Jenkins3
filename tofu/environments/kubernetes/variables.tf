@@ -50,7 +50,7 @@ variable "talos_iso_url" {
 }
 
 variable "talos_iso_checksum" {
-  description = "SHA-256 checksum published for the selected Talos ISO."
+  description = "Expected SHA-256 checksum for the selected Talos ISO."
   type        = string
 
   validation {

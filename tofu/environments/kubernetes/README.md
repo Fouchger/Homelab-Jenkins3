@@ -33,7 +33,9 @@ applied by this stack.
 3. Provide `PROXMOX_VE_ENDPOINT` and `PROXMOX_VE_API_TOKEN` through the process
    environment. The API token needs the minimum permissions required to audit
    the target node and datastore, allocate an ISO template, modify VM settings,
-   and create VMs. Do not put credentials in `.tfvars`.
+   and create VMs. Use a Proxmox API hostname whose TLS certificate is valid for
+   that hostname and trusted by the Jenkins agent; do not disable certificate
+   verification. Do not put credentials in `.tfvars`.
 4. Initialize and inspect a plan. VM destruction is guarded by both Proxmox
    protection and OpenTofu `prevent_destroy`; intentional rebuilds need an
    explicit reviewed change to those guards.

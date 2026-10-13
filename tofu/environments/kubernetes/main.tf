@@ -1,8 +1,8 @@
 locals {
-  talos_iso_file_id = proxmox_virtual_environment_download_file.talos_iso.id
+  talos_iso_file_id = proxmox_download_file.talos_iso.id
 }
 
-resource "proxmox_virtual_environment_download_file" "talos_iso" {
+resource "proxmox_download_file" "talos_iso" {
   content_type       = "iso"
   datastore_id       = var.talos_iso_datastore_id
   file_name          = var.talos_iso_file_name
