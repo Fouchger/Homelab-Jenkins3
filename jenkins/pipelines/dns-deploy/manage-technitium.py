@@ -92,6 +92,115 @@ def all_zones(token):
     return [item for item in entries if isinstance(item, dict) and item.get("name")]
 
 
+def ensure_proxmox_api_record(token, hostname, address):
+    hostname = hostname.rstrip(".").lower()
+    try:
+        socket.inet_aton(address)
+    except OSError:
+        raise RuntimeError("Proxmox API DNS address is not a valid IPv4 address") from None
+    if not re.fullmatch(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", hostname):
+        raise RuntimeError("Proxmox API DNS name is not a fully qualified DNS hostname")
+
+    zones = [
+        item for item in all_zones(token)
+        if item.get("type") == "Primary"
+        and hostname.endswith("." + str(item.get("name", "")).rstrip(".").lower())
+    ]
+    if not zones:
+        raise RuntimeError(
+            f"No Technitium primary zone contains {hostname}; add its parent domain to DNS_HOSTED_ZONES "
+            "and rerun Job 006"
+        )
+    zone = max(zones, key=lambda item: len(str(item.get("name", ""))))
+    zone_name = str(zone["name"]).rstrip(".").lower()
+    if zone.get("disabled", False):
+        raise RuntimeError(f"Technitium primary zone {zone_name} is disabled; refusing to add the Proxmox API record")
+
+    query = urllib.parse.urlencode({"domain": hostname, "zone": zone_name})
+    result = call(f"/api/zones/records/get?{query}", token=token)
+    records = result.get("response", {}).get("records", [])
+    if not isinstance(records, list):
+        raise RuntimeError("Technitium returned an invalid record list for the Proxmox API hostname")
+    same_name = [
+        item for item in records
+        if isinstance(item, dict)
+        and str(item.get("name", "")).rstrip(".").lower() == hostname
+    ]
+    a_records = [item for item in same_name if str(item.get("type", "")).upper() == "A"]
+    if any(item.get("disabled", False) for item in a_records):
+        raise RuntimeError(f"Technitium has a disabled A record for {hostname}; enable or remove it before rerunning Job 006")
+    if a_records:
+        addresses = {
+            str(item.get("rData", {}).get("ipAddress", ""))
+            for item in a_records
+            if isinstance(item.get("rData"), dict)
+        }
+        if addresses != {address}:
+            raise RuntimeError(
+                f"Technitium has a conflicting A record for {hostname}; expected {address}, found "
+                f"{', '.join(sorted(addresses)) or 'an unreadable address'}. Resolve it before rerunning Job 006"
+            )
+        print(f"Technitium Proxmox API DNS already matches: {hostname} -> {address} in {zone_name}.")
+        return
+    if any(str(item.get("type", "")).upper() == "CNAME" for item in same_name):
+        raise RuntimeError(f"Technitium has a CNAME for {hostname}; resolve the conflict before adding its A record")
+
+    call("/api/zones/records/add", {
+        "domain": hostname,
+        "zone": zone_name,
+        "type": "A",
+        "ttl": "300",
+        "ipAddress": address,
+        "comments": "Managed by Homelab Jenkins Job 006",
+    }, token=token)
+    verified = call(f"/api/zones/records/get?{query}", token=token)
+    records = verified.get("response", {}).get("records", [])
+    if not any(
+        isinstance(item, dict)
+        and str(item.get("name", "")).rstrip(".").lower() == hostname
+        and str(item.get("type", "")).upper() == "A"
+        and isinstance(item.get("rData"), dict)
+        and item["rData"].get("ipAddress") == address
+        and not item.get("disabled", False)
+        for item in records
+    ):
+        raise RuntimeError(f"Technitium did not retain the Proxmox API A record {hostname} -> {address}")
+    print(f"Added Technitium Proxmox API DNS record: {hostname} -> {address} in {zone_name}.")
+
+
+def verify_proxmox_api_record(token, hostname, address, expected_zone_type):
+    hostname = hostname.rstrip(".").lower()
+    zones = [
+        item for item in all_zones(token)
+        if item.get("type") == expected_zone_type
+        and hostname.endswith("." + str(item.get("name", "")).rstrip(".").lower())
+    ]
+    if not zones:
+        raise RuntimeError(f"Technitium has no {expected_zone_type.lower()} zone containing {hostname}")
+    zone = max(zones, key=lambda item: len(str(item.get("name", ""))))
+    zone_name = str(zone["name"]).rstrip(".").lower()
+    query = urllib.parse.urlencode({"domain": hostname, "zone": zone_name})
+    result = call(f"/api/zones/records/get?{query}", token=token)
+    records = result.get("response", {}).get("records", [])
+    if not isinstance(records, list):
+        raise RuntimeError("Technitium returned an invalid record list for the Proxmox API hostname")
+    addresses = {
+        str(item.get("rData", {}).get("ipAddress", ""))
+        for item in records
+        if isinstance(item, dict)
+        and str(item.get("name", "")).rstrip(".").lower() == hostname
+        and str(item.get("type", "")).upper() == "A"
+        and isinstance(item.get("rData"), dict)
+        and not item.get("disabled", False)
+    }
+    if addresses != {address}:
+        raise RuntimeError(
+            f"Technitium {expected_zone_type.lower()} zone {zone_name} does not contain exactly "
+            f"{hostname} -> {address}"
+        )
+    print(f"Verified Technitium {expected_zone_type.lower()} DNS: {hostname} -> {address} in {zone_name}.")
+
+
 def export_zone(token, zone):
     query = urllib.parse.urlencode({"zone": zone})
     request = urllib.request.Request(
@@ -254,6 +363,21 @@ def main():
         else:
             raise RuntimeError("One or more secondary zones did not complete a successful transfer")
         print(f"Configured or resynced {len(config.get('zones', []))} secondary zone(s).")
+        return
+    if mode == "ensure-proxmox-api-record":
+        hostname = config.get("hostname")
+        address = config.get("address")
+        if not isinstance(hostname, str) or not isinstance(address, str):
+            raise RuntimeError("Proxmox API DNS record configuration is invalid")
+        ensure_proxmox_api_record(token, hostname, address)
+        return
+    if mode == "verify-proxmox-api-record":
+        hostname = config.get("hostname")
+        address = config.get("address")
+        expected_zone_type = config.get("zone_type")
+        if not isinstance(hostname, str) or not isinstance(address, str) or expected_zone_type not in ("Primary", "Secondary"):
+            raise RuntimeError("Proxmox API DNS record verification configuration is invalid")
+        verify_proxmox_api_record(token, hostname, address, expected_zone_type)
         return
     raise RuntimeError("Unknown Technitium configuration action")
 

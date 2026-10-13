@@ -389,6 +389,13 @@ def configure_zone_replication(client, stage, values, preserved_zone_files=None)
             "zone_files": preserved_zone_files,
         }, "import-zones")
 
+    execute_in_ct(client, 150, f"{stage}/manage-technitium.py", {
+        "admin_password": values["DNS01_ADMIN_PASSWORD"],
+        "action": "ensure-proxmox-api-record",
+        "hostname": "pve01.fouchger.uk",
+        "address": "192.168.20.10",
+    }, "ensure-proxmox-api-record")
+
     primary_zones_raw = execute_in_ct(
         client, 150, f"{stage}/manage-technitium.py",
         {"admin_password": values["DNS01_ADMIN_PASSWORD"], "action": "list-zones"}, "list-zones",
@@ -412,6 +419,13 @@ def configure_zone_replication(client, stage, values, preserved_zone_files=None)
         "zones": primary_zones,
     }
     execute_in_ct(client, 151, f"{stage}/manage-technitium.py", secondary_config, "configure-secondaries")
+    execute_in_ct(client, 151, f"{stage}/manage-technitium.py", {
+        "admin_password": values["DNS02_ADMIN_PASSWORD"],
+        "action": "verify-proxmox-api-record",
+        "hostname": "pve01.fouchger.uk",
+        "address": "192.168.20.10",
+        "zone_type": "Secondary",
+    }, "verify-proxmox-api-record")
     print(f"Technitium authentication verified; {len(primary_zones)} primary zone(s) synced to dns02.")
     if not primary_zones:
         print("No hosted primary zones exist yet. Future runs create secondary zones for each primary zone found on dns01.")
@@ -561,6 +575,7 @@ def review_plan(client, values, recreate_roles):
     print(f"- Technitium dns01 ({values['DNS01_IPV4']}): verify admin access and ensure configured primary zones")
     print(f"- Technitium dns02 ({values['DNS02_IPV4']}): verify admin access and configure secondary copies of dns01 primary zones")
     print(f"- Configured hosted zones to ensure on dns01: {', '.join(hosted_zones) if hosted_zones else '(none; existing primary zones will be synced)'}")
+    print("- Technitium dns01: ensure pve01.fouchger.uk A record -> 192.168.20.10; replicate its zone to dns02")
     print("- Router DNS and DHCP settings: reviewed separately below; the apply stage creates an encrypted backup before changes.")
 
 

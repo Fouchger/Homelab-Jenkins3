@@ -249,7 +249,10 @@ applying resolver settings. Set
 `DNS_HOSTED_ZONES` only for zones you want hosted locally. A local primary zone
 shadows public DNS for that name, so leave public Cloudflare domains out unless
 you intentionally plan and maintain split-horizon records. Create and edit
-primary records on dns01; dns02 receives them through DNS zone transfers. DHCP
+primary records on dns01; dns02 receives them through DNS zone transfers. Job
+006 also ensures `pve01.fouchger.uk -> 192.168.20.10` in the Technitium zone
+and MikroTik static DNS so the Jenkins agent can resolve the TLS endpoint.
+DHCP
 advertises both resolver addresses. Fallback behavior depends on each client;
 choose MikroTik `router` mode if you also want configured public resolvers
 available when both Technitium servers are down.

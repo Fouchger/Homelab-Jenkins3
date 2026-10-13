@@ -152,7 +152,8 @@ def ensure_api_certificate(host, api_hostname, cloudflare_token, private_key, kn
         api_result = ", ".join(sorted(api_ips)) if api_ips else "no IPv4 address"
         raise RuntimeError(
             f"PROXMOX_API_HOSTNAME {api_hostname} resolves to [{api_result}], but the Proxmox SSH host "
-            f"resolves to [{host_result}]. Run Job 006 to add the managed MikroTik DNS record, then retry Job 002."
+            f"resolves to [{host_result}]. Run the updated Job 006 to ensure this record in Technitium dns01/dns02 "
+            "and MikroTik DNS, then retry Job 002. If the failure persists, check which DNS servers the Jenkins agent uses."
         )
     if not cloudflare_token or "\n" in cloudflare_token or "\r" in cloudflare_token:
         raise RuntimeError("/cloudflare/CLOUDFLARE_API_TOKEN is missing or is not a single-line token")
