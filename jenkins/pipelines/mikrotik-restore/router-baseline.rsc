@@ -74,7 +74,7 @@ add name=pool-vlan50 ranges=192.168.50.100-192.168.50.199
 add name=pool-vlan60 ranges=192.168.60.100-192.168.60.199
 add name=pool-vlan70 ranges=192.168.70.100-192.168.70.199
 add name=pool-vlan90 ranges=192.168.90.100-192.168.90.199
-add name=pool-vlan80 ranges=192.168.80.100-192.168.80.199
+add name=pool-vlan80 ranges=192.168.80.10-192.168.80.199
 /ip dhcp-server
 add address-pool=pool-vlan20 authoritative=after-2sec-delay interface=VLAN20-MGMT lease-time=8h name=dhcp-vlan20
 add address-pool=pool-vlan30 authoritative=after-2sec-delay interface=VLAN30-SERVERS lease-time=8h name=dhcp-vlan30

@@ -1,0 +1,71 @@
+# Copy to cluster.tfvars and review host-specific values before planning.
+# Keep cluster.tfvars and all state files out of Git.
+# Initial sizing is conservative for the pictured single 31 GiB Proxmox host;
+# review against live guest allocations and local-lvm free space before use.
+
+proxmox_bridge           = "vmbr0"
+kubernetes_api_vip       = "192.168.80.200" # Confirmed unused; outside DHCP pool.
+talos_iso_datastore_id   = "local"
+talos_iso_proxmox_node   = "pve01"
+talos_iso_file_name      = "talos-v1.13.10-metal-amd64.iso"
+talos_iso_url            = "https://factory.talos.dev/image/376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba/v1.13.10/metal-amd64.iso"
+# SHA-256 of the pinned official Image Factory image; public checksum route returned 402.
+talos_iso_checksum      = "699bfd71094ce138ed8e2013b05b07a1c82fe45bd7cce601e1f5de6ca04168bf"
+
+nodes = {
+  "talos-cp-01" = {
+    role         = "controlplane"
+    vm_id        = 8101
+    proxmox_node = "pve01"
+    datastore_id = "local-lvm"
+    cores        = 2
+    memory_mb    = 3072
+    disk_gb      = 32
+    mac_address  = "02:80:00:00:01:01"
+    ip_address   = "192.168.80.101"
+  }
+  "talos-cp-02" = {
+    role         = "controlplane"
+    vm_id        = 8102
+    proxmox_node = "pve01"
+    datastore_id = "local-lvm"
+    cores        = 2
+    memory_mb    = 3072
+    disk_gb      = 32
+    mac_address  = "02:80:00:00:01:02"
+    ip_address   = "192.168.80.102"
+  }
+  "talos-cp-03" = {
+    role         = "controlplane"
+    vm_id        = 8103
+    proxmox_node = "pve01"
+    datastore_id = "local-lvm"
+    cores        = 2
+    memory_mb    = 3072
+    disk_gb      = 32
+    mac_address  = "02:80:00:00:01:03"
+    ip_address   = "192.168.80.103"
+  }
+  "talos-worker-01" = {
+    role         = "worker"
+    vm_id        = 8111
+    proxmox_node = "pve01"
+    datastore_id = "local-lvm"
+    cores        = 2
+    memory_mb    = 3072
+    disk_gb      = 64
+    mac_address  = "02:80:00:00:02:01"
+    ip_address   = "192.168.80.104"
+  }
+  "talos-worker-02" = {
+    role         = "worker"
+    vm_id        = 8112
+    proxmox_node = "pve01"
+    datastore_id = "local-lvm"
+    cores        = 2
+    memory_mb    = 3072
+    disk_gb      = 64
+    mac_address  = "02:80:00:00:02:02"
+    ip_address   = "192.168.80.105"
+  }
+}

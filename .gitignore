@@ -20,6 +20,14 @@
 !/proxmox_helper_script/**
 !/jenkins/
 !/tests/
+!/tofu/
+!/tofu/**
+!/ansible/
+!/ansible/**
+!/kubernetes/
+!/kubernetes/**
+!/scripts/
+!/scripts/**
 /tests/*
 !/tests/test_proxmox_access.py
 
@@ -59,3 +67,21 @@ jobs/**/*workspace
 __pycache__/
 *.py[cod]
 .review-tmp/
+
+# OpenTofu local data and sensitive inputs.
+**/.terraform/**
+**/*.tfstate
+**/*.tfstate.*
+**/tofu.tfstate
+**/tofu.tfstate.*
+**/*.tfplan
+**/*.tfvars
+!**/*.tfvars.example
+
+# Talos bootstrap material and cluster credentials.
+**/secrets.yaml
+**/talosconfig
+**/talosconfig.*
+**/kubeconfig
+**/kubeconfig.*
+**/machineconfig/

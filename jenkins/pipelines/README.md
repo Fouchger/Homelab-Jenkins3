@@ -7,6 +7,8 @@ Proxmox host-side LXC creation/profile scripts remain in `../../proxmox_helper_s
 | File | Purpose |
 | --- | --- |
 | `toolchain-check.Jenkinsfile` | Periodic read-only check of the Jenkins automation agent toolchain. |
+| `kubernetes-infra/Jenkinsfile` | Job `008 - Kubernetes Infrastructure`: validates and plans Talos VM changes; applying requires the `APPLY` parameter and a separate approval after the plan is displayed. |
+| `kubernetes-infra/run-tofu.py` | Retrieves the Proxmox API token from Infisical and runs OpenTofu against the private Kubernetes variable file on the Jenkins agent. |
 | `server-update/Jenkinsfile` | Job `001 - Update Servers`: updates the controller and agent LXCs daily at 2:00 a.m. Pacific/Auckland. Owner and repository are job parameters; the optional GitHub token is only needed for a private repository. |
 | `server-update/update-servers.py` | Retrieves the Proxmox SSH key and trusted host key from Infisical, then runs the host bootstrap over SSH. |
 | `proxmox-access/Jenkinsfile` | Job `002 - Proxmox Access Setup`: manually rotates the Proxmox API token and writes it to Infisical. |

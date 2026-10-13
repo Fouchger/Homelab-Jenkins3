@@ -1,0 +1,81 @@
+pipeline {
+    agent { label 'homelab-automation' }
+    environment {
+        // Keep credentials and variable values on the private Jenkins agent.
+        HOMELAB_KUBERNETES_TFVARS = '/var/lib/jenkins-agent/homelab/kubernetes/cluster.tfvars'
+    }
+    options {
+        disableConcurrentBuilds()
+        timestamps()
+        timeout(time: 60, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+    parameters {
+        booleanParam(name: 'APPLY', defaultValue: false, description: 'After reviewing the OpenTofu plan, approve and create/update the Talos VMs.')
+    }
+    stages {
+        stage('Validate OpenTofu configuration') {
+            steps {
+                sh(label: 'Format and validate Kubernetes VM configuration', script: '''#!/bin/sh
+set -eu
+tofu -chdir=tofu/environments/kubernetes fmt -check
+tofu -chdir=tofu/environments/kubernetes init -backend=false -input=false
+tofu -chdir=tofu/environments/kubernetes validate
+''')
+            }
+        }
+        stage('Plan Proxmox VM changes') {
+            steps {
+                withCredentials([
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                    string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
+                    string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
+                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT'),
+                    string(credentialsId: 'homelab-proxmox-host', variable: 'PROXMOX_HOST')
+                ]) {
+                    withEnv([
+                        'TOFU_ACTION=plan',
+                        "TOFU_PLAN_FILE=${env.WORKSPACE}/.review-tmp/kubernetes-${env.BUILD_NUMBER}.tfplan"
+                    ]) {
+                        sh(label: 'Create reviewed OpenTofu plan', script: '''#!/bin/sh
+set +x
+python3 jenkins/pipelines/kubernetes-infra/run-tofu.py
+''')
+                    }
+                }
+            }
+        }
+        stage('Approve infrastructure changes') {
+            when { expression { params.APPLY } }
+            steps {
+                sh(label: 'Display the exact planned changes', script: '''#!/bin/sh
+set -eu
+tofu -chdir=tofu/environments/kubernetes show -no-color "${WORKSPACE}/.review-tmp/kubernetes-${BUILD_NUMBER}.tfplan"
+''')
+                input message: 'Review the OpenTofu plan above. Approval creates or updates Talos VMs on Proxmox. VM destruction and replacement are blocked by protection guards.', ok: 'Apply reviewed plan'
+            }
+        }
+        stage('Apply approved plan') {
+            when { expression { params.APPLY } }
+            steps {
+                withCredentials([
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                    string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
+                    string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
+                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT'),
+                    string(credentialsId: 'homelab-proxmox-host', variable: 'PROXMOX_HOST')
+                ]) {
+                    withEnv([
+                        'TOFU_ACTION=apply',
+                        "TOFU_PLAN_FILE=${env.WORKSPACE}/.review-tmp/kubernetes-${env.BUILD_NUMBER}.tfplan"
+                    ]) {
+                        sh(label: 'Apply approved OpenTofu plan', script: '''#!/bin/sh
+set +x
+python3 jenkins/pipelines/kubernetes-infra/run-tofu.py
+''')
+                    }
+                }
+            }
+        }
+    }
+}

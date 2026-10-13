@@ -788,6 +788,42 @@ JENKINS_INFISICAL_AUDIT_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/102-homelab-infisical-audit-pipeline.groovy"
 chmod 0640 "$jenkins_home/init.groovy.d/102-homelab-infisical-audit-pipeline.groovy"
 
+# Seed the manually approved Kubernetes VM lifecycle pipeline.
+cat >"$jenkins_home/init.groovy.d/104-homelab-kubernetes-infra-pipeline.groovy" <<'JENKINS_KUBERNETES_INFRA_PIPELINE_HOOK'
+import hudson.plugins.git.BranchSpec
+import hudson.plugins.git.GitSCM
+import jenkins.model.Jenkins
+import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition
+import org.jenkinsci.plugins.workflow.job.WorkflowJob
+
+def jenkins = Jenkins.get()
+def projectSettings = new Properties()
+new File('/etc/homelab/project.properties').withInputStream { projectSettings.load(it) }
+def repositoryUrl = "https://github.com/${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
+def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
+def branch = projectSettings.getProperty('githubBranch', 'main')
+def jobName = '008 - Kubernetes Infrastructure'
+def job = jenkins.getItem(jobName)
+def scm = new GitSCM(
+    GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
+    Collections.singletonList(new BranchSpec("*/${branch}")),
+    null, null, Collections.emptyList()
+)
+def definition = new CpsScmFlowDefinition(scm, 'jenkins/pipelines/kubernetes-infra/Jenkinsfile')
+definition.setLightweight(true)
+if (job == null) {
+    job = jenkins.createProject(WorkflowJob, jobName)
+    println("Created manually approved Kubernetes infrastructure Pipeline for branch '${branch}'.")
+} else if (!(job instanceof WorkflowJob)) {
+    throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
+}
+job.setDefinition(definition)
+job.setDescription('Plans Talos VM changes on Proxmox. Apply is opt-in and requires review and approval of the exact OpenTofu plan. The Kubernetes private variable file and persistent OpenTofu state must be installed and protected on the automation agent before use.')
+job.save()
+JENKINS_KUBERNETES_INFRA_PIPELINE_HOOK
+chown jenkins:jenkins "$jenkins_home/init.groovy.d/104-homelab-kubernetes-infra-pipeline.groovy"
+chmod 0640 "$jenkins_home/init.groovy.d/104-homelab-kubernetes-infra-pipeline.groovy"
+
 # Declarative pipeline parameters normally refresh only when that job runs.
 # Keep the router SSH-key form current as part of the server update so users
 # do not have to submit the obsolete manual fingerprint parameter once first.
