@@ -15,6 +15,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+PROXMOX_API_DNS_NAME = "pve01.fouchger.uk"
+PROXMOX_API_DNS_ADDRESS = "192.168.20.10"
+PROXMOX_API_DNS_COMMENT = "homelab-managed-proxmox-api"
+
 
 def required(name):
     value = os.environ.get(name, "").strip()
@@ -176,6 +180,7 @@ def review(values, router):
     resources = router.get("system/resource")
     identity = router.get("system/identity")
     dns = router.get("ip/dns")
+    static_dns = router.get("ip/dns/static")
     networks = router.get("ip/dhcp-server/network")
     if isinstance(resources, list):
         resources = resources[0] if resources else {}
@@ -187,6 +192,8 @@ def review(values, router):
         raise RuntimeError("RouterOS returned incomplete system or DNS details")
     if not isinstance(networks, list):
         raise RuntimeError("RouterOS returned an invalid DHCP network list")
+    if not isinstance(static_dns, list):
+        raise RuntimeError("RouterOS returned an invalid static DNS record list")
 
     print("Router connection: verified (HTTPS certificate pin and REST login)")
     print(f"Router: {identity.get('name', 'name unavailable')} | RouterOS {resources.get('version', 'version unavailable')}")
@@ -232,6 +239,37 @@ def review(values, router):
         print(f"Router DNS service: {'matches' if dns.get('allow-remote-requests') == wanted_remote else 'change planned'} | mode {mode}")
     else:
         print("Router DNS service: blocked; set MIKROTIK_DHCP_DNS_MODE to router or direct")
+
+    pve_records = [
+        row for row in static_dns
+        if isinstance(row, dict)
+        and str(row.get("name", "")).rstrip(".").lower() == PROXMOX_API_DNS_NAME
+        and str(row.get("disabled", "false")).lower() != "true"
+    ]
+    pve_conflicts = [
+        row for row in pve_records
+        if str(row.get("address", "")) != PROXMOX_API_DNS_ADDRESS
+        and str(row.get("comment", "")) != PROXMOX_API_DNS_COMMENT
+    ]
+    if pve_conflicts:
+        raise RuntimeError(
+            f"RouterOS has a conflicting unmanaged DNS entry for {PROXMOX_API_DNS_NAME}; "
+            "resolve it before applying the Proxmox API DNS record"
+        )
+    pve_record_matches = any(
+        str(row.get("address", "")) == PROXMOX_API_DNS_ADDRESS for row in pve_records
+    )
+    managed_pve_conflicts = any(
+        str(row.get("comment", "")) == PROXMOX_API_DNS_COMMENT
+        and str(row.get("address", "")) != PROXMOX_API_DNS_ADDRESS
+        for row in pve_records
+    )
+    if managed_pve_conflicts:
+        pve_record_matches = False
+    print(
+        f"Proxmox API DNS: {'matches' if pve_record_matches else 'change planned'} | "
+        f"{PROXMOX_API_DNS_NAME} -> {PROXMOX_API_DNS_ADDRESS}"
+    )
 
     networks_with_dns = []
     for item in networks:

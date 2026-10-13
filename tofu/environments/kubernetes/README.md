@@ -30,11 +30,14 @@ applied by this stack.
    Proxmox node, bridge, datastore, and sizing against the live host before use.
 2. Ensure the selected ISO-capable datastore is available to every target VM
    node, or use a separate accessible ISO datastore per PVE node.
-3. Use `pve01.fouchger.uk` as the Proxmox API hostname. Job `002 - Proxmox
-   Access Setup` ensures that hostname is covered by a trusted Let's Encrypt
-   certificate using the Cloudflare DNS token in `/cloudflare`; Proxmox renews
-   the ACME certificate automatically. The Jenkins agent verifies the
-   certificate chain and hostname before each Kubernetes plan/apply.
+3. Use `pve01.fouchger.uk` as the Proxmox API hostname. Job `006 - DNS
+   Deployment and Router Sync` maintains its MikroTik DNS record at
+   `192.168.20.10`, so the Jenkins agent can resolve the Proxmox endpoint. Job
+   `002 - Proxmox Access Setup` ensures that hostname is covered by a trusted
+   Let's Encrypt certificate using the Cloudflare DNS token in `/cloudflare`;
+   Proxmox renews the ACME certificate automatically. The Jenkins agent
+   verifies the certificate chain and hostname before each Kubernetes
+   plan/apply. Run Job 006 first if this DNS record is missing.
 4. Provide `PROXMOX_VE_ENDPOINT` (using `pve01.fouchger.uk`) and
    `PROXMOX_VE_API_TOKEN` through the process environment. The API token needs
    the minimum permissions required to audit the target node and datastore,

@@ -148,7 +148,12 @@ def ensure_api_certificate(host, api_hostname, cloudflare_token, private_key, kn
     host_ips = resolve_ipv4(host)
     api_ips = resolve_ipv4(api_hostname)
     if not host_ips or not api_ips or not (host_ips & api_ips):
-        raise RuntimeError("PROXMOX_API_HOSTNAME must resolve to the Proxmox SSH host address before ACME can be configured")
+        host_result = ", ".join(sorted(host_ips)) if host_ips else "no IPv4 address"
+        api_result = ", ".join(sorted(api_ips)) if api_ips else "no IPv4 address"
+        raise RuntimeError(
+            f"PROXMOX_API_HOSTNAME {api_hostname} resolves to [{api_result}], but the Proxmox SSH host "
+            f"resolves to [{host_result}]. Run Job 006 to add the managed MikroTik DNS record, then retry Job 002."
+        )
     if not cloudflare_token or "\n" in cloudflare_token or "\r" in cloudflare_token:
         raise RuntimeError("/cloudflare/CLOUDFLARE_API_TOKEN is missing or is not a single-line token")
 

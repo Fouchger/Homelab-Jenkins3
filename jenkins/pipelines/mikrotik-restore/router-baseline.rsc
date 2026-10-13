@@ -154,6 +154,8 @@ add address=192.168.80.0/24 dns-server=192.168.80.1 domain=fouchger.uk gateway=1
 add address=192.168.90.0/24 comment=DMZ dns-server=192.168.90.1 domain=fouchger.uk gateway=192.168.90.1
 /ip dns
 set allow-remote-requests=yes cache-size=4096KiB servers=${DNS_UPSTREAMS}
+/ip dns static
+add address=192.168.20.10 comment=homelab-managed-proxmox-api name=pve01.fouchger.uk
 /ip firewall address-list
 add address=10.0.0.0/8 list=RFC1918
 add address=172.16.0.0/12 list=RFC1918

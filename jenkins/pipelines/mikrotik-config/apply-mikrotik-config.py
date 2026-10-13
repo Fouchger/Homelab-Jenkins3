@@ -25,6 +25,9 @@ from pathlib import Path
 import paramiko
 from paramiko.hostkeys import HostKeyEntry
 
+PROXMOX_API_DNS_NAME = "pve01.fouchger.uk"
+PROXMOX_API_DNS_ADDRESS = "192.168.20.10"
+PROXMOX_API_DNS_COMMENT = "homelab-managed-proxmox-api"
 
 
 def required(name):
@@ -541,6 +544,49 @@ def rest_set(router, path, payload):
     return result
 
 
+def validate_proxmox_dns_records(records):
+    if not isinstance(records, list):
+        raise RuntimeError("RouterOS REST returned an invalid static DNS record list")
+    matches = [
+        row for row in records
+        if isinstance(row, dict) and str(row.get("name", "")).rstrip(".").lower() == PROXMOX_API_DNS_NAME
+        and str(row.get("disabled", "false")).lower() != "true"
+    ]
+    conflicting = [
+        row for row in matches
+        if str(row.get("address", "")) != PROXMOX_API_DNS_ADDRESS
+        and str(row.get("comment", "")) != PROXMOX_API_DNS_COMMENT
+    ]
+    if conflicting:
+        raise RuntimeError(
+            f"RouterOS has an unmanaged DNS record for {PROXMOX_API_DNS_NAME} with a different address; "
+            "review that record before applying the managed Proxmox API DNS entry"
+        )
+    return matches
+
+
+def reconcile_proxmox_dns_record(router, records):
+    matches = validate_proxmox_dns_records(records)
+    exact = next((row for row in matches if str(row.get("address", "")) == PROXMOX_API_DNS_ADDRESS), None)
+    managed = next((row for row in matches if str(row.get("comment", "")) == PROXMOX_API_DNS_COMMENT), None)
+    managed_needs_update = bool(managed) and str(managed.get("address", "")) != PROXMOX_API_DNS_ADDRESS
+    if exact is None or managed_needs_update:
+        payload = {
+            "name": PROXMOX_API_DNS_NAME,
+            "address": PROXMOX_API_DNS_ADDRESS,
+            "comment": PROXMOX_API_DNS_COMMENT,
+        }
+        if managed:
+            rest_set(router, f"ip/dns/static/{rest_record_id(managed)}", payload)
+        else:
+            router.call("ip/dns/static", "PUT", payload)
+
+    verified = validate_proxmox_dns_records(router.call("ip/dns/static"))
+    if not any(str(row.get("address", "")) == PROXMOX_API_DNS_ADDRESS for row in verified):
+        raise RuntimeError("MikroTik did not retain the Proxmox API DNS record; encrypted backup is available in Jenkins artifacts")
+    return exact is None or managed_needs_update
+
+
 def rest_apply(router, networks, mode, dns_list, wifi_updates):
     # Validate every target before the first write to avoid a partial rollout.
     dns_state = router.call("ip/dns")
@@ -548,6 +594,7 @@ def rest_apply(router, networks, mode, dns_list, wifi_updates):
         dns_state = dns_state[0] if dns_state else {}
     if not isinstance(dns_state, dict):
         raise RuntimeError("RouterOS REST returned invalid DNS settings")
+    proxmox_dns_records = validate_proxmox_dns_records(router.call("ip/dns/static"))
     wifi_records = {}
     if wifi_updates:
         rows = router.call("interface/wifi/security")
@@ -570,6 +617,8 @@ def rest_apply(router, networks, mode, dns_list, wifi_updates):
             "allow-remote-requests": expected_remote,
             "servers": dns_list,
         })
+
+    proxmox_dns_changed = reconcile_proxmox_dns_record(router, proxmox_dns_records)
 
     dhcp_updates = []
     expected_dhcp_dns = {}
@@ -640,6 +689,7 @@ def rest_apply(router, networks, mode, dns_list, wifi_updates):
         raise RuntimeError("RouterOS did not retain all managed DNS firewall rules; encrypted backup is available in Jenkins artifacts")
     return {
         "dns_changed": dns_changed,
+        "proxmox_dns_changed": proxmox_dns_changed,
         "dhcp_updates": dhcp_updates,
         "firewall_added": firewall_added,
         "firewall_removed": firewall_removed,
@@ -725,6 +775,10 @@ def apply(values):
         print(f"Configured MikroTik DNS upstreams in order: {', '.join(upstreams)}.")
     else:
         print(f"MikroTik DNS upstreams already match: {', '.join(upstreams)}.")
+    if changes["proxmox_dns_changed"]:
+        print(f"Added or corrected MikroTik DNS record {PROXMOX_API_DNS_NAME} -> {PROXMOX_API_DNS_ADDRESS}.")
+    else:
+        print(f"MikroTik DNS record already resolves {PROXMOX_API_DNS_NAME} -> {PROXMOX_API_DNS_ADDRESS}.")
     if changes["dhcp_updates"]:
         print(f"Updated DHCP DNS for {len(changes['dhcp_updates'])} network(s) using mode '{mode}': {', '.join(changes['dhcp_updates'])}.")
     else:

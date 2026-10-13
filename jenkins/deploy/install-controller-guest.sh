@@ -670,7 +670,7 @@ if (job == null) {
     throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
 }
 job.setDefinition(definition)
-job.setDescription('004 - Requires manual approval, enables SSH login only for a group used exclusively by the configured backup user, authorizes the saved Jenkins SSH key if needed (RouterOS key authorization disables password-based SSH login for that user; use a dedicated Jenkins account), creates and downloads a RouterOS text export and password-protected binary backup over pinned SSH/SFTP, encrypts both on the Jenkins agent, removes temporary router files, then applies and verifies DNS/DHCP and configured Wi-Fi settings through HTTPS REST. The encrypted archive is retained as a build artifact.')
+job.setDescription('004 - Requires manual approval, enables SSH login only for a group used exclusively by the configured backup user, authorizes the saved Jenkins SSH key if needed (RouterOS key authorization disables password-based SSH login for that user; use a dedicated Jenkins account), creates and downloads a RouterOS text export and password-protected binary backup over pinned SSH/SFTP, encrypts both on the Jenkins agent, removes temporary router files, then applies and verifies DNS/DHCP, the managed pve01.fouchger.uk -> 192.168.20.10 record, and configured Wi-Fi settings through HTTPS REST. The encrypted archive is retained as a build artifact.')
 job.save()
 JENKINS_MIKROTIK_CONFIG_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/99-homelab-mikrotik-config-pipeline.groovy"
@@ -745,7 +745,7 @@ if (job == null) {
     throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
 }
 job.setDefinition(definition)
-job.setDescription('006 - Creates missing dns01/dns02 containers or verifies and reuses matching guests, sets Technitium admin credentials, establishes restricted primary-to-secondary zone transfers, then backs up and applies DNS-only MikroTik resolver/DHCP settings. Requires manual approval; does not delete containers or invent zones/records.')
+job.setDescription('006 - Creates missing dns01/dns02 containers or verifies and reuses matching guests, sets Technitium admin credentials, establishes restricted primary-to-secondary zone transfers, then backs up and applies DNS-only MikroTik resolver/DHCP settings, including pve01.fouchger.uk -> 192.168.20.10 for the Jenkins Proxmox API connection. Requires manual approval; does not delete containers or invent Technitium zones/records.')
 job.save()
 JENKINS_DNS_DEPLOY_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/101-homelab-dns-deploy-pipeline.groovy"
