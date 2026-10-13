@@ -4,6 +4,7 @@
 import json
 import os
 import re
+import ssl
 import subprocess
 import sys
 import urllib.error
@@ -74,6 +75,27 @@ def read_secret(base_url, token, name):
     return value.strip()
 
 
+def verify_proxmox_tls(host):
+    url = f"https://{host}:8006/api2/json/version"
+    try:
+        with urllib.request.urlopen(url, timeout=10):
+            pass
+    except urllib.error.HTTPError as exc:
+        # Proxmox normally requires authentication for this endpoint. Receiving
+        # an HTTP response proves the TLS handshake and hostname check passed.
+        if exc.code not in {401, 403}:
+            raise RuntimeError(
+                f"Proxmox API TLS preflight reached the endpoint but returned HTTP {exc.code}"
+            ) from None
+    except (urllib.error.URLError, TimeoutError, ssl.SSLError, OSError) as exc:
+        reason = getattr(exc, "reason", exc)
+        raise RuntimeError(
+            "Proxmox API TLS preflight failed "
+            f"({type(reason).__name__}). Set PROXMOX_HOST to a DNS name present in the "
+            "certificate SAN and trust that certificate's issuing CA on the Jenkins agent."
+        ) from None
+
+
 def main():
     action = required("TOFU_ACTION")
     if action not in {"plan", "apply"}:
@@ -97,15 +119,17 @@ def main():
     os.chmod(state_dir, 0o700)
     state_file = state_dir / "terraform.tfstate"
 
-    read_token = login(required("INFISICAL_URL").rstrip("/"))
-    token_id = read_secret(required("INFISICAL_URL").rstrip("/"), read_token, "PVE_API_TOKEN_ID")
-    token_secret = read_secret(required("INFISICAL_URL").rstrip("/"), read_token, "PVE_API_TOKEN_SECRET")
-    if "!" not in token_id:
-        raise RuntimeError("Infisical PVE_API_TOKEN_ID is not a fully qualified Proxmox token ID")
-
     host = required("PROXMOX_HOST")
     if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
         raise RuntimeError("PROXMOX_HOST must be a hostname or IPv4 address without a scheme")
+    verify_proxmox_tls(host)
+
+    infisical_url = required("INFISICAL_URL").rstrip("/")
+    read_token = login(infisical_url)
+    token_id = read_secret(infisical_url, read_token, "PVE_API_TOKEN_ID")
+    token_secret = read_secret(infisical_url, read_token, "PVE_API_TOKEN_SECRET")
+    if "!" not in token_id:
+        raise RuntimeError("Infisical PVE_API_TOKEN_ID is not a fully qualified Proxmox token ID")
 
     env = os.environ.copy()
     env["PROXMOX_VE_ENDPOINT"] = f"https://{host}:8006/"

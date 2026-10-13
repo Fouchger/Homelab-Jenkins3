@@ -52,7 +52,9 @@ The pipeline stores local backend state at
 ephemeral Jenkins workspace; protect and back up this directory. Jenkins job
 `008 - Kubernetes Infrastructure` is seeded by the controller installer; the
 plan is read-only unless `APPLY` is selected, and apply then requires explicit
-approval of the exact displayed plan.
+approval of the exact displayed plan. Proxmox API TLS is preflighted before
+planning so a hostname or trust failure blocks the build before the approval
+step.
 
 The local backend is an initial single-operator backend. Jenkins overrides its
 default path with the durable agent path above. Local backend locking is
