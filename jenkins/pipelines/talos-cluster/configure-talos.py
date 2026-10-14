@@ -418,6 +418,7 @@ def configure_cilium(inventory, env, read_token):
     run(["talosctl", "config", "node", controlplanes[0]], env=env)
     run([
         "talosctl", "health",
+        "--nodes", controlplanes[0],
         "--control-plane-nodes", ",".join(controlplanes),
         "--worker-nodes", ",".join(workers),
         "--init-node", controlplanes[0],
