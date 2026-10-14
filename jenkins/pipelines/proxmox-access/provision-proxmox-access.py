@@ -173,8 +173,8 @@ printf 'CF_Token=%s\\n' {shell_quote(cloudflare_token)} > "$token_file"
 
 # Reuse the current cluster account. If none is usable, only register when the
 # Infisical contact and explicit build-time ToS acceptance are both present.
-acme_json=$(pvenode config get --property acme --output-format json 2>/dev/null || true)
-account=$(printf '%s' "$acme_json" | python3 -c 'import json,sys; d=json.load(sys.stdin) if sys.stdin.readable() else {{}}; print((d.get("account") if isinstance(d,dict) else "") or "default")' 2>/dev/null || printf default)
+acme_line=$(pvenode config get 2>/dev/null | sed -n 's/^acme: //p' || true)
+account=$(printf '%s' "$acme_line" | sed -n 's/.*account=\\([^, ]*\\).*/\\1/p')
 account=${{account:-default}}
 if ! pvenode acme account info "$account" >/dev/null 2>&1; then
   contact={shell_quote(contact_email)}
@@ -194,12 +194,17 @@ fi
 
 certificate=/etc/pve/local/pveproxy-ssl.pem
 python3 - "$hostname" "$certificate" "$plugin" <<'PY'
-import json, re, subprocess, sys
+import re, subprocess, sys
 hostname, certificate, plugin = sys.argv[1:]
 try:
-    config = json.loads(subprocess.check_output(
-        ["pvenode", "config", "get", "--output-format", "json"], stderr=subprocess.DEVNULL
-    ))
+    config_text = subprocess.check_output(
+        ["pvenode", "config", "get"], stderr=subprocess.DEVNULL, text=True
+    )
+    config = {{}}
+    for line in config_text.splitlines():
+        match = re.match(r"^([a-zA-Z][a-zA-Z0-9_-]*):\\s*(.*)$", line)
+        if match:
+            config[match.group(1)] = match.group(2)
     san_output = subprocess.check_output(
         ["openssl", "x509", "-in", certificate, "-noout", "-ext", "subjectAltName"],
         stderr=subprocess.DEVNULL, text=True
