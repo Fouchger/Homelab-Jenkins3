@@ -410,7 +410,8 @@ def main():
         secrets_file.write_text(secrets, encoding="utf-8")
         os.chmod(secrets_file, 0o600)
         run(["talosctl", "gen", "config", inventory["cluster_name"], f"https://{inventory['api_vip']}:6443",
-             "--with-secrets", str(secrets_file), "--output-types", "talosconfig", "--output", str(talosconfig)])
+             "--with-secrets", str(secrets_file), "--output-types", "talosconfig", "--output", str(talosconfig),
+             "--force"])
         os.chmod(talosconfig, 0o600)
         env = talos_environment(talosconfig)
         if action == "plan":
