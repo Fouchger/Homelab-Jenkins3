@@ -433,7 +433,25 @@ def review(values, router):
                 kept_rules.add(key)
             else:
                 remove_count += 1
+                if not expected:
+                    print(f"Managed firewall rule {key[0]}/{key[1]}: unexpected; plan removes it")
+                elif key in kept_rules:
+                    print(f"Managed firewall rule {key[0]}/{key[1]}: duplicate; plan removes it")
+                else:
+                    differences = [
+                        f"{field}={rule.get(field, '(unset)')!r} (wanted {value!r})"
+                        for field, value in expected.items()
+                        if str(rule.get(field, "")) != value
+                    ]
+                    if str(rule.get("disabled", "false")).lower() == "true":
+                        differences.append("disabled=true (wanted false)")
+                    print(
+                        f"Managed firewall rule {key[0]}/{key[1]}: mismatched; plan replaces it: "
+                        + ", ".join(differences)
+                    )
         add_count = len(set(desired_rules) - kept_rules)
+        for comment, protocol in sorted(set(desired_rules) - kept_rules):
+            print(f"Managed firewall rule {comment}/{protocol}: missing or mismatched; plan adds it")
         if add_count or remove_count:
             print(f"Managed DNS/Talos API firewall rules: {add_count} to add, {remove_count} to remove")
         else:
