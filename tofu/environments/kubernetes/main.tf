@@ -43,7 +43,7 @@ resource "proxmox_virtual_environment_vm" "talos_node" {
     datastore_id = each.value.datastore_id
     interface    = "scsi0"
     size         = each.value.disk_gb
-    iothread     = true
+    iothread     = false
   }
 
   cdrom {

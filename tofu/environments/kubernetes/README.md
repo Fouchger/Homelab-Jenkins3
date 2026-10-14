@@ -43,8 +43,9 @@ applied by this stack.
    the minimum permissions required to audit the target node and datastore,
    allocate an ISO template, modify VM settings, and create VMs. Do not disable
    certificate verification or put credentials in `.tfvars`.
-5. Use Jenkins Job 008 for plans and applies. Ordinary builds reject any VM
-   deletion/replacement. To recreate the existing VMs with the corrected
+5. Use Jenkins Job 008 for plans and applies. Ordinary builds reject VM
+   deletion/replacement and reject plans that update multiple existing VMs at
+   once. To recreate the existing VMs with the corrected
    VirtIO SCSI controller, select exactly one `RECREATE_NODE` per build, select
    `APPLY`, review the plan, and approve it. Jenkins targets only that VM,
    temporarily clears Proxmox protection for the selected VM, and restores

@@ -149,6 +149,17 @@ def inspect_plan(environment_dir, plan_file, recreate_node):
                 "Plan contains VM deletion/replacement without RECREATE_NODE; "
                 f"select and review one node at a time. Affected resources: {addresses}"
             )
+        existing_updates = [
+            change for change in changes
+            if change.get("change", {}).get("before") is not None
+            and change.get("change", {}).get("actions") not in (["no-op"], ["read"])
+        ]
+        if len(existing_updates) > 1:
+            addresses = ", ".join(change.get("address", "unknown") for change in existing_updates)
+            raise RuntimeError(
+                "Plan updates multiple existing Talos VMs without RECREATE_NODE; "
+                f"select one node per build. Affected resources: {addresses}"
+            )
         return None
 
     if not re.fullmatch(r"talos-(?:cp-0[1-3]|worker-0[1-2])", recreate_node):
