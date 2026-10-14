@@ -26,6 +26,8 @@ TALOS_DHCP_INTERFACE = "VLAN80-K8S"
 TALOS_DHCP_POOL = "pool-vlan80"
 TALOS_DHCP_NETWORK = "192.168.80.0/24"
 TALOS_DHCP_GATEWAY = "192.168.80.1"
+JENKINS_AGENT_IPV4 = "192.168.20.6"
+TALOS_API_FIREWALL_PREFIX = "homelab-managed-talos-api-"
 
 
 def required(name):
@@ -404,10 +406,24 @@ def review(values, router):
                         "dst-port": "53", "src-address": network,
                         "comment": comment,
                     }
+        desired_rules[(TALOS_API_FIREWALL_PREFIX + "maintenance", "tcp")] = {
+            "chain": "forward", "action": "accept", "protocol": "tcp",
+            "dst-port": "50000", "src-address": JENKINS_AGENT_IPV4,
+            "dst-address": TALOS_DHCP_NETWORK,
+            "comment": TALOS_API_FIREWALL_PREFIX + "maintenance",
+        }
+        desired_rules[(TALOS_API_FIREWALL_PREFIX + "kubernetes", "tcp")] = {
+            "chain": "forward", "action": "accept", "protocol": "tcp",
+            "dst-port": "6443", "src-address": JENKINS_AGENT_IPV4,
+            "dst-address": "192.168.80.200/32",
+            "comment": TALOS_API_FIREWALL_PREFIX + "kubernetes",
+        }
         kept_rules = set()
         remove_count = 0
         for rule in firewall:
-            if not isinstance(rule, dict) or not str(rule.get("comment", "")).startswith(prefix):
+            if not isinstance(rule, dict) or not (
+                    str(rule.get("comment", "")).startswith(prefix)
+                    or str(rule.get("comment", "")).startswith(TALOS_API_FIREWALL_PREFIX)):
                 continue
             key = (str(rule.get("comment", "")), str(rule.get("protocol", "")))
             expected = desired_rules.get(key)
@@ -419,9 +435,9 @@ def review(values, router):
                 remove_count += 1
         add_count = len(set(desired_rules) - kept_rules)
         if add_count or remove_count:
-            print(f"Managed router DNS firewall rules: {add_count} to add, {remove_count} to remove")
+            print(f"Managed DNS/Talos API firewall rules: {add_count} to add, {remove_count} to remove")
         else:
-            print("Managed router DNS firewall rules: matches")
+            print("Managed DNS/Talos API firewall rules: matches")
 
     profiles = {"SEC_USERS_PASSWORD": "sec-users", "SEC_MGMT_PASSWORD": "sec-mgmt",
                 "SEC_IOT_PASSWORD": "sec-iot", "SEC_GUEST_PASSWORD": "sec-guest"}

@@ -218,6 +218,8 @@ add action=drop chain=input comment="Drop WAN to router" in-interface-list=WAN
 add action=drop chain=input comment="Drop all remaining input" log=yes log-prefix="fw-in-deny: " src-address=!192.168.80.0/24
 add action=accept chain=forward comment="FORWARD allow established" connection-state=established,related,untracked
 add action=drop chain=forward comment="FORWARD drop invalid" connection-state=invalid
+add action=accept chain=forward comment=homelab-managed-talos-api-maintenance dst-address=192.168.80.0/24 dst-port=50000 protocol=tcp src-address=192.168.20.6
+add action=accept chain=forward comment=homelab-managed-talos-api-kubernetes dst-address=192.168.80.200/32 dst-port=6443 protocol=tcp src-address=192.168.20.6
 add action=accept chain=forward comment="Internal VLANs to internet" in-interface-list=VLANS-INTERNAL out-interface-list=WAN
 add action=accept chain=forward comment="MGMT to internal VLANs" dst-address-list=LANS src-address=192.168.20.0/24
 add action=accept chain=forward comment="DNS to Technitium01 UDP" dst-address=${DNS01_IPV4} dst-port=53 protocol=udp src-address-list=LANS

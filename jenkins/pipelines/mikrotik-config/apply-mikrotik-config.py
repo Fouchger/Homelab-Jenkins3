@@ -36,6 +36,8 @@ TALOS_DHCP_POOL = "pool-vlan80"
 TALOS_DHCP_NETWORK = "192.168.80.0/24"
 TALOS_DHCP_GATEWAY = "192.168.80.1"
 TALOS_VLAN_COMMENT = "Kubernetes trunk"
+JENKINS_AGENT_IPV4 = "192.168.20.6"
+TALOS_API_FIREWALL_PREFIX = "homelab-managed-talos-api-"
 
 
 def required(name):
@@ -846,11 +848,25 @@ def rest_apply(router, networks, mode, dns_list, wifi_updates, talos_inventory):
                     "dst-port": "53", "src-address": network,
                     "comment": comment,
                 }
+    desired_rules[(TALOS_API_FIREWALL_PREFIX + "maintenance", "tcp")] = {
+        "chain": "forward", "action": "accept", "protocol": "tcp",
+        "dst-port": "50000", "src-address": JENKINS_AGENT_IPV4,
+        "dst-address": TALOS_DHCP_NETWORK,
+        "comment": TALOS_API_FIREWALL_PREFIX + "maintenance",
+    }
+    desired_rules[(TALOS_API_FIREWALL_PREFIX + "kubernetes", "tcp")] = {
+        "chain": "forward", "action": "accept", "protocol": "tcp",
+        "dst-port": "6443", "src-address": JENKINS_AGENT_IPV4,
+        "dst-address": "192.168.80.200/32",
+        "comment": TALOS_API_FIREWALL_PREFIX + "kubernetes",
+    }
 
     kept_rules = set()
     firewall_removed = 0
     for rule in existing_rules:
-        if not isinstance(rule, dict) or not str(rule.get("comment", "")).startswith(managed_prefix):
+        if not isinstance(rule, dict) or not (
+                str(rule.get("comment", "")).startswith(managed_prefix)
+                or str(rule.get("comment", "")).startswith(TALOS_API_FIREWALL_PREFIX)):
             continue
         key = (str(rule.get("comment", "")), str(rule.get("protocol", "")))
         expected = desired_rules.get(key)
@@ -884,14 +900,17 @@ def rest_apply(router, networks, mode, dns_list, wifi_updates, talos_inventory):
         raise RuntimeError("RouterOS DNS settings verification failed; encrypted backup is available in Jenkins artifacts")
     managed_rules = [
         rule for rule in router.call("ip/firewall/filter")
-        if isinstance(rule, dict) and str(rule.get("comment", "")).startswith("homelab-managed-router-dns-")
+        if isinstance(rule, dict) and (
+            str(rule.get("comment", "")).startswith("homelab-managed-router-dns-")
+            or str(rule.get("comment", "")).startswith(TALOS_API_FIREWALL_PREFIX)
+        )
     ]
     actual_rules = {
         (str(rule.get("comment", "")), str(rule.get("protocol", "")))
         for rule in managed_rules if isinstance(rule, dict)
     }
     if actual_rules != set(desired_rules) or len(managed_rules) != len(desired_rules):
-        raise RuntimeError("RouterOS did not retain all managed DNS firewall rules; encrypted backup is available in Jenkins artifacts")
+        raise RuntimeError("RouterOS did not retain all managed DNS/Talos API firewall rules; encrypted backup is available in Jenkins artifacts")
     return {
         "dns_changed": dns_changed,
         "proxmox_dns_changed": proxmox_dns_changed,
@@ -1000,9 +1019,9 @@ def apply(values):
     else:
         print("Wi-Fi settings were unchanged because no SEC_*_PASSWORD values were supplied.")
     if changes["firewall_added"] or changes["firewall_removed"]:
-        print(f"Managed DNS firewall rules changed: added {changes['firewall_added']}, removed {changes['firewall_removed']}.")
+        print(f"Managed DNS and Talos API firewall rules changed: added {changes['firewall_added']}, removed {changes['firewall_removed']}.")
     else:
-        print("Managed DNS firewall rules already match the selected mode.")
+        print("Managed DNS and Talos API firewall rules already match the selected mode.")
 
 
 def main():
