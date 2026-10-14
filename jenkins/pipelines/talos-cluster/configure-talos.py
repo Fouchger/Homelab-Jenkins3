@@ -145,7 +145,7 @@ def load_inventory():
     return data
 
 
-def run(args, *, check=True, capture=False, env=None):
+def run(args, *, check=True, capture=False, env=None, timeout=None):
     result = subprocess.run(
         args,
         check=False,
@@ -153,6 +153,7 @@ def run(args, *, check=True, capture=False, env=None):
         stdout=subprocess.PIPE if capture else None,
         stderr=subprocess.STDOUT if capture else None,
         env=env,
+        timeout=timeout,
     )
     if check and result.returncode:
         details = result.stdout.strip() if capture and result.stdout else ""
@@ -336,25 +337,79 @@ def configure_cilium(inventory, env, read_token):
         "--wait", "--timeout", "15m",
     ], env=kube_env)
     deadline = time.monotonic() + 10 * 60
-    expected = {node["name"] for node in inventory["nodes"]}
+    expected_ips = {node["ip"] for node in inventory["nodes"]}
+    ready_ips = set()
+    last_node_summary = "Kubernetes has not returned node status yet."
     while time.monotonic() < deadline:
-        result = run(["kubectl", "get", "nodes", "-o", "json"], check=False, capture=True, env=kube_env)
+        remaining = max(1, int(deadline - time.monotonic()))
+        try:
+            result = run(
+                ["kubectl", "get", "nodes", "-o", "json"],
+                check=False,
+                capture=True,
+                env=kube_env,
+                timeout=min(20, remaining),
+            )
+        except subprocess.TimeoutExpired:
+            print("kubectl get nodes timed out; retrying while checking cluster readiness.", flush=True)
+            time.sleep(min(15, max(0, deadline - time.monotonic())))
+            continue
+
         if result.returncode == 0:
             try:
                 payload = json.loads(result.stdout)
-                ready = {
-                    item["metadata"]["name"]
-                    for item in payload.get("items", [])
-                    if any(condition.get("type") == "Ready" and condition.get("status") == "True"
-                           for condition in item.get("status", {}).get("conditions", []))
-                }
-                if expected.issubset(ready):
+                ready_ips = set()
+                node_summaries = []
+                for item in payload.get("items", []):
+                    name = item.get("metadata", {}).get("name", "unknown")
+                    status = item.get("status", {})
+                    conditions = status.get("conditions", [])
+                    ready_condition = next(
+                        (condition for condition in conditions if condition.get("type") == "Ready"),
+                        {},
+                    )
+                    is_ready = ready_condition.get("status") == "True"
+                    internal_ips = {
+                        address.get("address")
+                        for address in status.get("addresses", [])
+                        if address.get("type") == "InternalIP"
+                    }
+                    if is_ready:
+                        ready_ips.update(internal_ips & expected_ips)
+                    if not is_ready:
+                        reason = ready_condition.get("reason", "Ready condition missing")
+                        message = ready_condition.get("message", "").strip()
+                        node_summaries.append(f"{name} ({','.join(sorted(internal_ips)) or 'no InternalIP'}): {reason} {message}".strip())
+                    else:
+                        node_summaries.append(f"{name} ({','.join(sorted(internal_ips)) or 'no InternalIP'}): Ready")
+                last_node_summary = "; ".join(node_summaries) or "Kubernetes returned no nodes."
+                pending_ips = sorted(expected_ips - ready_ips)
+                print(
+                    f"Kubernetes node readiness: {len(ready_ips)}/{len(expected_ips)} expected addresses Ready; "
+                    f"pending {', '.join(pending_ips) if pending_ips else 'none'}. "
+                    f"Observed: {last_node_summary}",
+                    flush=True,
+                )
+                if expected_ips.issubset(ready_ips):
                     break
             except (json.JSONDecodeError, KeyError, TypeError):
-                pass
-        time.sleep(15)
+                last_node_summary = "kubectl returned invalid node status JSON."
+                print(f"{last_node_summary} Retrying.", flush=True)
+        else:
+            details = (result.stdout or "").strip().replace("\n", " ")
+            last_node_summary = details[-500:] or f"kubectl exited {result.returncode} without diagnostic output."
+            print(
+                f"kubectl get nodes failed (exit {result.returncode}); "
+                f"retrying. {last_node_summary}",
+                flush=True,
+            )
+        time.sleep(min(15, max(0, deadline - time.monotonic())))
     else:
-        raise RuntimeError("Cilium was installed but all five Kubernetes nodes did not become Ready")
+        pending_ips = ", ".join(sorted(expected_ips - ready_ips)) or "unknown"
+        raise RuntimeError(
+            f"Cilium was installed, but Kubernetes nodes at {pending_ips} did not become Ready. "
+            f"Latest node status: {last_node_summary}"
+        )
 
     workers = [node["ip"] for node in inventory["nodes"] if node["role"] == "worker"]
     run([
