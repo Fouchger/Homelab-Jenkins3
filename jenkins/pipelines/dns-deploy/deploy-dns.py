@@ -204,7 +204,8 @@ def matches_container_identity(config, role, mac):
 
 
 def jenkins_agent_config(client):
-    if remote(client, f"pct status {JENKINS_AGENT_CTID}", timeout=30).strip() != "status: running":
+    status = remote(client, f"pct status {JENKINS_AGENT_CTID}", timeout=30)
+    if not re.search(r"(?m)^status: running\s*$", status):
         raise RuntimeError(f"Jenkins agent CTID {JENKINS_AGENT_CTID} must be running to update its DNS safely")
     config_text = remote(client, f"pct config {JENKINS_AGENT_CTID}", timeout=30)
     lines = {}
