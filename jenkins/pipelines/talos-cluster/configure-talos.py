@@ -86,14 +86,26 @@ def secret_url(name):
     return f"{api_base()}/api/v4/secrets/{urllib.parse.quote(name)}?{query}"
 
 
-def read_secret(token, name):
+def get_secret(token, name):
     result = request_json(secret_url(name), token=token, allow_404=True)
-    secret = result.get("secret", {}) if isinstance(result, dict) else {}
+    if result is None:
+        return None
+    secret = result.get("secret") if isinstance(result, dict) else None
+    if not isinstance(secret, dict):
+        raise RuntimeError(f"Infisical returned an invalid response while checking {name}")
+    return secret
+
+
+def secret_value(secret):
     value = secret.get("secretValue") if isinstance(secret, dict) else None
     return value if isinstance(value, str) and value else None
 
 
-def write_secret(token, name, value, existed=False):
+def read_secret(token, name):
+    return secret_value(get_secret(token, name))
+
+
+def write_secret(token, name, value, *, existed):
     body = {
         "projectId": required("INFISICAL_PROJECT_ID"),
         "environment": required("INFISICAL_ENVIRONMENT"),
@@ -102,7 +114,17 @@ def write_secret(token, name, value, existed=False):
         "type": "shared",
         "skipMultilineEncoding": True,
     }
-    request_json(secret_url(name), method="PATCH" if existed else "POST", token=token, body=body)
+    method = "PATCH" if existed else "POST"
+    try:
+        request_json(secret_url(name), method=method, token=token, body=body)
+    except RuntimeError as exc:
+        if "HTTP 404" in str(exc):
+            raise RuntimeError(
+                f"Infisical could not write {name} in {SECRET_PATH} (HTTP 404). "
+                "Check the configured project ID and environment slug, and confirm "
+                "the Jenkins writer identity can create or update secrets there."
+            ) from None
+        raise
 
 
 def load_inventory():
@@ -213,7 +235,7 @@ def prepare_machineconfigs(inventory, secrets_file, output_dir):
     ])
 
 
-def initialize_cluster(inventory, read_token):
+def initialize_cluster(inventory, read_token, *, secrets_existed):
     assert_fresh_maintenance(inventory)
     print("Generating persistent Talos machine secrets and saving them to Infisical before touching any node.")
     secrets_file = WORKDIR / "secrets.yaml"
@@ -221,7 +243,7 @@ def initialize_cluster(inventory, read_token):
     os.chmod(secrets_file, 0o600)
     secrets_text = secrets_file.read_text(encoding="utf-8")
     writer = login("WRITE")
-    write_secret(writer, SECRETS_NAME, secrets_text)
+    write_secret(writer, SECRETS_NAME, secrets_text, existed=secrets_existed)
     saved = read_secret(read_token, SECRETS_NAME)
     if saved != secrets_text:
         raise RuntimeError("Infisical did not verify the saved Talos machine secrets; nodes were not configured")
@@ -270,11 +292,15 @@ def install_cluster_from_secrets(inventory, secrets_file, read_token):
 
     # Persist the one-time bootstrap marker before calling bootstrap. If the
     # agent loses contact during that call, a rerun must never issue it twice.
-    existing_marker = read_secret(read_token, INITIALIZED_NAME)
+    existing_marker_entry = get_secret(read_token, INITIALIZED_NAME)
+    existing_marker = secret_value(existing_marker_entry)
     if existing_marker not in (None, inventory["cluster_name"]):
         raise RuntimeError("Infisical initialization marker belongs to a different cluster name")
     writer = login("WRITE")
-    write_secret(writer, INITIALIZED_NAME, inventory["cluster_name"], existed=existing_marker is not None)
+    write_secret(
+        writer, INITIALIZED_NAME, inventory["cluster_name"],
+        existed=existing_marker_entry is not None,
+    )
     if read_secret(read_token, INITIALIZED_NAME) != inventory["cluster_name"]:
         raise RuntimeError("Infisical did not verify the bootstrap marker; bootstrap was not attempted")
 
@@ -336,15 +362,22 @@ def configure_cilium(inventory, env, read_token):
 
     kubeconfig_text = kubeconfig.read_text(encoding="utf-8")
     writer = login("WRITE")
-    existing_kubeconfig = read_secret(read_token, KUBECONFIG_NAME)
-    write_secret(writer, KUBECONFIG_NAME, kubeconfig_text, existed=existing_kubeconfig is not None)
+    existing_kubeconfig_entry = get_secret(read_token, KUBECONFIG_NAME)
+    write_secret(
+        writer, KUBECONFIG_NAME, kubeconfig_text,
+        existed=existing_kubeconfig_entry is not None,
+    )
     if read_secret(read_token, KUBECONFIG_NAME) != kubeconfig_text:
         raise RuntimeError("Infisical did not verify the saved kubeconfig")
-    existing_marker = read_secret(read_token, INITIALIZED_NAME)
+    existing_marker_entry = get_secret(read_token, INITIALIZED_NAME)
+    existing_marker = secret_value(existing_marker_entry)
     if existing_marker not in (None, inventory["cluster_name"]):
         raise RuntimeError("Infisical initialization marker belongs to a different cluster name")
     writer = login("WRITE")
-    write_secret(writer, INITIALIZED_NAME, inventory["cluster_name"], existed=existing_marker is not None)
+    write_secret(
+        writer, INITIALIZED_NAME, inventory["cluster_name"],
+        existed=existing_marker_entry is not None,
+    )
     if read_secret(read_token, INITIALIZED_NAME) != inventory["cluster_name"]:
         raise RuntimeError("Infisical did not verify the cluster initialization marker")
     print("Talos control planes are healthy, Cilium is ready, and all five Kubernetes nodes report Ready.")
@@ -358,7 +391,8 @@ def main():
         raise RuntimeError("TALOS_ACTION must be plan or apply")
     initialize = os.environ.get("INITIALIZE_CLUSTER", "false").lower() == "true"
     read_token = login("READ")
-    secrets = read_secret(read_token, SECRETS_NAME)
+    secrets_entry = get_secret(read_token, SECRETS_NAME)
+    secrets = secret_value(secrets_entry)
     initialized = read_secret(read_token, INITIALIZED_NAME)
     if initialized and initialized != inventory["cluster_name"]:
         raise RuntimeError("Infisical initialization marker does not match this inventory; refusing to touch the cluster")
@@ -404,7 +438,9 @@ def main():
         assert_fresh_maintenance(inventory)
         print("Fresh-cluster prerequisites passed. APPLY with INITIALIZE_CLUSTER selected will save secrets, install Talos, and bootstrap once.")
         return
-    initialize_cluster(inventory, read_token)
+    initialize_cluster(
+        inventory, read_token, secrets_existed=secrets_entry is not None,
+    )
 
 
 if __name__ == "__main__":
