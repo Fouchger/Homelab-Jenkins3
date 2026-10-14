@@ -412,9 +412,12 @@ def configure_cilium(inventory, env, read_token):
         )
 
     workers = [node["ip"] for node in inventory["nodes"] if node["role"] == "worker"]
+    # `talosctl health` accepts a single configured target node. The
+    # control-plane and worker lists below tell it which cluster members to
+    # validate; a multi-address `--nodes` target is not supported by health.
+    run(["talosctl", "config", "node", controlplanes[0]], env=env)
     run([
         "talosctl", "health",
-        "--nodes", ",".join(node["ip"] for node in inventory["nodes"]),
         "--control-plane-nodes", ",".join(controlplanes),
         "--worker-nodes", ",".join(workers),
         "--init-node", controlplanes[0],
