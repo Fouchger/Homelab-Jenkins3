@@ -143,6 +143,11 @@ add address=192.168.20.5 comment=iac-controller mac-address=BC:24:11:4B:E3:DB se
 add address=192.168.20.6 comment=jenkins-agent mac-address=BC:24:11:5E:D9:F9 server=dhcp-vlan20
 add address=${DNS01_IPV4} comment=dns01 mac-address=02:00:00:00:01:50 server=dhcp-vlan30
 add address=${DNS02_IPV4} comment=dns02 mac-address=02:00:00:00:01:51 server=dhcp-vlan30
+add address=192.168.80.101 comment=talos-cp-01 mac-address=02:80:00:00:01:01 server=dhcp-vlan80
+add address=192.168.80.102 comment=talos-cp-02 mac-address=02:80:00:00:01:02 server=dhcp-vlan80
+add address=192.168.80.103 comment=talos-cp-03 mac-address=02:80:00:00:01:03 server=dhcp-vlan80
+add address=192.168.80.104 comment=talos-worker-01 mac-address=02:80:00:00:02:01 server=dhcp-vlan80
+add address=192.168.80.105 comment=talos-worker-02 mac-address=02:80:00:00:02:02 server=dhcp-vlan80
 /ip dhcp-server network
 add address=192.168.20.0/24 comment=MGMT dns-server=${MIKROTIK_IP} domain=fouchger.uk gateway=${MIKROTIK_IP}
 add address=192.168.30.0/24 comment=SERVERS dns-server=192.168.30.1 domain=fouchger.uk gateway=192.168.30.1
@@ -156,6 +161,11 @@ add address=192.168.90.0/24 comment=DMZ dns-server=192.168.90.1 domain=fouchger.
 set allow-remote-requests=yes cache-size=4096KiB servers=${DNS_UPSTREAMS}
 /ip dns static
 add address=192.168.20.10 comment=homelab-managed-proxmox-api name=pve01.fouchger.uk
+add address=192.168.80.101 comment=homelab-managed-talos-cp-01 name=talos-cp-01.fouchger.uk
+add address=192.168.80.102 comment=homelab-managed-talos-cp-02 name=talos-cp-02.fouchger.uk
+add address=192.168.80.103 comment=homelab-managed-talos-cp-03 name=talos-cp-03.fouchger.uk
+add address=192.168.80.104 comment=homelab-managed-talos-worker-01 name=talos-worker-01.fouchger.uk
+add address=192.168.80.105 comment=homelab-managed-talos-worker-02 name=talos-worker-02.fouchger.uk
 /ip firewall address-list
 add address=10.0.0.0/8 list=RFC1918
 add address=172.16.0.0/12 list=RFC1918

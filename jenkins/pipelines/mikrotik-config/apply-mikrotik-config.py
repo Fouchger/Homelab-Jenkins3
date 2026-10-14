@@ -28,6 +28,10 @@ from paramiko.hostkeys import HostKeyEntry
 PROXMOX_API_DNS_NAME = "pve01.fouchger.uk"
 PROXMOX_API_DNS_ADDRESS = "192.168.20.10"
 PROXMOX_API_DNS_COMMENT = "homelab-managed-proxmox-api"
+TALOS_CLUSTER_FILE = Path(__file__).resolve().parents[3] / "kubernetes/talos/cluster.json"
+TALOS_DOMAIN = "fouchger.uk"
+TALOS_DHCP_SERVER = "dhcp-vlan80"
+TALOS_VLAN_COMMENT = "Kubernetes trunk"
 
 
 def required(name):
@@ -537,6 +541,149 @@ def rest_networks(router):
     return networks
 
 
+def talos_nodes():
+    try:
+        data = json.loads(TALOS_CLUSTER_FILE.read_text(encoding="utf-8"))
+        nodes = data["nodes"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        raise RuntimeError("Could not read the Talos DHCP/DNS inventory from kubernetes/talos/cluster.json") from None
+    if not isinstance(nodes, list) or not nodes:
+        raise RuntimeError("Talos inventory must contain at least one node")
+    seen_names, seen_macs, seen_ips = set(), set(), set()
+    normalized = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            raise RuntimeError("Talos inventory contains an invalid node")
+        name = str(node.get("name", "")).strip().lower()
+        mac = str(node.get("mac", "")).strip().upper()
+        try:
+            address = str(ipaddress.IPv4Address(node.get("ip", "")))
+        except ipaddress.AddressValueError:
+            raise RuntimeError(f"Talos inventory has an invalid IPv4 address for {name or 'a node'}") from None
+        if (not re.fullmatch(r"talos-[a-z0-9-]+", name)
+                or not re.fullmatch(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", mac)
+                or address not in ipaddress.ip_network("192.168.80.0/24")):
+            raise RuntimeError(f"Talos inventory has an invalid name, MAC, or non-VLAN-80 IP for {name or 'a node'}")
+        if name in seen_names or mac in seen_macs or address in seen_ips:
+            raise RuntimeError("Talos inventory contains duplicate names, MAC addresses, or IP addresses")
+        seen_names.add(name); seen_macs.add(mac); seen_ips.add(address)
+        normalized.append({"name": name, "mac": mac, "ip": address,
+                           "hostname": f"{name}.{TALOS_DOMAIN}",
+                           "comment": f"homelab-managed-{name}"})
+    return normalized
+
+
+def talos_preflight(router, nodes):
+    vlans = router.call("interface/bridge/vlan")
+    servers = router.call("ip/dhcp-server")
+    leases = router.call("ip/dhcp-server/lease")
+    dns_records = router.call("ip/dns/static")
+    for label, rows in (("bridge VLAN", vlans), ("DHCP server", servers),
+                        ("DHCP lease", leases), ("static DNS", dns_records)):
+        if not isinstance(rows, list):
+            raise RuntimeError(f"RouterOS returned an invalid {label} list")
+    vlan_rows = [row for row in vlans if isinstance(row, dict) and str(row.get("vlan-ids", "")) == "80"]
+    if len(vlan_rows) > 1:
+        raise RuntimeError("RouterOS has duplicate VLAN 80 bridge entries; resolve them before applying Talos network settings")
+    if vlan_rows:
+        vlan = vlan_rows[0]
+        correct = (vlan.get("bridge") == "bridge" and vlan.get("tagged", "").replace(" ", "") == "bridge,ether2"
+                   and vlan.get("untagged", "") in ("", "none"))
+        if not correct and vlan.get("comment") != TALOS_VLAN_COMMENT:
+            raise RuntimeError("RouterOS VLAN 80 exists with unmanaged membership; review it instead of overwriting it")
+    matches = [row for row in servers if isinstance(row, dict) and row.get("name") == TALOS_DHCP_SERVER
+               and str(row.get("disabled", "false")).lower() != "true"]
+    if len(matches) != 1:
+        raise RuntimeError(f"RouterOS must have exactly one active {TALOS_DHCP_SERVER} server")
+    for node in nodes:
+        mac_rows = [row for row in leases if isinstance(row, dict)
+                    and str(row.get("mac-address", "")).upper() == node["mac"]]
+        if len(mac_rows) > 1:
+            raise RuntimeError(f"RouterOS has duplicate DHCP leases for {node['name']} ({node['mac']})")
+        ip_rows = [row for row in leases if isinstance(row, dict) and row.get("address") == node["ip"]
+                   and str(row.get("mac-address", "")).upper() != node["mac"]]
+        if ip_rows:
+            raise RuntimeError(f"Talos address {node['ip']} is already leased or reserved to another MAC")
+        same_name = [row for row in dns_records if isinstance(row, dict)
+                     and str(row.get("name", "")).rstrip(".").lower() == node["hostname"]
+                     and str(row.get("disabled", "false")).lower() != "true"]
+        if any(row.get("address") != node["ip"] and row.get("comment") != node["comment"] for row in same_name):
+            raise RuntimeError(f"RouterOS has a conflicting unmanaged DNS record for {node['hostname']}")
+
+
+def reconcile_talos_network(router, nodes):
+    talos_preflight(router, nodes)
+    changed = []
+    vlan_rows = router.call("interface/bridge/vlan")
+    vlan = next((row for row in vlan_rows if isinstance(row, dict) and str(row.get("vlan-ids", "")) == "80"), None)
+    vlan_payload = {"bridge": "bridge", "tagged": "bridge,ether2", "vlan-ids": "80",
+                    "comment": TALOS_VLAN_COMMENT}
+    if vlan:
+        if (vlan.get("bridge") != "bridge" or vlan.get("tagged", "").replace(" ", "") != "bridge,ether2"
+                or vlan.get("untagged", "") not in ("", "none")):
+            rest_set(router, f"interface/bridge/vlan/{rest_record_id(vlan)}", vlan_payload)
+            changed.append("VLAN 80 bridge membership")
+    else:
+        router.call("interface/bridge/vlan", "PUT", vlan_payload)
+        changed.append("VLAN 80 bridge membership")
+
+    leases = router.call("ip/dhcp-server/lease")
+    for node in nodes:
+        matches = [row for row in leases if isinstance(row, dict)
+                   and str(row.get("mac-address", "")).upper() == node["mac"]]
+        payload = {"address": node["ip"], "mac-address": node["mac"],
+                   "server": TALOS_DHCP_SERVER, "comment": node["name"]}
+        if matches:
+            row = matches[0]
+            if str(row.get("dynamic", "false")).lower() == "true":
+                router.call("ip/dhcp-server/lease/make-static", "POST", {"numbers": row.get(".id", "")})
+                leases = router.call("ip/dhcp-server/lease")
+                row = next((item for item in leases if isinstance(item, dict)
+                            and str(item.get("mac-address", "")).upper() == node["mac"]), None)
+                if not row:
+                    raise RuntimeError(f"RouterOS did not convert the DHCP lease for {node['name']} to static")
+            differs = any(str(row.get(key, "")) != value for key, value in payload.items())
+            if differs:
+                rest_set(router, f"ip/dhcp-server/lease/{rest_record_id(row)}", payload)
+                changed.append(f"DHCP reservation {node['name']}")
+        else:
+            router.call("ip/dhcp-server/lease", "PUT", payload)
+            changed.append(f"DHCP reservation {node['name']}")
+
+    records = router.call("ip/dns/static")
+    for node in nodes:
+        same = [row for row in records if isinstance(row, dict)
+                and str(row.get("name", "")).rstrip(".").lower() == node["hostname"]
+                and str(row.get("disabled", "false")).lower() != "true"]
+        exact = next((row for row in same if row.get("address") == node["ip"]), None)
+        managed = next((row for row in same if row.get("comment") == node["comment"]), None)
+        if not exact or (managed and managed.get("address") != node["ip"]):
+            payload = {"name": node["hostname"], "address": node["ip"], "comment": node["comment"]}
+            if managed:
+                rest_set(router, f"ip/dns/static/{rest_record_id(managed)}", payload)
+            else:
+                router.call("ip/dns/static", "PUT", payload)
+            changed.append(f"router DNS {node['hostname']}")
+    # Verify all three resources from RouterOS after reconciliation.
+    talos_preflight(router, nodes)
+    verified_vlan = [row for row in router.call("interface/bridge/vlan")
+                     if isinstance(row, dict) and str(row.get("vlan-ids", "")) == "80"]
+    if len(verified_vlan) != 1 or verified_vlan[0].get("tagged", "").replace(" ", "") != "bridge,ether2":
+        raise RuntimeError("RouterOS VLAN 80 membership verification failed")
+    verified_leases = router.call("ip/dhcp-server/lease")
+    verified_dns = router.call("ip/dns/static")
+    for node in nodes:
+        if not any(isinstance(row, dict) and str(row.get("mac-address", "")).upper() == node["mac"]
+                   and row.get("address") == node["ip"] and row.get("server") == TALOS_DHCP_SERVER
+                   and str(row.get("dynamic", "false")).lower() != "true" for row in verified_leases):
+            raise RuntimeError(f"RouterOS DHCP reservation verification failed for {node['name']}")
+        if not any(isinstance(row, dict) and str(row.get("name", "")).rstrip(".").lower() == node["hostname"]
+                   and row.get("address") == node["ip"] and str(row.get("disabled", "false")).lower() != "true"
+                   for row in verified_dns):
+            raise RuntimeError(f"RouterOS DNS verification failed for {node['hostname']}")
+    return changed
+
+
 def rest_set(router, path, payload):
     result = router.call(path, "PATCH", payload)
     if not isinstance(result, dict):
@@ -587,7 +734,7 @@ def reconcile_proxmox_dns_record(router, records):
     return exact is None or managed_needs_update
 
 
-def rest_apply(router, networks, mode, dns_list, wifi_updates):
+def rest_apply(router, networks, mode, dns_list, wifi_updates, talos_inventory):
     # Validate every target before the first write to avoid a partial rollout.
     dns_state = router.call("ip/dns")
     if isinstance(dns_state, list):
@@ -595,6 +742,7 @@ def rest_apply(router, networks, mode, dns_list, wifi_updates):
     if not isinstance(dns_state, dict):
         raise RuntimeError("RouterOS REST returned invalid DNS settings")
     proxmox_dns_records = validate_proxmox_dns_records(router.call("ip/dns/static"))
+    talos_preflight(router, talos_inventory)
     wifi_records = {}
     if wifi_updates:
         rows = router.call("interface/wifi/security")
@@ -619,6 +767,7 @@ def rest_apply(router, networks, mode, dns_list, wifi_updates):
         })
 
     proxmox_dns_changed = reconcile_proxmox_dns_record(router, proxmox_dns_records)
+    talos_changes = reconcile_talos_network(router, talos_inventory)
 
     dhcp_updates = []
     expected_dhcp_dns = {}
@@ -690,6 +839,7 @@ def rest_apply(router, networks, mode, dns_list, wifi_updates):
     return {
         "dns_changed": dns_changed,
         "proxmox_dns_changed": proxmox_dns_changed,
+        "talos_changes": talos_changes,
         "dhcp_updates": dhcp_updates,
         "firewall_added": firewall_added,
         "firewall_removed": firewall_removed,
@@ -746,6 +896,8 @@ def apply(values):
         rest_password = bootstrap_password
     rest = RouterREST(host, rest_user, rest_password, values.get("MIKROTIK_TLS_CERT_SHA256", ""))
     networks = rest_networks(rest)
+    talos_inventory = talos_nodes()
+    talos_preflight(rest, talos_inventory)
     rest.call("system/resource")  # Authenticate before creating the backup.
     ssh_user = values.get("MIKROTIK_SSH_USER", "").strip()
     private_key = values.get("MIKROTIK_SSH_PRIVATE_KEY", "")
@@ -770,7 +922,7 @@ def apply(values):
     finally:
         ssh.close()
     dns_list = ",".join(upstreams)
-    changes = rest_apply(rest, networks, mode, dns_list, wifi_updates)
+    changes = rest_apply(rest, networks, mode, dns_list, wifi_updates, talos_inventory)
     if changes["dns_changed"]:
         print(f"Configured MikroTik DNS upstreams in order: {', '.join(upstreams)}.")
     else:
@@ -779,6 +931,10 @@ def apply(values):
         print(f"Added or corrected MikroTik DNS record {PROXMOX_API_DNS_NAME} -> {PROXMOX_API_DNS_ADDRESS}.")
     else:
         print(f"MikroTik DNS record already resolves {PROXMOX_API_DNS_NAME} -> {PROXMOX_API_DNS_ADDRESS}.")
+    if changes["talos_changes"]:
+        print("Talos network corrections applied: " + "; ".join(changes["talos_changes"]) + ".")
+    else:
+        print(f"Talos VLAN 80, {len(talos_inventory)} static DHCP reservations, and router DNS records already match.")
     if changes["dhcp_updates"]:
         print(f"Updated DHCP DNS for {len(changes['dhcp_updates'])} network(s) using mode '{mode}': {', '.join(changes['dhcp_updates'])}.")
     else:

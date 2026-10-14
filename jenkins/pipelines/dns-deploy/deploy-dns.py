@@ -29,6 +29,7 @@ JENKINS_AGENT_NAMESERVERS = ("192.168.30.2", "192.168.30.3")
 JENKINS_AGENT_SEARCHDOMAIN = "fouchger.uk"
 PROXMOX_API_HOSTNAME = "pve01.fouchger.uk"
 PROXMOX_API_IPV4 = "192.168.20.10"
+TALOS_CLUSTER_FILE = ROOT / "kubernetes/talos/cluster.json"
 SENSITIVE_VALUES = []
 
 
@@ -485,6 +486,32 @@ def export_zone_files(client, stage, role, values, zone_types):
     return zone_files
 
 
+def talos_dns_records():
+    try:
+        data = json.loads(TALOS_CLUSTER_FILE.read_text(encoding="utf-8"))
+        nodes = data["nodes"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        raise RuntimeError("Could not read kubernetes/talos/cluster.json for DNS records") from None
+    if not isinstance(nodes, list) or not nodes:
+        raise RuntimeError("Talos inventory must contain at least one node before DNS deployment")
+    records, names, addresses = [], set(), set()
+    for node in nodes:
+        if not isinstance(node, dict):
+            raise RuntimeError("Talos inventory contains an invalid DNS node")
+        name = str(node.get("name", "")).strip().lower()
+        try:
+            address = str(ipaddress.IPv4Address(node.get("ip", "")))
+        except ipaddress.AddressValueError:
+            raise RuntimeError(f"Talos DNS node {name or 'unnamed'} has an invalid IPv4 address") from None
+        if (not re.fullmatch(r"talos-[a-z0-9-]+", name)
+                or address not in ipaddress.ip_network("192.168.80.0/24")
+                or name in names or address in addresses):
+            raise RuntimeError(f"Talos DNS inventory entry for {name or 'unnamed'} is invalid or duplicated")
+        names.add(name); addresses.add(address)
+        records.append({"hostname": f"{name}.fouchger.uk", "address": address})
+    return records
+
+
 def configure_zone_replication(client, stage, values, preserved_zone_files=None):
     hosted_zones = [item.strip().rstrip(".").lower() for item in values["DNS_HOSTED_ZONES"].split(",") if item.strip()]
     if len(hosted_zones) != len(set(hosted_zones)):
@@ -506,6 +533,16 @@ def configure_zone_replication(client, stage, values, preserved_zone_files=None)
         "hostname": "pve01.fouchger.uk",
         "address": "192.168.20.10",
     }, "ensure-proxmox-api-record")
+
+    talos_records = talos_dns_records()
+    for record in talos_records:
+        execute_in_ct(client, 150, f"{stage}/manage-technitium.py", {
+            "admin_password": values["DNS01_ADMIN_PASSWORD"],
+            "action": "ensure-a-record",
+            "hostname": record["hostname"],
+            "address": record["address"],
+            "comments": "Managed by Homelab Jenkins Job 006 from kubernetes/talos/cluster.json",
+        }, f"ensure-{record['hostname']}")
 
     primary_zones_raw = execute_in_ct(
         client, 150, f"{stage}/manage-technitium.py",
@@ -537,6 +574,14 @@ def configure_zone_replication(client, stage, values, preserved_zone_files=None)
         "address": "192.168.20.10",
         "zone_type": "Secondary",
     }, "verify-proxmox-api-record")
+    for record in talos_records:
+        execute_in_ct(client, 151, f"{stage}/manage-technitium.py", {
+            "admin_password": values["DNS02_ADMIN_PASSWORD"],
+            "action": "verify-a-record",
+            "hostname": record["hostname"],
+            "address": record["address"],
+            "zone_type": "Secondary",
+        }, f"verify-{record['hostname']}")
     print(f"Technitium authentication verified; {len(primary_zones)} primary zone(s) synced to dns02.")
     if not primary_zones:
         print("No hosted primary zones exist yet. Future runs create secondary zones for each primary zone found on dns01.")
@@ -688,6 +733,8 @@ def review_plan(client, values, recreate_roles):
     print(f"- Technitium dns02 ({values['DNS02_IPV4']}): verify admin access and configure secondary copies of dns01 primary zones")
     print(f"- Configured hosted zones to ensure on dns01: {', '.join(hosted_zones) if hosted_zones else '(none; existing primary zones will be synced)'}")
     print("- Technitium dns01: ensure pve01.fouchger.uk A record -> 192.168.20.10; replicate its zone to dns02")
+    talos_records = talos_dns_records()
+    print(f"- Technitium dns01: ensure {len(talos_records)} Talos node A records from kubernetes/talos/cluster.json; verify all records on dns02")
     agent_config = jenkins_agent_config(client)
     current_nameservers = agent_config.get("nameserver", "(inherit from Proxmox host)")
     current_searchdomain = agent_config.get("searchdomain", "(inherit from Proxmox host)")

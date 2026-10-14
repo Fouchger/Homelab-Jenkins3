@@ -6,10 +6,35 @@
   "api_vip": "192.168.80.200",
   "install_disk": "/dev/sda",
   "nodes": [
-    {"name": "talos-cp-01", "role": "controlplane", "ip": "192.168.80.101"},
-    {"name": "talos-cp-02", "role": "controlplane", "ip": "192.168.80.102"},
-    {"name": "talos-cp-03", "role": "controlplane", "ip": "192.168.80.103"},
-    {"name": "talos-worker-01", "role": "worker", "ip": "192.168.80.104"},
-    {"name": "talos-worker-02", "role": "worker", "ip": "192.168.80.105"}
+    {
+      "name": "talos-cp-01",
+      "role": "controlplane",
+      "ip": "192.168.80.101",
+      "mac": "02:80:00:00:01:01"
+    },
+    {
+      "name": "talos-cp-02",
+      "role": "controlplane",
+      "ip": "192.168.80.102",
+      "mac": "02:80:00:00:01:02"
+    },
+    {
+      "name": "talos-cp-03",
+      "role": "controlplane",
+      "ip": "192.168.80.103",
+      "mac": "02:80:00:00:01:03"
+    },
+    {
+      "name": "talos-worker-01",
+      "role": "worker",
+      "ip": "192.168.80.104",
+      "mac": "02:80:00:00:02:01"
+    },
+    {
+      "name": "talos-worker-02",
+      "role": "worker",
+      "ip": "192.168.80.105",
+      "mac": "02:80:00:00:02:02"
+    }
   ]
 }
