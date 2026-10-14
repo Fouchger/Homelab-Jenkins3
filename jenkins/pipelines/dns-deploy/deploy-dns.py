@@ -504,7 +504,7 @@ def talos_dns_records():
         except ipaddress.AddressValueError:
             raise RuntimeError(f"Talos DNS node {name or 'unnamed'} has an invalid IPv4 address") from None
         if (not re.fullmatch(r"talos-[a-z0-9-]+", name)
-                or address not in ipaddress.ip_network("192.168.80.0/24")
+                or ipaddress.IPv4Address(address) not in ipaddress.ip_network("192.168.80.0/24")
                 or name in names or address in addresses):
             raise RuntimeError(f"Talos DNS inventory entry for {name or 'unnamed'} is invalid or duplicated")
         names.add(name); addresses.add(address)

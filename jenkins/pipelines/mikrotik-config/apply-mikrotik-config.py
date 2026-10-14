@@ -562,7 +562,7 @@ def talos_nodes():
             raise RuntimeError(f"Talos inventory has an invalid IPv4 address for {name or 'a node'}") from None
         if (not re.fullmatch(r"talos-[a-z0-9-]+", name)
                 or not re.fullmatch(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", mac)
-                or address not in ipaddress.ip_network("192.168.80.0/24")):
+                or ipaddress.IPv4Address(address) not in ipaddress.ip_network("192.168.80.0/24")):
             raise RuntimeError(f"Talos inventory has an invalid name, MAC, or non-VLAN-80 IP for {name or 'a node'}")
         if name in seen_names or mac in seen_macs or address in seen_ips:
             raise RuntimeError("Talos inventory contains duplicate names, MAC addresses, or IP addresses")

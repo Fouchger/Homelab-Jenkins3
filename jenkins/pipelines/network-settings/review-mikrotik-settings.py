@@ -175,7 +175,7 @@ def talos_inventory():
         address = valid_ipv4(str(item.get("ip", "")), f"{name or 'Talos node'} IP")
         if (not re.fullmatch(r"talos-[a-z0-9-]+", name)
                 or not re.fullmatch(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", mac)
-                or address not in ipaddress.ip_network("192.168.80.0/24")
+                or ipaddress.IPv4Address(address) not in ipaddress.ip_network("192.168.80.0/24")
                 or name in seen_names or mac in seen_macs or address in seen_ips):
             raise RuntimeError(f"Talos inventory entry for {name or 'a node'} has invalid or duplicate data")
         seen_names.add(name); seen_macs.add(mac); seen_ips.add(address)
