@@ -270,9 +270,10 @@ encrypted backup is still created before router settings are changed.
 
 These scripts seed the Proxmox access
 setup job. The job standardizes Proxmox automation on the
-`HomelabLxcOperator` role, adds the scoped Talos ISO-download privileges,
-applies matching node/storage ACLs to `homelab-automation@pve` and its
-privilege-separated token, rotates the API token, and writes the result to
+`HomelabLxcOperator` role, adds the scoped Talos ISO-download and VM
+configuration privileges (including CD-ROM configuration), applies node/storage ACLs and `SDN.Use` at the
+configured VLAN path to `homelab-automation@pve` and its privilege-separated
+token, rotates the API token, and writes the result to
 Infisical. This package also aligns Jenkins installation and enrolment and
 includes the toolchain verification job.
 After the pipeline files are pushed to the configured GitHub branch, restart

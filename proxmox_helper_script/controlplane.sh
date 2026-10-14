@@ -90,11 +90,12 @@ source "$project_dir/jenkins/config/install.conf"
 ensure_lxc_operator_role() {
   local node=${HOMELAB_PROXMOX_NODE_NAME:-$(hostname -s)}
   local iso_storage=${HOMELAB_PROXMOX_ISO_STORAGE_ID:-local}
+  local sdn_acl_path=${HOMELAB_PROXMOX_SDN_ACL_PATH:-/sdn/zones/localnetwork/vmbr0/80}
   local user=${HOMELAB_PROXMOX_AUTOMATION_USER:-homelab-automation@pve}
   local role=HomelabLxcOperator
-  local privileges=Datastore.AllocateSpace,Datastore.Audit,Datastore.AllocateTemplate,Sys.Audit,Sys.AccessNetwork,VM.Allocate,VM.Audit,VM.Config.CPU,VM.Config.Disk,VM.Config.HWType,VM.Config.Network,VM.Config.Options,VM.PowerMgmt
-  [[ $node =~ ^[A-Za-z0-9_.-]+$ && $iso_storage =~ ^[A-Za-z0-9_.-]+$ && $user =~ ^[A-Za-z0-9_.-]+@pve$ ]] || {
-    printf 'Invalid Proxmox node, ISO storage, or automation user setting.\n' >&2
+  local privileges=Datastore.AllocateSpace,Datastore.Audit,Datastore.AllocateTemplate,SDN.Use,Sys.Audit,Sys.AccessNetwork,VM.Allocate,VM.Audit,VM.Config.CDROM,VM.Config.CPU,VM.Config.Disk,VM.Config.HWType,VM.Config.Memory,VM.Config.Network,VM.Config.Options,VM.PowerMgmt
+  [[ $node =~ ^[A-Za-z0-9_.-]+$ && $iso_storage =~ ^[A-Za-z0-9_.-]+$ && $user =~ ^[A-Za-z0-9_.-]+@pve$ && $sdn_acl_path =~ ^/sdn/zones/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(/[0-9]+)?$ ]] || {
+    printf 'Invalid Proxmox node, ISO storage, SDN ACL path, or automation user setting.\n' >&2
     return 2
   }
   command -v pveum >/dev/null || { printf 'pveum is required to configure the Proxmox operator role.\n' >&2; return 1; }
@@ -103,6 +104,7 @@ ensure_lxc_operator_role() {
   fi
   pveum acl modify "/nodes/$node" -user "$user" -role "$role"
   pveum acl modify "/storage/$iso_storage" -user "$user" -role "$role"
+  pveum acl modify "$sdn_acl_path" -user "$user" -role "$role"
   pveum acl delete "/nodes/$node" --users "$user" --roles HomelabTalosImageDownloader >/dev/null 2>&1 || true
   pveum acl delete "/storage/$iso_storage" --users "$user" --roles HomelabTalosImageDownloader >/dev/null 2>&1 || true
   pveum role delete HomelabTalosImageDownloader >/dev/null 2>&1 || true

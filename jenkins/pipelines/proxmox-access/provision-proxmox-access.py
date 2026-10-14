@@ -257,19 +257,22 @@ fi
 
 
 def create_remote_token(host, user, role, token_name, storage_ids, private_key, known_hosts,
-                        node_name="pve01", iso_storage_id="local"):
+                        node_name="pve01", iso_storage_id="local",
+                        sdn_acl_path="/sdn/zones/localnetwork/vmbr0/80"):
     # The backing account keeps its existing ACL model. Privilege separation
     # additionally requires matching ACL entries for this specific token.
     role_privileges = (
         "Datastore.AllocateSpace,Datastore.Audit,Datastore.AllocateTemplate,"
-        "Sys.Audit,Sys.AccessNetwork,VM.Allocate,VM.Audit,VM.Config.CPU,"
-        "VM.Config.Disk,VM.Config.HWType,VM.Config.Network,VM.Config.Options,VM.PowerMgmt"
+        "SDN.Use,Sys.Audit,Sys.AccessNetwork,VM.Allocate,VM.Audit,VM.Config.CDROM,VM.Config.CPU,"
+        "VM.Config.Disk,VM.Config.HWType,VM.Config.Memory,VM.Config.Network,VM.Config.Options,VM.PowerMgmt"
     )
     acl_commands = [
         'pveum acl modify /vms -user "$user" -role "$role"',
         'pveum acl modify /vms -token "$full_id" -role "$role"',
         f'pveum acl modify /nodes/{node_name} -user "$user" -role "$role"',
         f'pveum acl modify /nodes/{node_name} -token "$full_id" -role "$role"',
+        f'pveum acl modify {sdn_acl_path} -user "$user" -role "$role"',
+        f'pveum acl modify {sdn_acl_path} -token "$full_id" -role "$role"',
     ]
     for storage in storage_ids:
         acl_commands.extend((
@@ -311,30 +314,32 @@ printf '%s\\n' "$token_json"
         payload = json.loads(output)
     except json.JSONDecodeError:
         revoke_old_token(host, user, expected_id, role, storage_ids, private_key, known_hosts,
-                         node_name, iso_storage_id)
+                         node_name, iso_storage_id, sdn_acl_path)
         raise RuntimeError("Proxmox did not return token JSON; token state needs manual review") from None
     secret = payload.get("value") or payload.get("token")
     full_id = payload.get("full-tokenid") or payload.get("fullTokenid") or expected_id
     if full_id != expected_id:
         revoke_old_token(host, user, expected_id, role, storage_ids, private_key, known_hosts,
-                         node_name, iso_storage_id)
+                         node_name, iso_storage_id, sdn_acl_path)
         raise RuntimeError("Proxmox returned an unexpected token identifier; inspect token state before retrying")
     if not isinstance(secret, str) or not secret:
         revoke_old_token(host, user, full_id, role, storage_ids, private_key, known_hosts,
-                         node_name, iso_storage_id)
+                         node_name, iso_storage_id, sdn_acl_path)
         raise RuntimeError("Proxmox created a token but did not return its secret; do not rerun blindly")
     return full_id, secret
 
 
 def revoke_old_token(host, user, full_id, role, storage_ids, private_key, known_hosts,
-                     node_name="pve01", iso_storage_id="local"):
+                     node_name="pve01", iso_storage_id="local",
+                     sdn_acl_path="/sdn/zones/localnetwork/vmbr0/80"):
     prefix = f"{user}!"
     if not full_id or not full_id.startswith(prefix):
         return False
     token_name = full_id[len(prefix):]
     if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", token_name):
         return False
-    paths = ["/vms", f"/nodes/{node_name}", *(f"/storage/{storage}" for storage in storage_ids)]
+    paths = ["/vms", f"/nodes/{node_name}", f"/storage/{iso_storage_id}", sdn_acl_path,
+             *(f"/storage/{storage}" for storage in storage_ids)]
     cleanup = "\n".join(
         f"pveum acl delete {shell_quote(path)} --tokens {shell_quote(full_id)} "
         f"--roles {shell_quote(role)} >/dev/null 2>&1"
@@ -360,7 +365,8 @@ def revoke_old_token(host, user, full_id, role, storage_ids, private_key, known_
 
 def rollback_new_token(host, user, full_id, previous_id, previous_secret, base_url,
                        write_token, role, storage_ids, private_key, known_hosts,
-                       node_name="pve01", iso_storage_id="local"):
+                       node_name="pve01", iso_storage_id="local",
+                       sdn_acl_path="/sdn/zones/localnetwork/vmbr0/80"):
     """Restore prior Infisical values and revoke the uncommitted token."""
     try:
         restore_secrets(base_url, write_token, previous_id, previous_secret)
@@ -368,7 +374,7 @@ def rollback_new_token(host, user, full_id, previous_id, previous_secret, base_u
     except Exception:
         restored = False
     revoked = revoke_old_token(host, user, full_id, role, storage_ids, private_key, known_hosts,
-                              node_name, iso_storage_id)
+                              node_name, iso_storage_id, sdn_acl_path)
     return restored, revoked
 
 
@@ -403,6 +409,9 @@ def main():
         raise RuntimeError("PROXMOX_NODE_NAME must be a Proxmox node name")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", iso_storage_id):
         raise RuntimeError("PROXMOX_ISO_STORAGE_ID must be a Proxmox storage ID")
+    sdn_acl_path = os.environ.get("PROXMOX_SDN_ACL_PATH", "/sdn/zones/localnetwork/vmbr0/80").strip()
+    if not re.fullmatch(r"/sdn/zones/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[0-9]+)?", sdn_acl_path):
+        raise RuntimeError("PROXMOX_SDN_ACL_PATH must be an SDN zone/network path, optionally ending in a VLAN ID")
     ensure_certificate = os.environ.get("ENSURE_API_CERTIFICATE", "true").lower() in {"1", "true", "yes"}
     if ensure_certificate:
         api_hostname = required("PROXMOX_API_HOSTNAME")
@@ -418,14 +427,14 @@ def main():
     token_name = f"jenkins-{build_number}"
 
     full_id, secret = create_remote_token(host, user, role, token_name, storage_ids,
-                                          private_key, known_hosts, node_name, iso_storage_id)
+                                          private_key, known_hosts, node_name, iso_storage_id, sdn_acl_path)
     try:
         write_secret(base_url, write_token, "PVE_API_TOKEN_ID", full_id)
         write_secret(base_url, write_token, "PVE_API_TOKEN_SECRET", secret)
     except Exception:
         restored, revoked = rollback_new_token(host, user, full_id, previous_id, previous_secret,
                                                base_url, write_token, role, storage_ids, private_key,
-                                               known_hosts, node_name, iso_storage_id)
+                                               known_hosts, node_name, iso_storage_id, sdn_acl_path)
         if not restored or not revoked:
             raise RuntimeError("Infisical update failed; rollback was incomplete. Verify the previous Infisical values and inspect the newly created Proxmox token before retrying") from None
         raise RuntimeError("Infisical update failed; restored previous values and removed the newly created Proxmox token") from None
@@ -439,14 +448,14 @@ def main():
     if not verified:
         restored, revoked = rollback_new_token(host, user, full_id, previous_id, previous_secret,
                                                base_url, write_token, role, storage_ids, private_key,
-                                               known_hosts, node_name, iso_storage_id)
+                                               known_hosts, node_name, iso_storage_id, sdn_acl_path)
         if not restored or not revoked:
             raise RuntimeError("Infisical verification failed; rollback was incomplete. Verify the previous Infisical values and inspect the newly created Proxmox token before retrying")
         raise RuntimeError("Infisical verification failed; restored previous values and removed the newly created Proxmox token")
 
     if previous_id and previous_id != full_id:
         if revoke_old_token(host, user, previous_id, role, storage_ids, private_key, known_hosts,
-                            node_name, iso_storage_id):
+                            node_name, iso_storage_id, sdn_acl_path):
             print("Saved and verified the new Infisical token; removed the previous token.")
         else:
             print("Saved and verified the new token, but could not remove the previous token; review it in Proxmox.")
