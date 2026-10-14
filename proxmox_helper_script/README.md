@@ -23,14 +23,14 @@ dedicated Proxmox SSH key through `whiptail` before a new controlplane is
 created. See the root README for details. The selected Community Script may
 still prompt for host-specific choices.
 
-During controlplane bootstrap, `controlplane.sh` also ensures the
-`HomelabTalosImageDownloader` Proxmox role and grants the automation user only
-`Sys.AccessNetwork` on the configured Proxmox node and
-`Datastore.AllocateTemplate` on the configured ISO datastore. Defaults are
-`pve01`, `local`, and `homelab-automation@pve`; override them with
+During controlplane bootstrap, `controlplane.sh` ensures the single
+`HomelabLxcOperator` Proxmox role includes the VM, storage, and Talos ISO
+download privileges. It grants that role on the configured Proxmox node and
+ISO datastore. Defaults are `pve01`, `local`, and `homelab-automation@pve`; override them with
 `HOMELAB_PROXMOX_NODE_NAME`, `HOMELAB_PROXMOX_ISO_STORAGE_ID`, and
-`HOMELAB_PROXMOX_AUTOMATION_USER` when needed. Job 002 grants the matching
-privilege-separated API token ACLs and cleans them up during token rotation.
+`HOMELAB_PROXMOX_AUTOMATION_USER` when needed. Job 002 grants the same role to
+the privilege-separated API token and removes the obsolete downloader-role
+ACLs and role during token rotation.
 
 On Proxmox, `/root/.ssh/authorized_keys` is commonly a symlink to the
 cluster-managed `/etc/pve/priv/authorized_keys`. The bootstrap follows only

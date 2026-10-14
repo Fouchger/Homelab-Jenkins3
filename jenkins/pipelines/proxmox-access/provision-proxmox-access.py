@@ -260,33 +260,39 @@ def create_remote_token(host, user, role, token_name, storage_ids, private_key, 
                         node_name="pve01", iso_storage_id="local"):
     # The backing account keeps its existing ACL model. Privilege separation
     # additionally requires matching ACL entries for this specific token.
+    role_privileges = (
+        "Datastore.AllocateSpace,Datastore.Audit,Datastore.AllocateTemplate,"
+        "Sys.Audit,Sys.AccessNetwork,VM.Allocate,VM.Audit,VM.Config.CPU,"
+        "VM.Config.Disk,VM.Config.HWType,VM.Config.Network,VM.Config.Options,VM.PowerMgmt"
+    )
     acl_commands = [
         'pveum acl modify /vms -user "$user" -role "$role"',
         'pveum acl modify /vms -token "$full_id" -role "$role"',
+        f'pveum acl modify /nodes/{node_name} -user "$user" -role "$role"',
+        f'pveum acl modify /nodes/{node_name} -token "$full_id" -role "$role"',
     ]
     for storage in storage_ids:
         acl_commands.extend((
             f'pveum acl modify /storage/{storage} -user "$user" -role "$role"',
             f'pveum acl modify /storage/{storage} -token "$full_id" -role "$role"',
         ))
-    download_role = "HomelabTalosImageDownloader"
-    download_privileges = "Datastore.AllocateTemplate,Sys.AccessNetwork"
-    acl_commands.extend((
-        f'pveum acl modify /nodes/{node_name} -user "$user" -role "$download_role"',
-        f'pveum acl modify /nodes/{node_name} -token "$full_id" -role "$download_role"',
-        f'pveum acl modify /storage/{iso_storage_id} -user "$user" -role "$download_role"',
-        f'pveum acl modify /storage/{iso_storage_id} -token "$full_id" -role "$download_role"',
-    ))
+    legacy_role = "HomelabTalosImageDownloader"
+    legacy_cleanup = [
+        f'pveum acl delete /nodes/{node_name} --users "$user" --roles "$legacy_role" >/dev/null 2>&1 || true',
+        f'pveum acl delete /nodes/{node_name} --tokens "$full_id" --roles "$legacy_role" >/dev/null 2>&1 || true',
+        f'pveum acl delete /storage/{iso_storage_id} --users "$user" --roles "$legacy_role" >/dev/null 2>&1 || true',
+        f'pveum acl delete /storage/{iso_storage_id} --tokens "$full_id" --roles "$legacy_role" >/dev/null 2>&1 || true',
+    ]
     acl_script = " && ".join(acl_commands)
     remote_script = f"""set -eu
 user={shell_quote(user)}
 role={shell_quote(role)}
-download_role={shell_quote(download_role)}
-download_privileges={shell_quote(download_privileges)}
+role_privileges={shell_quote(role_privileges)}
+legacy_role={shell_quote(legacy_role)}
 token_name={shell_quote(token_name)}
 full_id="$user!$token_name"
-if ! pveum role modify "$download_role" -privs "$download_privileges" >/dev/null 2>&1; then
-  pveum role add "$download_role" -privs "$download_privileges" >/dev/null
+if ! pveum role modify "$role" -privs "$role_privileges" >/dev/null 2>&1; then
+  pveum role add "$role" -privs "$role_privileges" >/dev/null
 fi
 token_json=$(pveum user token add "$user" "$token_name" -privsep 1 --output-format json)
 if ! {{
@@ -295,6 +301,8 @@ if ! {{
   pveum user token remove "$user" "$token_name" >/dev/null 2>&1 || true
   exit 1
 fi
+{chr(10).join(legacy_cleanup)}
+pveum role delete "$legacy_role" >/dev/null 2>&1 || true
 printf '%s\\n' "$token_json"
 """
     output = ssh_script(host, remote_script, private_key, known_hosts)
@@ -326,21 +334,22 @@ def revoke_old_token(host, user, full_id, role, storage_ids, private_key, known_
     token_name = full_id[len(prefix):]
     if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", token_name):
         return False
-    paths = ["/vms", *(f"/storage/{storage}" for storage in storage_ids)]
+    paths = ["/vms", f"/nodes/{node_name}", *(f"/storage/{storage}" for storage in storage_ids)]
     cleanup = "\n".join(
         f"pveum acl delete {shell_quote(path)} --tokens {shell_quote(full_id)} "
         f"--roles {shell_quote(role)} >/dev/null 2>&1"
         for path in paths
     )
-    download_role = "HomelabTalosImageDownloader"
+    legacy_role = "HomelabTalosImageDownloader"
     cleanup += "\n" + "\n".join(
         f"pveum acl delete {shell_quote(path)} --tokens {shell_quote(full_id)} "
-        f"--roles {shell_quote(download_role)} >/dev/null 2>&1 || true"
+        f"--roles {shell_quote(legacy_role)} >/dev/null 2>&1 || true"
         for path in (f"/nodes/{node_name}", f"/storage/{iso_storage_id}")
     )
     script = (
         f"set -e\n{cleanup}\n"
         f"pveum user token remove {shell_quote(user)} {shell_quote(token_name)}\n"
+        f"pveum role delete {shell_quote(legacy_role)} >/dev/null 2>&1 || true\n"
     )
     try:
         ssh_script(host, script, private_key, known_hosts, timeout=60)
@@ -380,13 +389,11 @@ def main():
 
     host = required("PROXMOX_HOST")
     user = required("PROXMOX_USER")
-    role = required("PROXMOX_ROLE")
+    role = "HomelabLxcOperator"
     if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
         raise RuntimeError("PROXMOX_HOST must be a hostname or IP address")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+@pve", user):
         raise RuntimeError("PROXMOX_USER must be a project-owned account in the pve realm")
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+", role):
-        raise RuntimeError("PROXMOX_ROLE must be an existing Proxmox role name")
     storage_ids = [item.strip() for item in os.environ.get("PROXMOX_STORAGE_IDS", "").split(",") if item.strip()]
     if not storage_ids or any(not re.fullmatch(r"[A-Za-z0-9_.-]+", item) for item in storage_ids):
         raise RuntimeError("Provide comma-separated Proxmox storage IDs in PROXMOX_STORAGE_IDS")

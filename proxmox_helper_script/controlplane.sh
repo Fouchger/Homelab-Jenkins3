@@ -85,27 +85,30 @@ fi
 source "$project_dir/jenkins/config/install.conf"
 [[ $CONTROLLER_CTID =~ ^[1-9][0-9]+$ && $AGENT_CTID =~ ^[1-9][0-9]+$ && $CONTROLLER_CTID != "$AGENT_CTID" ]] || exit 2
 
-# Talos ISO downloads are performed by Proxmox itself. Keep that capability
-# separate from the VM operator role and scoped to this node and ISO datastore.
-ensure_talos_download_role() {
+# Talos ISO downloads are performed by Proxmox itself. Extend the existing
+# operator role and keep the added privileges scoped to this node and datastore.
+ensure_lxc_operator_role() {
   local node=${HOMELAB_PROXMOX_NODE_NAME:-$(hostname -s)}
   local iso_storage=${HOMELAB_PROXMOX_ISO_STORAGE_ID:-local}
   local user=${HOMELAB_PROXMOX_AUTOMATION_USER:-homelab-automation@pve}
-  local role=HomelabTalosImageDownloader
-  local privileges=Datastore.AllocateTemplate,Sys.AccessNetwork
+  local role=HomelabLxcOperator
+  local privileges=Datastore.AllocateSpace,Datastore.Audit,Datastore.AllocateTemplate,Sys.Audit,Sys.AccessNetwork,VM.Allocate,VM.Audit,VM.Config.CPU,VM.Config.Disk,VM.Config.HWType,VM.Config.Network,VM.Config.Options,VM.PowerMgmt
   [[ $node =~ ^[A-Za-z0-9_.-]+$ && $iso_storage =~ ^[A-Za-z0-9_.-]+$ && $user =~ ^[A-Za-z0-9_.-]+@pve$ ]] || {
     printf 'Invalid Proxmox node, ISO storage, or automation user setting.\n' >&2
     return 2
   }
-  command -v pveum >/dev/null || { printf 'pveum is required to configure the Talos download role.\n' >&2; return 1; }
+  command -v pveum >/dev/null || { printf 'pveum is required to configure the Proxmox operator role.\n' >&2; return 1; }
   if ! pveum role modify "$role" -privs "$privileges" >/dev/null 2>&1; then
     pveum role add "$role" -privs "$privileges" >/dev/null
   fi
   pveum acl modify "/nodes/$node" -user "$user" -role "$role"
   pveum acl modify "/storage/$iso_storage" -user "$user" -role "$role"
+  pveum acl delete "/nodes/$node" --users "$user" --roles HomelabTalosImageDownloader >/dev/null 2>&1 || true
+  pveum acl delete "/storage/$iso_storage" --users "$user" --roles HomelabTalosImageDownloader >/dev/null 2>&1 || true
+  pveum role delete HomelabTalosImageDownloader >/dev/null 2>&1 || true
   printf 'Ensured %s for %s on node %s and ISO storage %s.\n' "$role" "$user" "$node" "$iso_storage"
 }
-ensure_talos_download_role
+ensure_lxc_operator_role
 
 infisical_setup_dir=
 has_interactive_terminal() {
