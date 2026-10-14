@@ -824,6 +824,42 @@ JENKINS_KUBERNETES_INFRA_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/104-homelab-kubernetes-infra-pipeline.groovy"
 chmod 0640 "$jenkins_home/init.groovy.d/104-homelab-kubernetes-infra-pipeline.groovy"
 
+# Seed the guarded Talos machine-configuration and first-bootstrap pipeline.
+cat >"$jenkins_home/init.groovy.d/105-homelab-talos-cluster-pipeline.groovy" <<'JENKINS_TALOS_CLUSTER_PIPELINE_HOOK'
+import hudson.plugins.git.BranchSpec
+import hudson.plugins.git.GitSCM
+import jenkins.model.Jenkins
+import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition
+import org.jenkinsci.plugins.workflow.job.WorkflowJob
+
+def jenkins = Jenkins.get()
+def projectSettings = new Properties()
+new File('/etc/homelab/project.properties').withInputStream { projectSettings.load(it) }
+def repositoryUrl = "https://github.com/${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
+def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
+def branch = projectSettings.getProperty('githubBranch', 'main')
+def jobName = '009 - Talos Cluster Setup'
+def job = jenkins.getItem(jobName)
+def scm = new GitSCM(
+    GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
+    Collections.singletonList(new BranchSpec("*/${branch}")),
+    null, null, Collections.emptyList()
+)
+def definition = new CpsScmFlowDefinition(scm, 'jenkins/pipelines/talos-cluster/Jenkinsfile')
+definition.setLightweight(true)
+if (job == null) {
+    job = jenkins.createProject(WorkflowJob, jobName)
+    println("Created guarded Talos cluster setup Pipeline for branch '${branch}'.")
+} else if (!(job instanceof WorkflowJob)) {
+    throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
+}
+job.setDefinition(definition)
+job.setDescription('Job 009 configures the five existing Talos VMs from kubernetes/talos/cluster.json and performs the initial etcd bootstrap only when every VM is verified in maintenance mode and the API VIP is unused. Talos secrets, kubeconfig, and a bootstrap marker are stored in Infisical. The marker is saved before the bootstrap call and permanently blocks this job from reinstalling or issuing a second bootstrap after VM recreation. A saved-secret first run can resume only when all five nodes still prove fresh and the marker is absent. Existing clusters get health validation and idempotent Cilium reconciliation. DHCP reservations must be in place. Flux and workloads are subsequent stages. No Proxmox VM is created, destroyed, or replaced.')
+job.save()
+JENKINS_TALOS_CLUSTER_PIPELINE_HOOK
+chown jenkins:jenkins "$jenkins_home/init.groovy.d/105-homelab-talos-cluster-pipeline.groovy"
+chmod 0640 "$jenkins_home/init.groovy.d/105-homelab-talos-cluster-pipeline.groovy"
+
 # Declarative pipeline parameters normally refresh only when that job runs.
 # Keep the router SSH-key form current as part of the server update so users
 # do not have to submit the obsolete manual fingerprint parameter once first.

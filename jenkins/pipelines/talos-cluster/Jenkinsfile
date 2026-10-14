@@ -1,0 +1,71 @@
+pipeline {
+    agent { label 'homelab-automation' }
+    options {
+        disableConcurrentBuilds()
+        timestamps()
+        timeout(time: 90, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+    parameters {
+        booleanParam(name: 'INITIALIZE_CLUSTER', defaultValue: false, description: 'Allow the initial setup or a safe resume before any node has changed. Bootstrap proceeds only when all five VMs are fresh, the API VIP is unused, and the Infisical bootstrap marker is absent. Never selects recreation or reinstallation.')
+        booleanParam(name: 'APPLY', defaultValue: false, description: 'Unchecked: read-only preflight. Checked: after approval, configure and bootstrap a genuinely fresh cluster, or reconcile Cilium on an initialized cluster without reapplying Talos machine configuration.')
+    }
+    stages {
+        stage('Preflight Talos cluster') {
+            steps {
+                withCredentials([
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                    string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
+                    string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
+                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT')
+                ]) {
+                    withEnv([
+                        "TALOS_ACTION=plan",
+                        "INITIALIZE_CLUSTER=${params.INITIALIZE_CLUSTER}"
+                    ]) {
+                        sh(label: 'Check Infisical state and all Talos nodes without changes', script: '''#!/bin/sh
+set +x
+python3 jenkins/pipelines/talos-cluster/configure-talos.py
+''')
+                    }
+                }
+            }
+        }
+        stage('Approve initial cluster setup') {
+            when { expression { params.APPLY } }
+            steps {
+                input message: "This applies Talos configuration to the five configured VM IPs and bootstraps etcd once only if all five VMs are confirmed in maintenance mode and the API VIP is unused. Talos secrets are created only when absent and are saved before nodes are touched. If a prior first run stopped before any node changed, it can resume only while all five nodes remain in maintenance mode and the bootstrap marker is absent. The marker is saved before the bootstrap call and permanently blocks reinstallation or a second bootstrap. Existing clusters get health validation and idempotent Cilium reconciliation only. DHCP reservations must already match kubernetes/talos/cluster.json. Flux and workloads remain separate.", ok: 'Configure Talos cluster'
+            }
+        }
+        stage('Configure Talos and bootstrap') {
+            when { expression { params.APPLY } }
+            steps {
+                withCredentials([
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-writer-api', usernameVariable: 'INFISICAL_WRITE_CLIENT_ID', passwordVariable: 'INFISICAL_WRITE_CLIENT_SECRET'),
+                    string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
+                    string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
+                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT')
+                ]) {
+                    withEnv([
+                        "TALOS_ACTION=apply",
+                        "INITIALIZE_CLUSTER=${params.INITIALIZE_CLUSTER}"
+                    ]) {
+                        sh(label: 'Configure Talos nodes and safely bootstrap', script: '''#!/bin/sh
+set +x
+python3 jenkins/pipelines/talos-cluster/configure-talos.py
+''')
+                    }
+                }
+            }
+        }
+    }
+    post {
+        always {
+            sh(label: 'Remove temporary Talos credentials and machine configs', script: '''#!/bin/sh
+set -eu
+rm -rf -- "$WORKSPACE/.talos-private"
+''')
+        }
+    }
+}

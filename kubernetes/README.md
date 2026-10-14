@@ -9,7 +9,7 @@ ongoing in-cluster application configuration after the cluster is bootstrapped.
 | Layer | Owner | Rebuild and day-2 approach |
 | --- | --- | --- |
 | Proxmox VMs, disks, and tagged VLAN 80 NICs | OpenTofu | Review a plan, then apply from Jenkins. Keep state durable and backed up. |
-| Talos OS, machine configuration, and control-plane bootstrap | Talos API with `talosctl`, invoked by Jenkins | Generate secrets once and store them outside Git/state. Render per-node config from a versioned inventory. Bootstrap exactly one control-plane node once; subsequent runs must be safe to repeat. |
+| Talos OS, machine configuration, and control-plane bootstrap | Talos API with `talosctl`, invoked by Jenkins | Inventory is `kubernetes/talos/cluster.json`. Generate secrets once and store them outside Git/state. Bootstrap exactly one control-plane node once; subsequent runs must be safe to repeat. |
 | Cluster networking | Cilium, installed before Flux | Pin the chart and values in Git. Confirm the chosen pod/service CIDRs do not overlap homelab VLANs. |
 | Applications and cluster add-ons | Flux | Bootstrap Flux to `kubernetes/clusters/homelab`; Git is the desired state for normal operation. |
 | NFS export on OpenMediaVault | OMV management interface (currently configured) | Dedicated `Kubernetes` shared folder on TB4a is exported read/write to `192.168.80.0/24` with root squashing. Preserve existing SMB shares. |
@@ -25,11 +25,14 @@ ongoing in-cluster application configuration after the cluster is bootstrapped.
    through the router workflow, using `.101`-`.105` from the private inputs.
    Keep `.200` out of DHCP. Then run the OpenTofu plan and approved apply to
    create the Talos VMs.
-3. Generate and protect Talos machine secrets. Boot the pinned Talos Image
-   Factory image, apply control-plane/worker machine configuration, and verify
-   all three control planes before bootstrapping the cluster once.
-4. Install and verify Cilium, then configure ingress and service IP allocation
-   to match the MikroTik routing/firewall design.
+3. Run Jenkins Job 009 using the inventory in `kubernetes/talos/cluster.json`.
+   It verifies the DHCP-reserved node IPs are all fresh Talos maintenance-mode
+   VMs and that the API VIP is unused, stores Talos secrets in Infisical,
+   applies the pinned machine configuration, and bootstraps etcd once on
+   `talos-cp-01`.
+4. Job 009 installs the pinned Cilium chart before checking all five nodes
+   Ready. Then configure ingress and service IP allocation to match the
+   MikroTik routing/firewall design.
 5. Verify the dedicated OMV NFS location and export from VLAN 70; verify
    node connectivity and an end-to-end persistent-volume mount before relying
    on it for workloads. For a Sonarr/Radarr/Lidarr/qBittorrent migration, expose
@@ -51,6 +54,8 @@ separate tested procedure using OMV and application-consistent backups. Never
 destroy/recreate a live cluster as a routine upgrade path.
 
 The current code implements the Proxmox Talos VM definitions and the Jenkins
-plan/approval/apply workflow. Talos installation and bootstrap, DHCP
-reservation automation, Cilium, Flux reconciliation, and workload manifests
-are subsequent implementation stages.
+plan/approval/apply workflow, plus Job 009 for guarded Talos installation,
+initial cluster bootstrap, and Cilium. DHCP reservations remain a manual
+prerequisite. Flux reconciliation and workload manifests are subsequent
+implementation stages. The Talos pipeline reuses the VMs from Job 008 and
+never recreates them.

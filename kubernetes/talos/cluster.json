@@ -1,0 +1,15 @@
+{
+  "cluster_name": "homelab",
+  "talos_version": "v1.13.10",
+  "kubernetes_version": "1.35.0",
+  "cilium_version": "1.20.2",
+  "api_vip": "192.168.80.200",
+  "install_disk": "/dev/sda",
+  "nodes": [
+    {"name": "talos-cp-01", "role": "controlplane", "ip": "192.168.80.101"},
+    {"name": "talos-cp-02", "role": "controlplane", "ip": "192.168.80.102"},
+    {"name": "talos-cp-03", "role": "controlplane", "ip": "192.168.80.103"},
+    {"name": "talos-worker-01", "role": "worker", "ip": "192.168.80.104"},
+    {"name": "talos-worker-02", "role": "worker", "ip": "192.168.80.105"}
+  ]
+}

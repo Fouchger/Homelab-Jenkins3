@@ -58,6 +58,65 @@ command -v task >/dev/null 2>&1 || {
   exit 1
 }
 
+# Match talosctl to the Talos ISO pinned by the Kubernetes VM inventory.
+talos_version=v1.13.10
+talos_asset=talosctl-linux-amd64
+talos_tmp_dir="$(mktemp -d)"
+trap 'rm -rf -- "$talos_tmp_dir"' EXIT
+curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 \
+  "https://github.com/siderolabs/talos/releases/download/${talos_version}/${talos_asset}" \
+  -o "$talos_tmp_dir/$talos_asset"
+curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 \
+  "https://github.com/siderolabs/talos/releases/download/${talos_version}/sha256sum.txt" \
+  -o "$talos_tmp_dir/sha256sum.txt"
+talos_sha256="$(awk -v asset="$talos_asset" '$2 == asset { print $1; exit }' "$talos_tmp_dir/sha256sum.txt")"
+[[ "$talos_sha256" =~ ^[0-9a-f]{64}$ ]] || {
+  echo "Talos ${talos_version} release checksums do not contain ${talos_asset}." >&2
+  exit 1
+}
+printf '%s  %s\n' "$talos_sha256" "$talos_tmp_dir/$talos_asset" | sha256sum --check --status || {
+  echo "Talos ${talos_version} CLI checksum verification failed." >&2
+  exit 1
+}
+install -o root -g root -m 0755 "$talos_tmp_dir/$talos_asset" /usr/local/bin/talosctl
+talosctl version --client 2>&1 | grep -F "$talos_version" >/dev/null || {
+  echo "Installed talosctl does not match ${talos_version}." >&2
+  exit 1
+}
+
+# Pin Helm and kubectl for the Cilium stage of Job 009.
+helm_version=v3.17.3
+helm_archive="helm-${helm_version}-linux-amd64.tar.gz"
+curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 \
+  "https://get.helm.sh/${helm_archive}" -o "$talos_tmp_dir/$helm_archive"
+curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 \
+  "https://get.helm.sh/${helm_archive}.sha256sum" -o "$talos_tmp_dir/${helm_archive}.sha256sum"
+helm_sha256="$(awk '{print $1; exit}' "$talos_tmp_dir/${helm_archive}.sha256sum")"
+[[ "$helm_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "Helm release checksum is invalid." >&2; exit 1; }
+printf '%s  %s\n' "$helm_sha256" "$talos_tmp_dir/$helm_archive" | sha256sum --check --status || {
+  echo "Helm ${helm_version} checksum verification failed." >&2; exit 1;
+}
+tar -xzf "$talos_tmp_dir/$helm_archive" -C "$talos_tmp_dir"
+install -o root -g root -m 0755 "$talos_tmp_dir/linux-amd64/helm" /usr/local/bin/helm
+helm version --short | grep -F "$helm_version" >/dev/null || { echo "Installed Helm version mismatch." >&2; exit 1; }
+
+kubectl_version=v1.35.0
+curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 \
+  "https://dl.k8s.io/release/${kubectl_version}/bin/linux/amd64/kubectl" -o "$talos_tmp_dir/kubectl"
+curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 \
+  "https://dl.k8s.io/release/${kubectl_version}/bin/linux/amd64/kubectl.sha256" -o "$talos_tmp_dir/kubectl.sha256"
+kubectl_sha256="$(tr -d '[:space:]' < "$talos_tmp_dir/kubectl.sha256")"
+[[ "$kubectl_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "kubectl release checksum is invalid." >&2; exit 1; }
+printf '%s  %s\n' "$kubectl_sha256" "$talos_tmp_dir/kubectl" | sha256sum --check --status || {
+  echo "kubectl ${kubectl_version} checksum verification failed." >&2; exit 1;
+}
+install -o root -g root -m 0755 "$talos_tmp_dir/kubectl" /usr/local/bin/kubectl
+kubectl version --client -o json | jq -e --arg version "$kubectl_version" '.clientVersion.gitVersion == $version' >/dev/null || {
+  echo "Installed kubectl version mismatch." >&2; exit 1;
+}
+rm -rf -- "$talos_tmp_dir"
+trap - EXIT
+
 # Keep Ansible and its Python dependencies isolated from Ubuntu's system Python.
 python3 -m venv /opt/ansible
 /opt/ansible/bin/python -m pip install --upgrade pip ansible-core proxmoxer requests
@@ -232,7 +291,7 @@ task --version
 /opt/ansible/bin/ansible --version | head -n 2
 printf '\nAutomation agent toolchain is ready for controller registration.\n'
 
-for tool in java git tofu packer task ansible ansible-config ansible-galaxy ansible-playbook \
+for tool in java git tofu packer task talosctl helm kubectl ansible ansible-config ansible-galaxy ansible-playbook \
   ssh python3 jq rsync zip unzip make shellcheck yamllint; do
   runuser -u jenkins-agent -- /bin/bash -c 'command -v "$1" >/dev/null' bash "$tool"
 done

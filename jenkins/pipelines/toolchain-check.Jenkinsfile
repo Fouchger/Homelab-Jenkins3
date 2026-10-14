@@ -17,6 +17,9 @@ pipeline {
                     tofu version
                     packer version
                     task --version
+                    talosctl version --client
+                    helm version --short
+                    kubectl version --client
                     ansible --version
                     ansible-config dump --only-changed | grep -F '/usr/local/share/ansible/collections'
                     ansible-galaxy collection list
