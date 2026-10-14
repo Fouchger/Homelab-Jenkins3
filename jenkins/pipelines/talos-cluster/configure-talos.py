@@ -192,6 +192,7 @@ def talos_environment(talosconfig):
 def existing_cluster_health(inventory, talosconfig):
     env = talos_environment(talosconfig)
     controlplanes = [node["ip"] for node in inventory["nodes"] if node["role"] == "controlplane"]
+    run(["talosctl", "config", "endpoint", *controlplanes], env=env)
     for address in controlplanes:
         result = run(["talosctl", "version", "--nodes", address], check=False, capture=True, env=env)
         if result.returncode:
