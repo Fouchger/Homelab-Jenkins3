@@ -195,7 +195,12 @@ def existing_cluster_health(inventory, talosconfig):
     for address in controlplanes:
         result = run(["talosctl", "version", "--nodes", address], check=False, capture=True, env=env)
         if result.returncode:
-            raise RuntimeError("Talos secrets exist but an authenticated control-plane API check failed. Refusing to reapply machine config or bootstrap; investigate the existing/partial cluster.")
+            details = " ".join((result.stdout or "").split())
+            details = details[-600:] if details else f"talosctl exited {result.returncode} without diagnostic output"
+            raise RuntimeError(
+                f"Authenticated Talos API check failed for control plane {address}: {details}. "
+                "Refusing to reapply machine config or bootstrap; investigate the existing/partial cluster."
+            )
     print("Saved Talos credentials authenticate to all control planes. No machine config or bootstrap operation will be repeated.")
 
 
