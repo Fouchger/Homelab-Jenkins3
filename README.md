@@ -269,10 +269,12 @@ pipeline separately for each one and review/approve each run. The router's
 encrypted backup is still created before router settings are changed.
 
 These scripts seed the Proxmox access
-setup job. The job applies the existing `HomelabLxcOperator` role to
-`homelab-automation@pve`, creates or rotates its API token, and writes the
-result to Infisical. This package also aligns Jenkins installation and
-enrolment and includes the toolchain verification job.
+setup job. The job ensures the scoped `HomelabTalosImageDownloader` role,
+applies its node and ISO-storage ACLs to the automation user and token, applies
+the existing `HomelabLxcOperator` role to `homelab-automation@pve`, creates or
+rotates its API token, and writes the result to Infisical. This package also
+aligns Jenkins installation and enrolment and includes the toolchain
+verification job.
 After the pipeline files are pushed to the configured GitHub branch, restart
 Jenkins or rerun the controller installer to execute the startup hook that
 seeds the new job.

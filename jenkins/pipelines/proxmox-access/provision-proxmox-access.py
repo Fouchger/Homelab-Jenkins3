@@ -256,7 +256,8 @@ fi
         print(result.strip())
 
 
-def create_remote_token(host, user, role, token_name, storage_ids, private_key, known_hosts):
+def create_remote_token(host, user, role, token_name, storage_ids, private_key, known_hosts,
+                        node_name="pve01", iso_storage_id="local"):
     # The backing account keeps its existing ACL model. Privilege separation
     # additionally requires matching ACL entries for this specific token.
     acl_commands = [
@@ -268,12 +269,25 @@ def create_remote_token(host, user, role, token_name, storage_ids, private_key, 
             f'pveum acl modify /storage/{storage} -user "$user" -role "$role"',
             f'pveum acl modify /storage/{storage} -token "$full_id" -role "$role"',
         ))
+    download_role = "HomelabTalosImageDownloader"
+    download_privileges = "Datastore.AllocateTemplate,Sys.AccessNetwork"
+    acl_commands.extend((
+        f'pveum acl modify /nodes/{node_name} -user "$user" -role "$download_role"',
+        f'pveum acl modify /nodes/{node_name} -token "$full_id" -role "$download_role"',
+        f'pveum acl modify /storage/{iso_storage_id} -user "$user" -role "$download_role"',
+        f'pveum acl modify /storage/{iso_storage_id} -token "$full_id" -role "$download_role"',
+    ))
     acl_script = " && ".join(acl_commands)
     remote_script = f"""set -eu
 user={shell_quote(user)}
 role={shell_quote(role)}
+download_role={shell_quote(download_role)}
+download_privileges={shell_quote(download_privileges)}
 token_name={shell_quote(token_name)}
 full_id="$user!$token_name"
+if ! pveum role modify "$download_role" -privs "$download_privileges" >/dev/null 2>&1; then
+  pveum role add "$download_role" -privs "$download_privileges" >/dev/null
+fi
 token_json=$(pveum user token add "$user" "$token_name" -privsep 1 --output-format json)
 if ! {{
   {acl_script}
@@ -288,20 +302,24 @@ printf '%s\\n' "$token_json"
     try:
         payload = json.loads(output)
     except json.JSONDecodeError:
-        revoke_old_token(host, user, expected_id, role, storage_ids, private_key, known_hosts)
+        revoke_old_token(host, user, expected_id, role, storage_ids, private_key, known_hosts,
+                         node_name, iso_storage_id)
         raise RuntimeError("Proxmox did not return token JSON; token state needs manual review") from None
     secret = payload.get("value") or payload.get("token")
     full_id = payload.get("full-tokenid") or payload.get("fullTokenid") or expected_id
     if full_id != expected_id:
-        revoke_old_token(host, user, expected_id, role, storage_ids, private_key, known_hosts)
+        revoke_old_token(host, user, expected_id, role, storage_ids, private_key, known_hosts,
+                         node_name, iso_storage_id)
         raise RuntimeError("Proxmox returned an unexpected token identifier; inspect token state before retrying")
     if not isinstance(secret, str) or not secret:
-        revoke_old_token(host, user, full_id, role, storage_ids, private_key, known_hosts)
+        revoke_old_token(host, user, full_id, role, storage_ids, private_key, known_hosts,
+                         node_name, iso_storage_id)
         raise RuntimeError("Proxmox created a token but did not return its secret; do not rerun blindly")
     return full_id, secret
 
 
-def revoke_old_token(host, user, full_id, role, storage_ids, private_key, known_hosts):
+def revoke_old_token(host, user, full_id, role, storage_ids, private_key, known_hosts,
+                     node_name="pve01", iso_storage_id="local"):
     prefix = f"{user}!"
     if not full_id or not full_id.startswith(prefix):
         return False
@@ -313,6 +331,12 @@ def revoke_old_token(host, user, full_id, role, storage_ids, private_key, known_
         f"pveum acl delete {shell_quote(path)} --tokens {shell_quote(full_id)} "
         f"--roles {shell_quote(role)} >/dev/null 2>&1"
         for path in paths
+    )
+    download_role = "HomelabTalosImageDownloader"
+    cleanup += "\n" + "\n".join(
+        f"pveum acl delete {shell_quote(path)} --tokens {shell_quote(full_id)} "
+        f"--roles {shell_quote(download_role)} >/dev/null 2>&1 || true"
+        for path in (f"/nodes/{node_name}", f"/storage/{iso_storage_id}")
     )
     script = (
         f"set -e\n{cleanup}\n"
@@ -326,14 +350,16 @@ def revoke_old_token(host, user, full_id, role, storage_ids, private_key, known_
 
 
 def rollback_new_token(host, user, full_id, previous_id, previous_secret, base_url,
-                       write_token, role, storage_ids, private_key, known_hosts):
+                       write_token, role, storage_ids, private_key, known_hosts,
+                       node_name="pve01", iso_storage_id="local"):
     """Restore prior Infisical values and revoke the uncommitted token."""
     try:
         restore_secrets(base_url, write_token, previous_id, previous_secret)
         restored = True
     except Exception:
         restored = False
-    revoked = revoke_old_token(host, user, full_id, role, storage_ids, private_key, known_hosts)
+    revoked = revoke_old_token(host, user, full_id, role, storage_ids, private_key, known_hosts,
+                              node_name, iso_storage_id)
     return restored, revoked
 
 
@@ -364,6 +390,12 @@ def main():
     storage_ids = [item.strip() for item in os.environ.get("PROXMOX_STORAGE_IDS", "").split(",") if item.strip()]
     if not storage_ids or any(not re.fullmatch(r"[A-Za-z0-9_.-]+", item) for item in storage_ids):
         raise RuntimeError("Provide comma-separated Proxmox storage IDs in PROXMOX_STORAGE_IDS")
+    node_name = os.environ.get("PROXMOX_NODE_NAME", "pve01").strip()
+    iso_storage_id = os.environ.get("PROXMOX_ISO_STORAGE_ID", "local").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", node_name):
+        raise RuntimeError("PROXMOX_NODE_NAME must be a Proxmox node name")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", iso_storage_id):
+        raise RuntimeError("PROXMOX_ISO_STORAGE_ID must be a Proxmox storage ID")
     ensure_certificate = os.environ.get("ENSURE_API_CERTIFICATE", "true").lower() in {"1", "true", "yes"}
     if ensure_certificate:
         api_hostname = required("PROXMOX_API_HOSTNAME")
@@ -378,13 +410,15 @@ def main():
         raise RuntimeError("Jenkins BUILD_NUMBER must be numeric")
     token_name = f"jenkins-{build_number}"
 
-    full_id, secret = create_remote_token(host, user, role, token_name, storage_ids, private_key, known_hosts)
+    full_id, secret = create_remote_token(host, user, role, token_name, storage_ids,
+                                          private_key, known_hosts, node_name, iso_storage_id)
     try:
         write_secret(base_url, write_token, "PVE_API_TOKEN_ID", full_id)
         write_secret(base_url, write_token, "PVE_API_TOKEN_SECRET", secret)
     except Exception:
         restored, revoked = rollback_new_token(host, user, full_id, previous_id, previous_secret,
-                                               base_url, write_token, role, storage_ids, private_key, known_hosts)
+                                               base_url, write_token, role, storage_ids, private_key,
+                                               known_hosts, node_name, iso_storage_id)
         if not restored or not revoked:
             raise RuntimeError("Infisical update failed; rollback was incomplete. Verify the previous Infisical values and inspect the newly created Proxmox token before retrying") from None
         raise RuntimeError("Infisical update failed; restored previous values and removed the newly created Proxmox token") from None
@@ -397,13 +431,15 @@ def main():
         verified = False
     if not verified:
         restored, revoked = rollback_new_token(host, user, full_id, previous_id, previous_secret,
-                                               base_url, write_token, role, storage_ids, private_key, known_hosts)
+                                               base_url, write_token, role, storage_ids, private_key,
+                                               known_hosts, node_name, iso_storage_id)
         if not restored or not revoked:
             raise RuntimeError("Infisical verification failed; rollback was incomplete. Verify the previous Infisical values and inspect the newly created Proxmox token before retrying")
         raise RuntimeError("Infisical verification failed; restored previous values and removed the newly created Proxmox token")
 
     if previous_id and previous_id != full_id:
-        if revoke_old_token(host, user, previous_id, role, storage_ids, private_key, known_hosts):
+        if revoke_old_token(host, user, previous_id, role, storage_ids, private_key, known_hosts,
+                            node_name, iso_storage_id):
             print("Saved and verified the new Infisical token; removed the previous token.")
         else:
             print("Saved and verified the new token, but could not remove the previous token; review it in Proxmox.")

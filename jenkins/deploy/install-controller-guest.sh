@@ -546,7 +546,7 @@ if (job == null) {
     println("Updating managed Pipeline '${jobName}' to use the repository's Jenkins pipeline folder.")
 }
 job.setDefinition(definition)
-job.setDescription('002 - Ensures the selected Proxmox API hostname has an ACME certificate using the Cloudflare DNS token in /cloudflare (pveproxy restarts briefly only when issuance is needed), then applies the existing HomelabLxcOperator role, rotates the Proxmox API token, updates /proxmox/automation in Infisical, verifies the saved values, and removes the prior token when it belongs to this account. Requires a registered Proxmox ACME account; account registration and ToS consent are not automated. Start manually when needed.')
+job.setDescription('002 - Ensures the selected Proxmox API hostname has an ACME certificate using the Cloudflare DNS token in /cloudflare (pveproxy restarts briefly only when issuance is needed), ensures the dedicated Talos ISO download role and scoped node/storage ACLs, applies the existing HomelabLxcOperator role, rotates the Proxmox API token, updates /proxmox/automation in Infisical, verifies the saved values, and removes the prior token when it belongs to this account. Requires a registered Proxmox ACME account; account registration and ToS consent are not automated. Start manually when needed.')
 job.save()
 JENKINS_PVE_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/96-homelab-proxmox-access-pipeline.groovy"
