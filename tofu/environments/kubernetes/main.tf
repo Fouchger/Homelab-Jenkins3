@@ -25,6 +25,16 @@ resource "proxmox_virtual_environment_vm" "talos_node" {
   protection  = true
   tags        = ["homelab", "kubernetes", "talos", each.value.role]
 
+  # Match Talos' recommended Proxmox firmware and PCI machine baseline.
+  bios    = "ovmf"
+  machine = "q35"
+
+  efi_disk {
+    datastore_id      = each.value.datastore_id
+    type              = "4m"
+    pre_enrolled_keys = false
+  }
+
   # Talos does not run qemu-guest-agent. Do not make Proxmox wait for one.
   agent {
     enabled = false

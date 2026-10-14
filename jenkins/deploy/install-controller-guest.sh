@@ -818,7 +818,7 @@ if (job == null) {
     throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
 }
 job.setDefinition(definition)
-job.setDescription('Accepts the Proxmox API hostname and complete non-secret Talos cluster configuration as build parameters, verifies the trusted Proxmox certificate, plans VM changes, and applies only when APPLY is selected and the exact OpenTofu plan is approved. RECREATE_NODE replaces one selected Talos VM per approved build; other VM changes are blocked, and Proxmox protection is restored afterward. Job 002 provisions the ACME certificate through Cloudflare DNS-01. Proxmox API credentials come from Infisical; durable OpenTofu state is stored on the automation agent.')
+job.setDescription('Accepts the Proxmox API hostname and complete non-secret Talos cluster configuration as build parameters, verifies the trusted Proxmox certificate, plans VM changes, and applies only when APPLY is selected and the exact OpenTofu plan is approved. RECREATE_NODE replaces one selected Talos VM and its local disks per approved build with OVMF/q35, EFI, and VirtIO SCSI; other VM changes are blocked, and Proxmox protection is restored afterward. Job 002 provisions the ACME certificate through Cloudflare DNS-01. Proxmox API credentials come from Infisical; durable OpenTofu state is stored on the automation agent.')
 job.save()
 JENKINS_KUBERNETES_INFRA_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/104-homelab-kubernetes-infra-pipeline.groovy"

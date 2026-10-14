@@ -7,7 +7,7 @@ Proxmox host-side LXC creation/profile scripts remain in `../../proxmox_helper_s
 | File | Purpose |
 | --- | --- |
 | `toolchain-check.Jenkinsfile` | Periodic read-only check of the Jenkins automation agent toolchain. |
-| `kubernetes-infra/Jenkinsfile` | Job `008 - Kubernetes Infrastructure`: accepts the complete cluster configuration in `CLUSTER_TFVARS`, validates and plans Talos VM changes, and applies only when `APPLY` is selected and the exact displayed plan is approved. `RECREATE_NODE` safely replaces one selected VM per build. |
+| `kubernetes-infra/Jenkinsfile` | Job `008 - Kubernetes Infrastructure`: accepts the complete cluster configuration in `CLUSTER_TFVARS`, validates and plans Talos VM changes, and applies only when `APPLY` is selected and the exact displayed plan is approved. `RECREATE_NODE` safely replaces one selected VM per build using Talos' recommended OVMF/q35 firmware, EFI disk, and VirtIO SCSI controller. |
 | `kubernetes-infra/run-tofu.py` | Retrieves the Proxmox API token from Infisical, rejects destructive plans without an explicit node selection and multi-VM updates, and runs OpenTofu against the private Kubernetes variable file on the Jenkins agent. Selected recreation temporarily clears and restores Proxmox protection. |
 | `server-update/Jenkinsfile` | Job `001 - Update Servers`: updates the controller and agent LXCs daily at 2:00 a.m. Pacific/Auckland. Owner and repository are job parameters; the optional GitHub token is only needed for a private repository. |
 | `server-update/update-servers.py` | Retrieves the Proxmox SSH key and trusted host key from Infisical, then runs the host bootstrap over SSH. |

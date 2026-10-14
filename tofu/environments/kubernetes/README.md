@@ -45,8 +45,9 @@ applied by this stack.
    certificate verification or put credentials in `.tfvars`.
 5. Use Jenkins Job 008 for plans and applies. Ordinary builds reject VM
    deletion/replacement and reject plans that update multiple existing VMs at
-   once. To recreate the existing VMs with the corrected
-   VirtIO SCSI controller, select exactly one `RECREATE_NODE` per build, select
+   once. To recreate the existing VMs with Talos' recommended OVMF/q35
+   firmware, 4 MB EFI disk, and VirtIO SCSI controller, select exactly one
+   `RECREATE_NODE` per build, select
    `APPLY`, review the plan, and approve it. Jenkins targets only that VM,
    temporarily clears Proxmox protection for the selected VM, and restores
    protection after replacement. Wait for the selected node to return healthy
