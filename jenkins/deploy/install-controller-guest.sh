@@ -114,7 +114,7 @@ install -d -o jenkins -g jenkins -m 0750 "$plugin_dir"
 # Install the Git, Pipeline, SSH credential, binding, Infisical, and extended
 # timer trigger plugins before Jenkins starts so seeded jobs are ready.
 plugins_present=yes
-for plugin_name in git workflow-job workflow-cps workflow-scm-step ssh-credentials credentials-binding infisical extended-timer-trigger mask-passwords; do
+for plugin_name in git workflow-job workflow-cps workflow-scm-step ssh-credentials credentials-binding infisical extended-timer-trigger mask-passwords timestamper; do
   if [[ ! -s "$plugin_dir/$plugin_name.jpi" && ! -s "$plugin_dir/$plugin_name.hpi" ]]; then
     plugins_present=no
     break
@@ -136,7 +136,7 @@ if [[ "$plugins_present" == no ]]; then
     --verbose \
     --war /usr/share/java/jenkins.war \
     --plugin-download-directory "$plugin_stage/plugins" \
-    --plugins git workflow-aggregator ssh-credentials credentials-binding infisical extended-timer-trigger mask-passwords
+    --plugins git workflow-aggregator ssh-credentials credentials-binding infisical extended-timer-trigger mask-passwords timestamper
   find "$plugin_stage/plugins" -maxdepth 1 -type f \( -name '*.jpi' -o -name '*.hpi' \) \
     -exec install -o jenkins -g jenkins -m 0644 {} "$plugin_dir/" \;
   rm -rf -- "$plugin_stage"
