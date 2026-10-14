@@ -61,13 +61,10 @@ resource "proxmox_virtual_environment_vm" "talos_node" {
     type = "l26"
   }
 
-  scsi_hardware = "virtio-scsi-single"
+  # Talos documents virtio-scsi-single as unsupported; use the standard
+  # VirtIO SCSI controller to avoid bootstrap hangs.
+  scsi_hardware = "virtio-scsi-pci"
   boot_order    = ["scsi0", "ide2"]
 
   serial_device {}
-
-  lifecycle {
-    # Rebuilds require an intentional protection change and reviewed plan.
-    prevent_destroy = true
-  }
 }

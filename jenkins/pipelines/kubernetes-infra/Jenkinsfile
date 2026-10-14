@@ -78,6 +78,7 @@ nodes = {
   }
 }''', description: 'Complete non-secret cluster configuration used for this run. Review or edit the VM IDs, IPs, MACs, host, sizing, VIP, and Talos ISO here before starting. Jenkins validates it and prints the exact infrastructure plan. Do not put credentials here; credentials come from Infisical.')
         booleanParam(name: 'APPLY', defaultValue: false, description: 'Unchecked: plan only. Checked: after Jenkins displays the plan, a second approval creates or updates the Talos ISO and the five VMs defined in CLUSTER_TFVARS. This does not install Talos or bootstrap Kubernetes.')
+        choice(name: 'RECREATE_NODE', choices: ['NONE', 'talos-cp-01', 'talos-cp-02', 'talos-cp-03', 'talos-worker-01', 'talos-worker-02'], description: 'Select exactly one existing Talos VM to recreate with the corrected SCSI controller. Run a separate approved build for each VM. Other VMs remain running; the selected VM will be unavailable during replacement. NONE is the normal plan/apply mode.')
     }
     stages {
         stage('Validate OpenTofu configuration') {
@@ -115,6 +116,7 @@ tofu -chdir=tofu/environments/kubernetes validate
                         "PROXMOX_API_HOSTNAME=${params.PROXMOX_API_HOSTNAME}",
                         "HOMELAB_KUBERNETES_TFVARS=${env.WORKSPACE}/.review-tmp/cluster.tfvars",
                         'TOFU_ACTION=plan',
+                        "RECREATE_NODE=${params.RECREATE_NODE}",
                         "TOFU_PLAN_FILE=${env.WORKSPACE}/.review-tmp/kubernetes-${env.BUILD_NUMBER}.tfplan"
                     ]) {
                         sh(label: 'Create reviewed OpenTofu plan', script: '''#!/bin/sh
@@ -132,7 +134,7 @@ python3 jenkins/pipelines/kubernetes-infra/run-tofu.py
 set -eu
 tofu -chdir=tofu/environments/kubernetes show -no-color "${WORKSPACE}/.review-tmp/kubernetes-${BUILD_NUMBER}.tfplan"
 ''')
-                input message: 'Review the OpenTofu plan above. Approval creates or updates Talos VMs on Proxmox. VM destruction and replacement are blocked by protection guards.', ok: 'Apply reviewed plan'
+                input message: "Review the exact OpenTofu plan above. RECREATE_NODE=${params.RECREATE_NODE}. When a node is selected, Jenkins replaces only that VM, temporarily clears its Proxmox protection, and restores protection after the replacement. The selected node is unavailable during replacement; wait for it to return healthy before starting another node. Other VMs remain running. Talos installation/configuration and Kubernetes workload draining are separate steps.", ok: 'Apply reviewed plan'
             }
         }
         stage('Apply approved plan') {
@@ -148,6 +150,7 @@ tofu -chdir=tofu/environments/kubernetes show -no-color "${WORKSPACE}/.review-tm
                         "PROXMOX_API_HOSTNAME=${params.PROXMOX_API_HOSTNAME}",
                         "HOMELAB_KUBERNETES_TFVARS=${env.WORKSPACE}/.review-tmp/cluster.tfvars",
                         'TOFU_ACTION=apply',
+                        "RECREATE_NODE=${params.RECREATE_NODE}",
                         "TOFU_PLAN_FILE=${env.WORKSPACE}/.review-tmp/kubernetes-${env.BUILD_NUMBER}.tfplan"
                     ]) {
                         sh(label: 'Apply approved OpenTofu plan', script: '''#!/bin/sh

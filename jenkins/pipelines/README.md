@@ -7,8 +7,8 @@ Proxmox host-side LXC creation/profile scripts remain in `../../proxmox_helper_s
 | File | Purpose |
 | --- | --- |
 | `toolchain-check.Jenkinsfile` | Periodic read-only check of the Jenkins automation agent toolchain. |
-| `kubernetes-infra/Jenkinsfile` | Job `008 - Kubernetes Infrastructure`: accepts the complete cluster configuration in the `CLUSTER_TFVARS` build parameter, validates and plans Talos VM changes, and applies only when `APPLY` is selected and the exact displayed plan is approved. |
-| `kubernetes-infra/run-tofu.py` | Retrieves the Proxmox API token from Infisical and runs OpenTofu against the private Kubernetes variable file on the Jenkins agent. |
+| `kubernetes-infra/Jenkinsfile` | Job `008 - Kubernetes Infrastructure`: accepts the complete cluster configuration in `CLUSTER_TFVARS`, validates and plans Talos VM changes, and applies only when `APPLY` is selected and the exact displayed plan is approved. `RECREATE_NODE` safely replaces one selected VM per build. |
+| `kubernetes-infra/run-tofu.py` | Retrieves the Proxmox API token from Infisical, rejects unselected destructive plans, and runs OpenTofu against the private Kubernetes variable file on the Jenkins agent. Selected recreation temporarily clears and restores Proxmox protection. |
 | `server-update/Jenkinsfile` | Job `001 - Update Servers`: updates the controller and agent LXCs daily at 2:00 a.m. Pacific/Auckland. Owner and repository are job parameters; the optional GitHub token is only needed for a private repository. |
 | `server-update/update-servers.py` | Retrieves the Proxmox SSH key and trusted host key from Infisical, then runs the host bootstrap over SSH. |
 | `proxmox-access/Jenkinsfile` | Job `002 - Proxmox Access Setup`: ensures the selected Proxmox API hostname has a trusted ACME certificate through Cloudflare DNS-01, extends `HomelabLxcOperator` with VM, Talos ISO, and configured VLAN SDN access, rotates the Proxmox API token, and writes it to Infisical. If no usable ACME account exists, account creation reads `/proxmox/acme/ACME_EMAIL` and requires the `ACCEPT_LETSENCRYPT_TOS` build parameter. |

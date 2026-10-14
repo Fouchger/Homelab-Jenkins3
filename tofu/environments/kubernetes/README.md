@@ -43,9 +43,16 @@ applied by this stack.
    the minimum permissions required to audit the target node and datastore,
    allocate an ISO template, modify VM settings, and create VMs. Do not disable
    certificate verification or put credentials in `.tfvars`.
-5. Initialize and inspect a plan. VM destruction is guarded by both Proxmox
-   protection and OpenTofu `prevent_destroy`; intentional rebuilds need an
-   explicit reviewed change to those guards.
+5. Use Jenkins Job 008 for plans and applies. Ordinary builds reject any VM
+   deletion/replacement. To recreate the existing VMs with the corrected
+   VirtIO SCSI controller, select exactly one `RECREATE_NODE` per build, select
+   `APPLY`, review the plan, and approve it. Jenkins targets only that VM,
+   temporarily clears Proxmox protection for the selected VM, and restores
+   protection after replacement. Wait for the selected node to return healthy
+   before running another recreation build. This keeps the other VMs running;
+   it does not itself drain Kubernetes workloads or prove the cluster can
+   tolerate the selected node being offline. Do not run the stack directly
+   with OpenTofu outside this guarded pipeline.
 
 For Jenkins, review or edit the complete non-secret cluster configuration in
 the `CLUSTER_TFVARS` build parameter before starting the job. The pipeline
