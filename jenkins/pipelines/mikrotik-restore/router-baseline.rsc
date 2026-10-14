@@ -177,7 +177,7 @@ add address=192.168.50.0/24 list=LANS
 add address=192.168.60.0/24 list=LANS
 add address=192.168.70.0/24 list=LANS
 add address=192.168.90.0/24 list=LANS
-add address=192.168.80.0/24 comment="Kubernetes subnet for DNS policy" list=LANS
+add address=192.168.80.0/24 comment="Kubernetes subnet for internal VLAN routing" list=LANS
 /ip firewall filter
 add action=accept chain=input comment=homelab-managed-router-dns-192.168.20.0-24 dst-port=53 protocol=udp src-address=192.168.20.0/24
 add action=accept chain=input comment=homelab-managed-router-dns-192.168.20.0-24 dst-port=53 protocol=tcp src-address=192.168.20.0/24

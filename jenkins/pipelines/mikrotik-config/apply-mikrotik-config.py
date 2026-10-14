@@ -640,6 +640,34 @@ def reconcile_talos_network(router, nodes):
         router.call("interface/bridge/vlan", "PUT", vlan_payload)
         changed.append("VLAN 80 bridge membership")
 
+    # The management-to-internal firewall rule matches destination networks
+    # through LANS. Without VLAN 80 in that list, VLAN 20 clients are dropped
+    # even though the router has a connected route and the Talos-specific
+    # Jenkins-agent rules are present.
+    address_lists = router.call("ip/firewall/address-list")
+    if not isinstance(address_lists, list):
+        raise RuntimeError("RouterOS returned an invalid firewall address-list")
+    kubernetes_lans = [row for row in address_lists if isinstance(row, dict)
+                       and row.get("list") == "LANS"
+                       and str(row.get("address", "")).strip() == TALOS_DHCP_NETWORK]
+    active_kubernetes_lans = [row for row in kubernetes_lans
+                              if str(row.get("disabled", "false")).lower() != "true"]
+    if len(active_kubernetes_lans) > 1:
+        raise RuntimeError(f"RouterOS has duplicate active LANS entries for {TALOS_DHCP_NETWORK}")
+    if not active_kubernetes_lans:
+        disabled_entry = kubernetes_lans[0] if kubernetes_lans else None
+        lans_payload = {
+            "list": "LANS",
+            "address": TALOS_DHCP_NETWORK,
+            "comment": "Kubernetes subnet for internal VLAN routing",
+        }
+        if disabled_entry:
+            rest_set(router, f"ip/firewall/address-list/{rest_record_id(disabled_entry)}",
+                     {**lans_payload, "disabled": "false"})
+        else:
+            router.call("ip/firewall/address-list", "PUT", lans_payload)
+        changed.append("VLAN 80 membership in LANS for management routing")
+
     # Keep the named Talos server on the VLAN 80 interface and address pool.
     servers = router.call("ip/dhcp-server")
     server = next((row for row in servers if isinstance(row, dict)
@@ -711,6 +739,13 @@ def reconcile_talos_network(router, nodes):
                      if isinstance(row, dict) and str(row.get("vlan-ids", "")) == "80"]
     if len(verified_vlan) != 1 or verified_vlan[0].get("tagged", "").replace(" ", "") != "bridge,ether2":
         raise RuntimeError("RouterOS VLAN 80 membership verification failed")
+    verified_address_lists = router.call("ip/firewall/address-list")
+    if not isinstance(verified_address_lists, list) or not any(
+            isinstance(row, dict) and row.get("list") == "LANS"
+            and str(row.get("address", "")).strip() == TALOS_DHCP_NETWORK
+            and str(row.get("disabled", "false")).lower() != "true"
+            for row in verified_address_lists):
+        raise RuntimeError("RouterOS VLAN 80 LANS address-list verification failed")
     verified_servers = [row for row in router.call("ip/dhcp-server")
                         if isinstance(row, dict) and row.get("name") == TALOS_DHCP_SERVER
                         and str(row.get("disabled", "false")).lower() != "true"]

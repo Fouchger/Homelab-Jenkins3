@@ -231,6 +231,7 @@ def review(values, router):
     static_dns = router.get("ip/dns/static")
     networks = router.get("ip/dhcp-server/network")
     bridge_vlans = router.get("interface/bridge/vlan")
+    address_lists = router.get("ip/firewall/address-list")
     dhcp_servers = router.get("ip/dhcp-server")
     leases = router.get("ip/dhcp-server/lease")
     if isinstance(resources, list):
@@ -245,7 +246,7 @@ def review(values, router):
         raise RuntimeError("RouterOS returned an invalid DHCP network list")
     if not isinstance(static_dns, list):
         raise RuntimeError("RouterOS returned an invalid static DNS record list")
-    if not all(isinstance(rows, list) for rows in (bridge_vlans, dhcp_servers, leases)):
+    if not all(isinstance(rows, list) for rows in (bridge_vlans, address_lists, dhcp_servers, leases)):
         raise RuntimeError("RouterOS returned invalid VLAN or DHCP data")
 
     print("Router connection: verified (HTTPS certificate pin and REST login)")
@@ -332,6 +333,13 @@ def review(values, router):
     vlan_blocked = len(vlan80) > 1 or (len(vlan80) == 1 and not vlan_match
                                        and vlan80[0].get("comment") != "Kubernetes trunk")
     print(f"Talos VLAN 80 trunk: {'blocked by duplicate/unmanaged membership' if vlan_blocked else 'matches' if vlan_match else 'change planned to tagged bridge,ether2'}")
+    lans_entries = [row for row in address_lists if isinstance(row, dict)
+                    and row.get("list") == "LANS"
+                    and str(row.get("address", "")).strip() == TALOS_DHCP_NETWORK
+                    and str(row.get("disabled", "false")).lower() != "true"]
+    if len(lans_entries) > 1:
+        raise RuntimeError(f"RouterOS has duplicate active LANS entries for {TALOS_DHCP_NETWORK}")
+    print(f"VLAN 80 management routing scope: {'matches' if lans_entries else 'change planned to add ' + TALOS_DHCP_NETWORK + ' to LANS'}")
     active_servers = [row for row in dhcp_servers if isinstance(row, dict)
                       and row.get("name") == TALOS_DHCP_SERVER
                       and str(row.get("disabled", "false")).lower() != "true"]

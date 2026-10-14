@@ -416,8 +416,14 @@ def configure_cilium(inventory, env, read_token):
     # control-plane and worker lists below tell it which cluster members to
     # validate; a multi-address `--nodes` target is not supported by health.
     run(["talosctl", "config", "node", controlplanes[0]], env=env)
+    print(
+        "Running Talos health checks from the Jenkins agent; Cilium can change "
+        "node-local addresses used by server-side health discovery.",
+        flush=True,
+    )
     run([
         "talosctl", "health",
+        "--server=false",
         "--nodes", controlplanes[0],
         "--control-plane-nodes", ",".join(controlplanes),
         "--worker-nodes", ",".join(workers),
