@@ -210,6 +210,20 @@ def ssh_backup_blocker(values):
     return ""
 
 
+def firewall_value_matches(field, actual, expected):
+    actual = str(actual)
+    if field in ("src-address", "dst-address"):
+        try:
+            actual_network = ipaddress.ip_network(
+                actual if "/" in actual else f"{actual}/32", strict=False
+            )
+            expected_network = ipaddress.ip_network(expected, strict=False)
+            return actual_network == expected_network
+        except ValueError:
+            pass
+    return actual == expected
+
+
 def review(values, router):
     resources = router.get("system/resource")
     identity = router.get("system/identity")
@@ -427,7 +441,10 @@ def review(values, router):
                 continue
             key = (str(rule.get("comment", "")), str(rule.get("protocol", "")))
             expected = desired_rules.get(key)
-            valid = bool(expected) and all(str(rule.get(field, "")) == value for field, value in expected.items())
+            valid = bool(expected) and all(
+                firewall_value_matches(field, rule.get(field, ""), value)
+                for field, value in expected.items()
+            )
             valid = valid and str(rule.get("disabled", "false")).lower() != "true"
             if valid and key not in kept_rules:
                 kept_rules.add(key)
@@ -441,7 +458,7 @@ def review(values, router):
                     differences = [
                         f"{field}={rule.get(field, '(unset)')!r} (wanted {value!r})"
                         for field, value in expected.items()
-                        if str(rule.get(field, "")) != value
+                        if not firewall_value_matches(field, rule.get(field, ""), value)
                     ]
                     if str(rule.get("disabled", "false")).lower() == "true":
                         differences.append("disabled=true (wanted false)")
