@@ -31,6 +31,10 @@ PROXMOX_API_DNS_COMMENT = "homelab-managed-proxmox-api"
 TALOS_CLUSTER_FILE = Path(__file__).resolve().parents[3] / "kubernetes/talos/cluster.json"
 TALOS_DOMAIN = "fouchger.uk"
 TALOS_DHCP_SERVER = "dhcp-vlan80"
+TALOS_DHCP_INTERFACE = "VLAN80-K8S"
+TALOS_DHCP_POOL = "pool-vlan80"
+TALOS_DHCP_NETWORK = "192.168.80.0/24"
+TALOS_DHCP_GATEWAY = "192.168.80.1"
 TALOS_VLAN_COMMENT = "Kubernetes trunk"
 
 
@@ -576,10 +580,12 @@ def talos_nodes():
 def talos_preflight(router, nodes):
     vlans = router.call("interface/bridge/vlan")
     servers = router.call("ip/dhcp-server")
+    networks = router.call("ip/dhcp-server/network")
     leases = router.call("ip/dhcp-server/lease")
     dns_records = router.call("ip/dns/static")
     for label, rows in (("bridge VLAN", vlans), ("DHCP server", servers),
-                        ("DHCP lease", leases), ("static DNS", dns_records)):
+                        ("DHCP network", networks), ("DHCP lease", leases),
+                        ("static DNS", dns_records)):
         if not isinstance(rows, list):
             raise RuntimeError(f"RouterOS returned an invalid {label} list")
     vlan_rows = [row for row in vlans if isinstance(row, dict) and str(row.get("vlan-ids", "")) == "80"]
@@ -595,6 +601,11 @@ def talos_preflight(router, nodes):
                and str(row.get("disabled", "false")).lower() != "true"]
     if len(matches) != 1:
         raise RuntimeError(f"RouterOS must have exactly one active {TALOS_DHCP_SERVER} server")
+    network_matches = [row for row in networks if isinstance(row, dict)
+                       and str(row.get("address", "")).strip() == TALOS_DHCP_NETWORK
+                       and str(row.get("disabled", "false")).lower() != "true"]
+    if len(network_matches) > 1:
+        raise RuntimeError(f"RouterOS has duplicate active DHCP network records for {TALOS_DHCP_NETWORK}")
     for node in nodes:
         mac_rows = [row for row in leases if isinstance(row, dict)
                     and str(row.get("mac-address", "")).upper() == node["mac"]]
@@ -626,6 +637,34 @@ def reconcile_talos_network(router, nodes):
     else:
         router.call("interface/bridge/vlan", "PUT", vlan_payload)
         changed.append("VLAN 80 bridge membership")
+
+    # Keep the named Talos server on the VLAN 80 interface and address pool.
+    servers = router.call("ip/dhcp-server")
+    server = next((row for row in servers if isinstance(row, dict)
+                   and row.get("name") == TALOS_DHCP_SERVER
+                   and str(row.get("disabled", "false")).lower() != "true"), None)
+    server_payload = {"interface": TALOS_DHCP_INTERFACE, "address-pool": TALOS_DHCP_POOL}
+    if not server:
+        raise RuntimeError(f"RouterOS active {TALOS_DHCP_SERVER} server disappeared during reconciliation")
+    if any(str(server.get(key, "")) != value for key, value in server_payload.items()):
+        rest_set(router, f"ip/dhcp-server/{rest_record_id(server)}", server_payload)
+        changed.append("Talos DHCP server interface and pool")
+
+    # A DHCP server can be active yet hand out no usable configuration when its
+    # network record is missing or has the wrong gateway. Repair that record.
+    networks = router.call("ip/dhcp-server/network")
+    network = next((row for row in networks if isinstance(row, dict)
+                    and str(row.get("address", "")).strip() == TALOS_DHCP_NETWORK
+                    and str(row.get("disabled", "false")).lower() != "true"), None)
+    network_payload = {"address": TALOS_DHCP_NETWORK, "gateway": TALOS_DHCP_GATEWAY,
+                       "dns-server": TALOS_DHCP_GATEWAY, "domain": TALOS_DOMAIN}
+    if network:
+        if any(str(network.get(key, "")) != value for key, value in network_payload.items()):
+            rest_set(router, f"ip/dhcp-server/network/{rest_record_id(network)}", network_payload)
+            changed.append("Talos DHCP network and gateway")
+    else:
+        router.call("ip/dhcp-server/network", "PUT", network_payload)
+        changed.append("Talos DHCP network and gateway")
 
     leases = router.call("ip/dhcp-server/lease")
     for node in nodes:
@@ -670,6 +709,20 @@ def reconcile_talos_network(router, nodes):
                      if isinstance(row, dict) and str(row.get("vlan-ids", "")) == "80"]
     if len(verified_vlan) != 1 or verified_vlan[0].get("tagged", "").replace(" ", "") != "bridge,ether2":
         raise RuntimeError("RouterOS VLAN 80 membership verification failed")
+    verified_servers = [row for row in router.call("ip/dhcp-server")
+                        if isinstance(row, dict) and row.get("name") == TALOS_DHCP_SERVER
+                        and str(row.get("disabled", "false")).lower() != "true"]
+    if (len(verified_servers) != 1
+            or verified_servers[0].get("interface") != TALOS_DHCP_INTERFACE
+            or verified_servers[0].get("address-pool") != TALOS_DHCP_POOL):
+        raise RuntimeError("RouterOS Talos DHCP server interface/pool verification failed")
+    verified_networks = [row for row in router.call("ip/dhcp-server/network")
+                         if isinstance(row, dict) and row.get("address") == TALOS_DHCP_NETWORK
+                         and str(row.get("disabled", "false")).lower() != "true"]
+    if (len(verified_networks) != 1
+            or verified_networks[0].get("gateway") != TALOS_DHCP_GATEWAY
+            or verified_networks[0].get("domain") != TALOS_DOMAIN):
+        raise RuntimeError("RouterOS Talos DHCP network/gateway verification failed")
     verified_leases = router.call("ip/dhcp-server/lease")
     verified_dns = router.call("ip/dns/static")
     for node in nodes:
@@ -769,6 +822,9 @@ def rest_apply(router, networks, mode, dns_list, wifi_updates, talos_inventory):
     proxmox_dns_changed = reconcile_proxmox_dns_record(router, proxmox_dns_records)
     talos_changes = reconcile_talos_network(router, talos_inventory)
 
+    # Re-read after Talos reconciliation because it may have created the VLAN
+    # 80 DHCP network; the DNS update and verification must include that record.
+    networks = rest_networks(router)
     dhcp_updates = []
     expected_dhcp_dns = {}
     for identifier, network, gateway, current_dns in networks:

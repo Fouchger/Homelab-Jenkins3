@@ -22,6 +22,10 @@ PROXMOX_API_DNS_COMMENT = "homelab-managed-proxmox-api"
 TALOS_CLUSTER_FILE = Path(__file__).resolve().parents[3] / "kubernetes/talos/cluster.json"
 TALOS_DOMAIN = "fouchger.uk"
 TALOS_DHCP_SERVER = "dhcp-vlan80"
+TALOS_DHCP_INTERFACE = "VLAN80-K8S"
+TALOS_DHCP_POOL = "pool-vlan80"
+TALOS_DHCP_NETWORK = "192.168.80.0/24"
+TALOS_DHCP_GATEWAY = "192.168.80.1"
 
 
 def required(name):
@@ -315,7 +319,21 @@ def review(values, router):
     active_servers = [row for row in dhcp_servers if isinstance(row, dict)
                       and row.get("name") == TALOS_DHCP_SERVER
                       and str(row.get("disabled", "false")).lower() != "true"]
-    print(f"Talos DHCP server: {'ready' if len(active_servers) == 1 else 'blocked; expected exactly one active dhcp-vlan80'}")
+    server_match = (len(active_servers) == 1
+                    and active_servers[0].get("interface") == TALOS_DHCP_INTERFACE
+                    and active_servers[0].get("address-pool") == TALOS_DHCP_POOL)
+    print(f"Talos DHCP server: {'matches' if server_match else 'change planned' if len(active_servers) == 1 else 'blocked; expected exactly one active dhcp-vlan80'}"
+          + (f" | interface {active_servers[0].get('interface', '(unset)')}, pool {active_servers[0].get('address-pool', '(unset)')}"
+             if len(active_servers) == 1 else ""))
+    talos_networks = [row for row in networks if isinstance(row, dict)
+                      and str(row.get("address", "")).strip() == TALOS_DHCP_NETWORK
+                      and str(row.get("disabled", "false")).lower() != "true"]
+    if len(talos_networks) > 1:
+        raise RuntimeError(f"RouterOS has duplicate active DHCP network records for {TALOS_DHCP_NETWORK}")
+    network_match = (len(talos_networks) == 1
+                     and talos_networks[0].get("gateway") == TALOS_DHCP_GATEWAY
+                     and talos_networks[0].get("domain") == TALOS_DOMAIN)
+    print(f"Talos DHCP network: {'matches' if network_match else 'change planned'} | {TALOS_DHCP_NETWORK}, gateway {TALOS_DHCP_GATEWAY}, domain {TALOS_DOMAIN}")
     lease_conflict = False
     dns_conflict = False
     lease_updates = 0
