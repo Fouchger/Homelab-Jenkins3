@@ -414,6 +414,7 @@ def configure_cilium(inventory, env, read_token):
     workers = [node["ip"] for node in inventory["nodes"] if node["role"] == "worker"]
     run([
         "talosctl", "health",
+        "--nodes", ",".join(node["ip"] for node in inventory["nodes"]),
         "--control-plane-nodes", ",".join(controlplanes),
         "--worker-nodes", ",".join(workers),
         "--init-node", controlplanes[0],
