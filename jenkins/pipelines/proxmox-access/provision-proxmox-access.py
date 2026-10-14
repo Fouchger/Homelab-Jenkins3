@@ -288,27 +288,36 @@ printf '%s\\n' "$token_json"
     try:
         payload = json.loads(output)
     except json.JSONDecodeError:
-        revoke_old_token(host, user, expected_id, private_key, known_hosts)
+        revoke_old_token(host, user, expected_id, role, storage_ids, private_key, known_hosts)
         raise RuntimeError("Proxmox did not return token JSON; token state needs manual review") from None
     secret = payload.get("value") or payload.get("token")
     full_id = payload.get("full-tokenid") or payload.get("fullTokenid") or expected_id
     if full_id != expected_id:
-        revoke_old_token(host, user, expected_id, private_key, known_hosts)
+        revoke_old_token(host, user, expected_id, role, storage_ids, private_key, known_hosts)
         raise RuntimeError("Proxmox returned an unexpected token identifier; inspect token state before retrying")
     if not isinstance(secret, str) or not secret:
-        revoke_old_token(host, user, full_id, private_key, known_hosts)
+        revoke_old_token(host, user, full_id, role, storage_ids, private_key, known_hosts)
         raise RuntimeError("Proxmox created a token but did not return its secret; do not rerun blindly")
     return full_id, secret
 
 
-def revoke_old_token(host, user, full_id, private_key, known_hosts):
+def revoke_old_token(host, user, full_id, role, storage_ids, private_key, known_hosts):
     prefix = f"{user}!"
     if not full_id or not full_id.startswith(prefix):
         return False
     token_name = full_id[len(prefix):]
     if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", token_name):
         return False
-    script = f"pveum user token remove {shell_quote(user)} {shell_quote(token_name)}\n"
+    paths = ["/vms", *(f"/storage/{storage}" for storage in storage_ids)]
+    cleanup = "\n".join(
+        f"pveum acl delete {shell_quote(path)} --tokens {shell_quote(full_id)} "
+        f"--roles {shell_quote(role)} >/dev/null 2>&1"
+        for path in paths
+    )
+    script = (
+        f"set -e\n{cleanup}\n"
+        f"pveum user token remove {shell_quote(user)} {shell_quote(token_name)}\n"
+    )
     try:
         ssh_script(host, script, private_key, known_hosts, timeout=60)
         return True
@@ -317,14 +326,14 @@ def revoke_old_token(host, user, full_id, private_key, known_hosts):
 
 
 def rollback_new_token(host, user, full_id, previous_id, previous_secret, base_url,
-                       write_token, private_key, known_hosts):
+                       write_token, role, storage_ids, private_key, known_hosts):
     """Restore prior Infisical values and revoke the uncommitted token."""
     try:
         restore_secrets(base_url, write_token, previous_id, previous_secret)
         restored = True
     except Exception:
         restored = False
-    revoked = revoke_old_token(host, user, full_id, private_key, known_hosts)
+    revoked = revoke_old_token(host, user, full_id, role, storage_ids, private_key, known_hosts)
     return restored, revoked
 
 
@@ -375,7 +384,7 @@ def main():
         write_secret(base_url, write_token, "PVE_API_TOKEN_SECRET", secret)
     except Exception:
         restored, revoked = rollback_new_token(host, user, full_id, previous_id, previous_secret,
-                                               base_url, write_token, private_key, known_hosts)
+                                               base_url, write_token, role, storage_ids, private_key, known_hosts)
         if not restored or not revoked:
             raise RuntimeError("Infisical update failed; rollback was incomplete. Verify the previous Infisical values and inspect the newly created Proxmox token before retrying") from None
         raise RuntimeError("Infisical update failed; restored previous values and removed the newly created Proxmox token") from None
@@ -388,13 +397,13 @@ def main():
         verified = False
     if not verified:
         restored, revoked = rollback_new_token(host, user, full_id, previous_id, previous_secret,
-                                               base_url, write_token, private_key, known_hosts)
+                                               base_url, write_token, role, storage_ids, private_key, known_hosts)
         if not restored or not revoked:
             raise RuntimeError("Infisical verification failed; rollback was incomplete. Verify the previous Infisical values and inspect the newly created Proxmox token before retrying")
         raise RuntimeError("Infisical verification failed; restored previous values and removed the newly created Proxmox token")
 
     if previous_id and previous_id != full_id:
-        if revoke_old_token(host, user, previous_id, private_key, known_hosts):
+        if revoke_old_token(host, user, previous_id, role, storage_ids, private_key, known_hosts):
             print("Saved and verified the new Infisical token; removed the previous token.")
         else:
             print("Saved and verified the new token, but could not remove the previous token; review it in Proxmox.")
