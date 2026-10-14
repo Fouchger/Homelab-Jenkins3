@@ -151,26 +151,44 @@ def ssh_settings(host, values):
 
 def remote(client, command, timeout=900, operation="operation"):
     try:
-        stdin, stdout, _stderr = client.exec_command(command + " 2>&1", timeout=timeout)
+        stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
         stdin.close()  # Never leave an SSH command waiting for interactive input.
         out = stdout.read().decode("utf-8", errors="replace")
+        err = stderr.read().decode("utf-8", errors="replace")
         status = stdout.channel.recv_exit_status()
     except Exception:
         raise RuntimeError("Proxmox SSH operation failed; remote output was suppressed") from None
+    safe_output = "\n".join(part.strip() for part in (out, err) if part.strip())
+    for secret in sorted((value for value in SENSITIVE_VALUES if value), key=len, reverse=True):
+        safe_output = safe_output.replace(secret, "[REDACTED]")
+    safe_output = re.sub(
+        r"(?i)\b(password|passphrase|token|secret)(\s*[:=]\s*)([^\s,;]+)",
+        r"\1\2[REDACTED]",
+        safe_output,
+    )
+    if len(safe_output) > 12000:
+        safe_output = safe_output[-12000:]
     if status:
-        safe_output = out.strip()
-        for secret in sorted((value for value in SENSITIVE_VALUES if value), key=len, reverse=True):
-            safe_output = safe_output.replace(secret, "[REDACTED]")
-        safe_output = re.sub(
-            r"(?i)\b(password|passphrase|token|secret)(\s*[:=]\s*)([^\s,;]+)",
-            r"\1\2[REDACTED]",
-            safe_output,
-        )
-        if len(safe_output) > 12000:
-            safe_output = safe_output[-12000:]
         detail = f"; Proxmox output: {safe_output}" if safe_output else "; Proxmox returned no diagnostic output"
         raise RuntimeError(f"Proxmox {operation} failed with exit status {status}{detail}")
-    return out.strip()
+    safe_stderr = err.strip()
+    warning_pattern = re.compile(r"^user config - ignore invalid acl token .+$")
+    stdout_lines = []
+    for line in out.splitlines():
+        if warning_pattern.fullmatch(line.strip()):
+            safe_stderr = "\n".join(part for part in (safe_stderr, line.strip()) if part)
+        else:
+            stdout_lines.append(line)
+    if safe_stderr:
+        for secret in sorted((value for value in SENSITIVE_VALUES if value), key=len, reverse=True):
+            safe_stderr = safe_stderr.replace(secret, "[REDACTED]")
+        safe_stderr = re.sub(
+            r"(?i)\b(password|passphrase|token|secret)(\s*[:=]\s*)([^\s,;]+)",
+            r"\1\2[REDACTED]",
+            safe_stderr,
+        )
+        print(f"WARNING: Proxmox stderr: {safe_stderr}", file=sys.stderr)
+    return "\n".join(stdout_lines).strip()
 
 
 def upload(sftp, local_path, remote_path, mode=0o600):
