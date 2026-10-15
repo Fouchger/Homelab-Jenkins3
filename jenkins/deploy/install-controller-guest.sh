@@ -860,6 +860,42 @@ JENKINS_TALOS_CLUSTER_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/105-homelab-talos-cluster-pipeline.groovy"
 chmod 0640 "$jenkins_home/init.groovy.d/105-homelab-talos-cluster-pipeline.groovy"
 
+# Seed the separately approved Flux bootstrap and Git synchronization job.
+cat >"$jenkins_home/init.groovy.d/106-homelab-flux-bootstrap-pipeline.groovy" <<'JENKINS_FLUX_BOOTSTRAP_PIPELINE_HOOK'
+import hudson.plugins.git.BranchSpec
+import hudson.plugins.git.GitSCM
+import jenkins.model.Jenkins
+import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition
+import org.jenkinsci.plugins.workflow.job.WorkflowJob
+
+def jenkins = Jenkins.get()
+def projectSettings = new Properties()
+new File('/etc/homelab/project.properties').withInputStream { projectSettings.load(it) }
+def repositoryUrl = "https://github.com/${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
+def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
+def branch = projectSettings.getProperty('githubBranch', 'main')
+def jobName = '010 - Flux Bootstrap and Sync'
+def job = jenkins.getItem(jobName)
+def scm = new GitSCM(
+    GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
+    Collections.singletonList(new BranchSpec("*/${branch}")),
+    null, null, Collections.emptyList()
+)
+def definition = new CpsScmFlowDefinition(scm, 'jenkins/pipelines/flux-bootstrap/Jenkinsfile')
+definition.setLightweight(true)
+if (job == null) {
+    job = jenkins.createProject(WorkflowJob, jobName)
+    println("Created guarded Flux bootstrap and sync Pipeline for branch '${branch}'.")
+} else if (!(job instanceof WorkflowJob)) {
+    throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
+}
+job.setDefinition(definition)
+job.setDescription('Job 010 verifies the existing Talos cluster and retrieves its kubeconfig from Infisical. After APPLY and manual approval, it installs pinned Flux controllers only when absent, then configures Flux to reconcile kubernetes/clusters/homelab from the public Git repository. The committed configuration includes the retained OMV NFS StorageClass, Cilium service IP pool, and HTTP Gateway. It does not write Git or modify MikroTik/DNS settings; app routes and the Cloudflare Tunnel connector are added separately after their hostnames and tunnel token are configured.')
+job.save()
+JENKINS_FLUX_BOOTSTRAP_PIPELINE_HOOK
+chown jenkins:jenkins "$jenkins_home/init.groovy.d/106-homelab-flux-bootstrap-pipeline.groovy"
+chmod 0640 "$jenkins_home/init.groovy.d/106-homelab-flux-bootstrap-pipeline.groovy"
+
 # Declarative pipeline parameters normally refresh only when that job runs.
 # Keep the router SSH-key form current as part of the server update so users
 # do not have to submit the obsolete manual fingerprint parameter once first.

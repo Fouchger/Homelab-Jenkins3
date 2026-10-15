@@ -28,6 +28,11 @@ TALOS_DHCP_NETWORK = "192.168.80.0/24"
 TALOS_DHCP_GATEWAY = "192.168.80.1"
 JENKINS_AGENT_IPV4 = "192.168.20.6"
 TALOS_API_FIREWALL_PREFIX = "homelab-managed-talos-api-"
+KUBERNETES_INFRA_FIREWALL_PREFIX = "homelab-managed-kubernetes-infra-"
+OMV_NFS_IPV4 = "192.168.70.20"
+KUBERNETES_SERVICE_IP_START = "192.168.80.210"
+KUBERNETES_SERVICE_IP_STOP = "192.168.80.219"
+KUBERNETES_API_VIP = "192.168.80.200"
 
 
 def required(name):
@@ -190,6 +195,56 @@ def talos_inventory():
     return result
 
 
+def validate_kubernetes_service_ip_pool(router, nodes):
+    start = ipaddress.ip_address(KUBERNETES_SERVICE_IP_START)
+    stop = ipaddress.ip_address(KUBERNETES_SERVICE_IP_STOP)
+    subnet = ipaddress.ip_network(TALOS_DHCP_NETWORK)
+    if start not in subnet or stop not in subnet or int(start) > int(stop):
+        raise RuntimeError("Configured Kubernetes service IP range is invalid or outside VLAN 80")
+    addresses = {str(start + offset) for offset in range(int(stop) - int(start) + 1)}
+    reserved = {node["ip"] for node in nodes} | {KUBERNETES_API_VIP, TALOS_DHCP_GATEWAY}
+    if addresses & reserved:
+        raise RuntimeError("Kubernetes service IP range overlaps the gateway, API VIP, or a Talos node address")
+
+    pools = router.get("ip/pool")
+    leases = router.get("ip/dhcp-server/lease")
+    arp = router.get("ip/arp")
+    dns = router.get("ip/dns/static")
+    if not all(isinstance(rows, list) for rows in (pools, leases, arp, dns)):
+        raise RuntimeError("RouterOS returned an invalid DHCP pool, lease, ARP, or DNS list")
+    for pool in pools:
+        if not isinstance(pool, dict):
+            continue
+        ranges = pool.get("ranges", "")
+        for item in (ranges if isinstance(ranges, list) else str(ranges).split(",")):
+            item = str(item).strip()
+            if not item:
+                continue
+            try:
+                if "-" in item:
+                    first, last = (ipaddress.ip_address(part.strip()) for part in item.split("-", 1))
+                else:
+                    cidr = ipaddress.ip_network(item, strict=False)
+                    first, last = cidr.network_address, cidr.broadcast_address
+            except ValueError:
+                raise RuntimeError(f"RouterOS returned an invalid DHCP range for pool {pool.get('name', '(unnamed)')}") from None
+            if first.version != 4 or last.version != 4 or int(first) > int(last):
+                raise RuntimeError(f"RouterOS returned an invalid IPv4 DHCP range for pool {pool.get('name', '(unnamed)')}")
+            if int(first) <= int(stop) and int(start) <= int(last):
+                raise RuntimeError(f"Kubernetes service range {start}-{stop} overlaps DHCP pool {pool.get('name', '(unnamed)')} ({first}-{last})")
+    conflicts = []
+    for label, rows in (("DHCP lease", leases), ("ARP entry", arp), ("DNS record", dns)):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            address = str(row.get("address", "")).strip()
+            if address in addresses:
+                conflicts.append(f"{label} {row.get('name') or row.get('mac-address') or address} uses {address}")
+    if conflicts:
+        raise RuntimeError("Kubernetes service IP range has existing RouterOS conflicts: " + "; ".join(conflicts))
+    print(f"Kubernetes direct-service IP range: clear | {start}-{stop}, outside DHCP pools and unused by leases, ARP, and router DNS")
+
+
 def ssh_backup_blocker(values):
     host = values.get("MIKROTIK_HOST", "").strip()
     username = values.get("MIKROTIK_SSH_USER", "").strip()
@@ -326,6 +381,7 @@ def review(values, router):
     )
 
     talos = talos_inventory()
+    validate_kubernetes_service_ip_pool(router, talos)
     vlan80 = [row for row in bridge_vlans if isinstance(row, dict) and str(row.get("vlan-ids", "")) == "80"]
     vlan_match = (len(vlan80) == 1 and vlan80[0].get("bridge") == "bridge"
                   and vlan80[0].get("tagged", "").replace(" ", "") == "bridge,ether2"
@@ -440,12 +496,19 @@ def review(values, router):
             "dst-address": "192.168.80.200/32",
             "comment": TALOS_API_FIREWALL_PREFIX + "kubernetes",
         }
+        desired_rules[(KUBERNETES_INFRA_FIREWALL_PREFIX + "nfs", "tcp")] = {
+            "chain": "forward", "action": "accept", "protocol": "tcp",
+            "dst-port": "2049", "src-address": TALOS_DHCP_NETWORK,
+            "dst-address": OMV_NFS_IPV4 + "/32",
+            "comment": KUBERNETES_INFRA_FIREWALL_PREFIX + "nfs",
+        }
         kept_rules = set()
         remove_count = 0
         for rule in firewall:
             if not isinstance(rule, dict) or not (
                     str(rule.get("comment", "")).startswith(prefix)
-                    or str(rule.get("comment", "")).startswith(TALOS_API_FIREWALL_PREFIX)):
+                    or str(rule.get("comment", "")).startswith(TALOS_API_FIREWALL_PREFIX)
+                    or str(rule.get("comment", "")).startswith(KUBERNETES_INFRA_FIREWALL_PREFIX)):
                 continue
             key = (str(rule.get("comment", "")), str(rule.get("protocol", "")))
             expected = desired_rules.get(key)
@@ -478,9 +541,9 @@ def review(values, router):
         for comment, protocol in sorted(set(desired_rules) - kept_rules):
             print(f"Managed firewall rule {comment}/{protocol}: missing or mismatched; plan adds it")
         if add_count or remove_count:
-            print(f"Managed DNS/Talos API firewall rules: {add_count} to add, {remove_count} to remove")
+            print(f"Managed DNS, Talos API, and Kubernetes infrastructure firewall rules: {add_count} to add, {remove_count} to remove")
         else:
-            print("Managed DNS/Talos API firewall rules: matches")
+            print("Managed DNS, Talos API, and Kubernetes infrastructure firewall rules: matches")
 
     profiles = {"SEC_USERS_PASSWORD": "sec-users", "SEC_MGMT_PASSWORD": "sec-mgmt",
                 "SEC_IOT_PASSWORD": "sec-iot", "SEC_GUEST_PASSWORD": "sec-guest"}

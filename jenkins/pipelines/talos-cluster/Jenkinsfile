@@ -8,7 +8,7 @@ pipeline {
     }
     parameters {
         booleanParam(name: 'INITIALIZE_CLUSTER', defaultValue: false, description: 'Authorize first setup, safe first-run resume, or initializing VMs you have already recreated. Replacing saved Talos secrets and bootstrapping is allowed only when all five VMs prove maintenance mode with the expected install disk and the API VIP is unused. APPLY is also required.')
-        booleanParam(name: 'APPLY', defaultValue: false, description: 'Unchecked: read-only preflight. Checked: wait for approval, then perform the eligible initial setup/rebuild or reconcile Cilium on a healthy existing cluster. Existing-cluster machine configuration is not reapplied.')
+        booleanParam(name: 'APPLY', defaultValue: false, description: 'Unchecked: read-only preflight. Checked: wait for approval, then perform eligible initial setup/rebuild or reconcile Cilium (including Gateway API and L2 announcements) on a healthy existing cluster. Cilium agents will roll and may briefly interrupt networking. Existing-cluster Talos machine configuration is not reapplied.')
     }
     stages {
         stage('Preflight Talos cluster') {
@@ -34,7 +34,7 @@ python3 -u jenkins/pipelines/talos-cluster/configure-talos.py
         stage('Approve Talos cluster changes') {
             when { expression { params.APPLY } }
             steps {
-                input message: "After you approve, Job 009 rechecks all five configured VMs and requires each to expose the expected install disk through the Talos maintenance API, with the Kubernetes API VIP unused. For an explicitly selected INITIALIZE_CLUSTER run, this also permits replacing stale saved Talos secrets after VMs were recreated; the new secrets are verified in Infisical before any node is configured. Talos is then installed and etcd bootstrapped once for this fresh set. A healthy existing cluster is health-checked and receives idempotent Cilium reconciliation only; its machine configuration is not reapplied. DHCP reservations must match kubernetes/talos/cluster.json. Flux and workloads remain separate.", ok: 'Configure Talos cluster'
+                input message: "After you approve, Job 009 rechecks all five configured VMs and requires each to expose the expected install disk through the Talos maintenance API, with the Kubernetes API VIP unused. For an explicitly selected INITIALIZE_CLUSTER run, this also permits replacing stale saved Talos secrets after VMs were recreated; the new secrets are verified in Infisical before any node is configured. Talos is then installed and etcd bootstrapped once for this fresh set. A healthy existing cluster is health-checked and receives Cilium reconciliation with Gateway API and L2 service announcements enabled; this updates Cilium agents and can briefly interrupt cluster networking. Its Talos machine configuration is not reapplied. DHCP reservations must match kubernetes/talos/cluster.json. Flux and workloads remain separate.", ok: 'Configure Talos cluster'
             }
         }
         stage('Configure Talos and bootstrap') {

@@ -1,0 +1,63 @@
+pipeline {
+    agent { label 'homelab-automation' }
+    options {
+        disableConcurrentBuilds()
+        timestamps()
+        timeout(time: 45, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+    parameters {
+        booleanParam(name: 'APPLY', defaultValue: false, description: 'Unchecked: read-only cluster and Flux preflight. Checked: after approval, install Flux if it is absent, configure the repository sync, and wait for reconciliation.')
+    }
+    stages {
+        stage('Preflight Flux and Kubernetes') {
+            steps {
+                withCredentials([
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                    string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
+                    string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
+                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT')
+                ]) {
+                    withEnv(["FLUX_ACTION=plan"]) {
+                        sh(label: 'Verify cluster health, kubeconfig, and GitOps manifests', script: '''#!/bin/sh
+set +x
+python3 -u jenkins/pipelines/flux-bootstrap/bootstrap-flux.py
+''')
+                    }
+                }
+            }
+        }
+        stage('Approve Flux bootstrap and sync') {
+            when { expression { params.APPLY } }
+            steps {
+                input message: 'This will install Flux controllers if they are absent, then configure Flux to read the public Homelab-Jenkins3 main branch and reconcile kubernetes/clusters/homelab. The current manifests install the NFS CSI driver and retained OMV StorageClass, reserve Cilium service IPs 192.168.80.210-219, and create the Cilium HTTP Gateway at 192.168.80.210. Before proceeding, ensure Job 004 confirmed that address range is unused and opened NFSv4 TCP/2049 from VLAN 80 to OMV 192.168.70.20. This job does not write to Git or change router/DNS settings.', ok: 'Install Flux and configure sync'
+            }
+        }
+        stage('Install Flux and configure Git sync') {
+            when { expression { params.APPLY } }
+            steps {
+                withCredentials([
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                    string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
+                    string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
+                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT')
+                ]) {
+                    withEnv(["FLUX_ACTION=apply"]) {
+                        sh(label: 'Install Flux and verify the first Git reconciliation', script: '''#!/bin/sh
+set +x
+python3 -u jenkins/pipelines/flux-bootstrap/bootstrap-flux.py
+''')
+                    }
+                }
+            }
+        }
+    }
+    post {
+        always {
+            sh(label: 'Remove temporary Kubernetes credentials and Flux CLI', script: '''#!/bin/sh
+set -eu
+rm -rf -- "$WORKSPACE/.flux-private"
+''')
+        }
+    }
+}

@@ -38,6 +38,10 @@ TALOS_DHCP_GATEWAY = "192.168.80.1"
 TALOS_VLAN_COMMENT = "Kubernetes trunk"
 JENKINS_AGENT_IPV4 = "192.168.20.6"
 TALOS_API_FIREWALL_PREFIX = "homelab-managed-talos-api-"
+KUBERNETES_INFRA_FIREWALL_PREFIX = "homelab-managed-kubernetes-infra-"
+OMV_NFS_IPV4 = "192.168.70.20"
+KUBERNETES_SERVICE_IP_START = "192.168.80.210"
+KUBERNETES_SERVICE_IP_STOP = "192.168.80.219"
 
 
 def required(name):
@@ -45,6 +49,67 @@ def required(name):
     if not value:
         raise RuntimeError(f"Required Jenkins setting {name} is missing")
     return value
+
+
+def ipv4_range_values(value):
+    """Parse RouterOS pool ranges into inclusive IPv4 start/end pairs."""
+    ranges = value if isinstance(value, list) else str(value or "").split(",")
+    parsed = []
+    for item in ranges:
+        item = str(item).strip()
+        if not item:
+            continue
+        if "-" in item:
+            first, last = (part.strip() for part in item.split("-", 1))
+            start, stop = ipaddress.ip_address(first), ipaddress.ip_address(last)
+            if start.version != 4 or stop.version != 4 or int(start) > int(stop):
+                raise RuntimeError("RouterOS returned an invalid IPv4 DHCP pool range")
+            parsed.append((start, stop))
+        else:
+            network = ipaddress.ip_network(item, strict=False)
+            if network.version != 4:
+                raise RuntimeError("RouterOS returned a non-IPv4 DHCP pool range")
+            parsed.append((network.network_address, network.broadcast_address))
+    return parsed
+
+
+def validate_kubernetes_service_ip_pool(router, inventory):
+    start = ipaddress.ip_address(KUBERNETES_SERVICE_IP_START)
+    stop = ipaddress.ip_address(KUBERNETES_SERVICE_IP_STOP)
+    network = ipaddress.ip_network(inventory["node_subnet"], strict=True)
+    if start.version != 4 or stop.version != 4 or start not in network or stop not in network or int(start) > int(stop):
+        raise RuntimeError("Configured Kubernetes service IP range is invalid or outside the Talos VLAN 80 subnet")
+    reserved = {str(start + offset) for offset in range(int(stop) - int(start) + 1)}
+    inventory_ips = {node["ip"] for node in inventory["nodes"]} | {inventory["api_vip"], TALOS_DHCP_GATEWAY}
+    if reserved & inventory_ips:
+        raise RuntimeError("Kubernetes service IP range overlaps the gateway, API VIP, or a Talos node address")
+
+    pools = router.call("ip/pool")
+    leases = router.call("ip/dhcp-server/lease")
+    arp = router.call("ip/arp")
+    dns = router.call("ip/dns/static")
+    if not all(isinstance(rows, list) for rows in (pools, leases, arp, dns)):
+        raise RuntimeError("RouterOS returned an invalid DHCP pool, lease, ARP, or DNS list")
+    for pool in pools:
+        if not isinstance(pool, dict):
+            continue
+        for pool_start, pool_stop in ipv4_range_values(pool.get("ranges")):
+            if int(pool_start) <= int(stop) and int(start) <= int(pool_stop):
+                raise RuntimeError(
+                    f"Kubernetes service range {start}-{stop} overlaps DHCP pool "
+                    f"{pool.get('name', '(unnamed)')} ({pool_start}-{pool_stop})"
+                )
+    conflicts = []
+    for kind, rows, key in (("DHCP lease", leases, "address"), ("ARP entry", arp, "address"), ("DNS record", dns, "address")):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            address = str(row.get(key, "")).strip()
+            if address in reserved:
+                conflicts.append(f"{kind} {row.get('name') or row.get('mac-address') or address} uses {address}")
+    if conflicts:
+        raise RuntimeError("Kubernetes service IP range has existing RouterOS conflicts: " + "; ".join(conflicts))
+    print(f"Kubernetes service IP range {start}-{stop} is inside VLAN 80 and has no DHCP pool, lease, ARP, or DNS conflicts.", flush=True)
 
 
 def api_json(url, method="GET", token=None, form=None, allow_404=False):
@@ -833,6 +898,7 @@ def rest_apply(router, networks, mode, dns_list, wifi_updates, talos_inventory):
         raise RuntimeError("RouterOS REST returned invalid DNS settings")
     proxmox_dns_records = validate_proxmox_dns_records(router.call("ip/dns/static"))
     talos_preflight(router, talos_inventory)
+    validate_kubernetes_service_ip_pool(router, talos_inventory)
     wifi_records = {}
     if wifi_updates:
         rows = router.call("interface/wifi/security")
@@ -895,13 +961,20 @@ def rest_apply(router, networks, mode, dns_list, wifi_updates, talos_inventory):
         "dst-address": "192.168.80.200/32",
         "comment": TALOS_API_FIREWALL_PREFIX + "kubernetes",
     }
+    desired_rules[(KUBERNETES_INFRA_FIREWALL_PREFIX + "nfs", "tcp")] = {
+        "chain": "forward", "action": "accept", "protocol": "tcp",
+        "dst-port": "2049", "src-address": TALOS_DHCP_NETWORK,
+        "dst-address": OMV_NFS_IPV4 + "/32",
+        "comment": KUBERNETES_INFRA_FIREWALL_PREFIX + "nfs",
+    }
 
     kept_rules = set()
     firewall_removed = 0
     for rule in existing_rules:
         if not isinstance(rule, dict) or not (
                 str(rule.get("comment", "")).startswith(managed_prefix)
-                or str(rule.get("comment", "")).startswith(TALOS_API_FIREWALL_PREFIX)):
+                or str(rule.get("comment", "")).startswith(TALOS_API_FIREWALL_PREFIX)
+                or str(rule.get("comment", "")).startswith(KUBERNETES_INFRA_FIREWALL_PREFIX)):
             continue
         key = (str(rule.get("comment", "")), str(rule.get("protocol", "")))
         expected = desired_rules.get(key)
@@ -938,6 +1011,7 @@ def rest_apply(router, networks, mode, dns_list, wifi_updates, talos_inventory):
         if isinstance(rule, dict) and (
             str(rule.get("comment", "")).startswith("homelab-managed-router-dns-")
             or str(rule.get("comment", "")).startswith(TALOS_API_FIREWALL_PREFIX)
+            or str(rule.get("comment", "")).startswith(KUBERNETES_INFRA_FIREWALL_PREFIX)
         )
     ]
     actual_rules = {

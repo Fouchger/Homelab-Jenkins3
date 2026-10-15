@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Initialize a fresh Talos cluster once, or health-check an existing one."""
 
+import hashlib
 import ipaddress
 import json
 import os
@@ -21,6 +22,8 @@ SECRETS_NAME = "TALOS_SECRETS"
 KUBECONFIG_NAME = "KUBECONFIG"
 INITIALIZED_NAME = "TALOS_CLUSTER_INITIALIZED"
 INVENTORY = Path("kubernetes/talos/cluster.json")
+GATEWAY_API_MANIFEST = Path("kubernetes/talos/gateway-api-crds.yaml")
+GATEWAY_API_SHA256 = "24d931f22abd8e40c973264319ead7cfa09d0fb7716b7ab1ee2ff174cb063a73"
 WORKDIR = Path(os.environ.get("WORKSPACE", ".")) / ".talos-private"
 
 
@@ -428,11 +431,24 @@ def configure_cilium(inventory, env, read_token):
             next_api_notice = now + 30
         time.sleep(min(10, max(0, api_deadline - time.monotonic())))
 
+    if not GATEWAY_API_MANIFEST.is_file():
+        raise RuntimeError(f"Required pinned Gateway API CRDs are missing: {GATEWAY_API_MANIFEST}")
+    gateway_api_digest = hashlib.sha256(GATEWAY_API_MANIFEST.read_bytes()).hexdigest()
+    if gateway_api_digest != GATEWAY_API_SHA256:
+        raise RuntimeError("Gateway API CRD manifest failed its pinned SHA-256 check")
+    print("Applying the pinned Gateway API v1.6.1 standard CRDs before enabling Cilium Gateway API.", flush=True)
+    run(["kubectl", "apply", "--server-side=true", "-f", GATEWAY_API_MANIFEST], env=kube_env, timeout=300)
+
     run([
         "helm", "upgrade", "--install", "cilium", "oci://quay.io/cilium/charts/cilium",
         "--version", inventory["cilium_version"], "--namespace", "kube-system", "--create-namespace",
         "--set", "ipam.mode=kubernetes",
         "--set", "kubeProxyReplacement=true",
+        "--set", "l2announcements.enabled=true",
+        "--set", "k8sClientRateLimit.qps=20",
+        "--set", "k8sClientRateLimit.burst=100",
+        "--set", "devices={ens18}",
+        "--set", "gatewayAPI.enabled=true",
         "--set", "securityContext.capabilities.ciliumAgent={CHOWN,KILL,NET_ADMIN,NET_RAW,IPC_LOCK,SYS_ADMIN,SYS_RESOURCE,DAC_OVERRIDE,FOWNER,SETGID,SETUID}",
         "--set", "securityContext.capabilities.cleanCiliumState={NET_ADMIN,SYS_ADMIN,SYS_RESOURCE}",
         "--set", "cgroup.autoMount.enabled=false",

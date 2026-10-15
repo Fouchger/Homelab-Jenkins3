@@ -1,0 +1,12 @@
+apiVersion: cilium.io/v2
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: homelab-vlan80-services
+spec:
+  blocks:
+    - start: 192.168.80.210
+      stop: 192.168.80.219
+  serviceSelector:
+    matchLabels:
+      io.kubernetes.service.namespace: networking
+      io.kubernetes.service.name: cilium-gateway-homelab-ingress
