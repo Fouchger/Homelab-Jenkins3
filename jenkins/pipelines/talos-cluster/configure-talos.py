@@ -573,20 +573,32 @@ def main():
             try:
                 existing_cluster_health(inventory, talosconfig)
             except RuntimeError:
-                if initialized or not initialize:
+                if not initialize:
                     raise
                 assert_fresh_maintenance(inventory)
-                print("Previously saved secrets are verified and all nodes remain fresh; an approved APPLY can resume the interrupted first install.")
+                if initialized:
+                    print(
+                        "The saved Talos CA does not authenticate to the rebuilt nodes. All five nodes are "
+                        "confirmed in maintenance mode and the API VIP is unused. After approval, APPLY with "
+                        "INITIALIZE_CLUSTER will generate and verify a new secrets bundle in Infisical, "
+                        "replace the old CA, install the nodes, and bootstrap the rebuilt cluster once."
+                    )
+                else:
+                    print("Previously saved secrets are present and all nodes remain fresh; an approved APPLY can resume the interrupted first install using those secrets.")
         else:
             try:
                 existing_cluster_health(inventory, talosconfig)
             except RuntimeError:
-                if initialized or not initialize:
+                if not initialize:
                     raise
-                # A failed earlier first run may have saved secrets but not yet
-                # changed any node. Resume only if every target still proves to
-                # be in maintenance mode and the API VIP remains unused.
                 assert_fresh_maintenance(inventory)
+                if initialized:
+                    # An explicitly requested rebuild may replace the old CA
+                    # only after every VM proves fresh and the API VIP is down.
+                    initialize_cluster(inventory, read_token, secrets_existed=True)
+                    return
+                # Resume an interrupted first run with its saved secrets only
+                # while every target still proves to be in maintenance mode.
                 install_cluster_from_secrets(inventory, secrets_file, read_token)
                 return
             configure_cilium(inventory, env, read_token)
@@ -594,11 +606,12 @@ def main():
 
     if not initialize:
         raise RuntimeError("No Talos secrets exist in Infisical. Select INITIALIZE_CLUSTER only for a genuinely fresh five-node maintenance-mode cluster.")
-    if initialized:
-        raise RuntimeError("Infisical records this cluster as initialized. Refusing to reinstall or bootstrap it; use the separate recovery workflow.")
     if action == "plan":
         assert_fresh_maintenance(inventory)
-        print("Fresh-cluster prerequisites passed. APPLY with INITIALIZE_CLUSTER selected will save secrets, install Talos, and bootstrap once.")
+        if initialized:
+            print("No Talos secrets remain, but Infisical has an initialization marker. All five nodes are confirmed fresh and the API VIP is unused. After approval, APPLY with INITIALIZE_CLUSTER will generate and save a new secrets bundle, install Talos, and bootstrap the rebuilt cluster once.")
+        else:
+            print("Fresh-cluster prerequisites passed. APPLY with INITIALIZE_CLUSTER selected will save secrets, install Talos, and bootstrap once.")
         return
     initialize_cluster(
         inventory, read_token, secrets_existed=secrets_entry is not None,

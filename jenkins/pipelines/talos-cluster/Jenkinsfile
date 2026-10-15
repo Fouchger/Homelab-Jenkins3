@@ -7,8 +7,8 @@ pipeline {
         buildDiscarder(logRotator(numToKeepStr: '20'))
     }
     parameters {
-        booleanParam(name: 'INITIALIZE_CLUSTER', defaultValue: false, description: 'Allow the initial setup or a safe resume before any node has changed. Bootstrap proceeds only when all five VMs are fresh, the API VIP is unused, and the Infisical bootstrap marker is absent. Never selects recreation or reinstallation.')
-        booleanParam(name: 'APPLY', defaultValue: false, description: 'Unchecked: read-only preflight. Checked: after approval, configure and bootstrap a genuinely fresh cluster, or reconcile Cilium on an initialized cluster without reapplying Talos machine configuration.')
+        booleanParam(name: 'INITIALIZE_CLUSTER', defaultValue: false, description: 'Authorize first setup, safe first-run resume, or initializing VMs you have already recreated. Replacing saved Talos secrets and bootstrapping is allowed only when all five VMs prove maintenance mode with the expected install disk and the API VIP is unused. APPLY is also required.')
+        booleanParam(name: 'APPLY', defaultValue: false, description: 'Unchecked: read-only preflight. Checked: wait for approval, then perform the eligible initial setup/rebuild or reconcile Cilium on a healthy existing cluster. Existing-cluster machine configuration is not reapplied.')
     }
     stages {
         stage('Preflight Talos cluster') {
@@ -31,10 +31,10 @@ python3 -u jenkins/pipelines/talos-cluster/configure-talos.py
                 }
             }
         }
-        stage('Approve initial cluster setup') {
+        stage('Approve Talos cluster changes') {
             when { expression { params.APPLY } }
             steps {
-                input message: "This applies Talos configuration to the five configured VM IPs, constrains kubelet node IP selection to the configured Kubernetes subnet, and bootstraps etcd once only if all five VMs are confirmed in maintenance mode and the API VIP is unused. Talos secrets are created only when absent and are saved before nodes are touched. If a prior first run stopped before any node changed, it can resume only while all five nodes remain in maintenance mode and the bootstrap marker is absent. The marker is saved before the bootstrap call and permanently blocks reinstallation or a second bootstrap. Existing clusters receive health validation, address diagnostics on health-check failure, and idempotent Cilium reconciliation; their machine configuration is not changed. DHCP reservations must already match kubernetes/talos/cluster.json. Flux and workloads remain separate.", ok: 'Configure Talos cluster'
+                input message: "After you approve, Job 009 rechecks all five configured VMs and requires each to expose the expected install disk through the Talos maintenance API, with the Kubernetes API VIP unused. For an explicitly selected INITIALIZE_CLUSTER run, this also permits replacing stale saved Talos secrets after VMs were recreated; the new secrets are verified in Infisical before any node is configured. Talos is then installed and etcd bootstrapped once for this fresh set. A healthy existing cluster is health-checked and receives idempotent Cilium reconciliation only; its machine configuration is not reapplied. DHCP reservations must match kubernetes/talos/cluster.json. Flux and workloads remain separate.", ok: 'Configure Talos cluster'
             }
         }
         stage('Configure Talos and bootstrap') {
