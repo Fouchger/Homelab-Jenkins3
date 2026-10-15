@@ -896,6 +896,42 @@ JENKINS_FLUX_BOOTSTRAP_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/106-homelab-flux-bootstrap-pipeline.groovy"
 chmod 0640 "$jenkins_home/init.groovy.d/106-homelab-flux-bootstrap-pipeline.groovy"
 
+# Seed the approved OMV NFS configuration and rebuild pipeline.
+cat >"$jenkins_home/init.groovy.d/107-homelab-omv-nfs-pipeline.groovy" <<'JENKINS_OMV_NFS_PIPELINE_HOOK'
+import hudson.plugins.git.BranchSpec
+import hudson.plugins.git.GitSCM
+import jenkins.model.Jenkins
+import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition
+import org.jenkinsci.plugins.workflow.job.WorkflowJob
+
+def jenkins = Jenkins.get()
+def projectSettings = new Properties()
+new File('/etc/homelab/project.properties').withInputStream { projectSettings.load(it) }
+def repositoryUrl = "https://${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
+def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
+def branch = projectSettings.getProperty('githubBranch', 'main')
+def jobName = '011 - OpenMediaVault NFS Setup'
+def job = jenkins.getItem(jobName)
+def scm = new GitSCM(
+    GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
+    Collections.singletonList(new BranchSpec("*/${branch}")),
+    null, null, Collections.emptyList()
+)
+def definition = new CpsScmFlowDefinition(scm, 'jenkins/pipelines/omv-setup/Jenkinsfile')
+definition.setLightweight(true)
+if (job == null) {
+    job = jenkins.createProject(WorkflowJob, jobName)
+    println("Created guarded OMV NFS setup Pipeline for branch '${branch}'.")
+} else if (!(job instanceof WorkflowJob)) {
+    throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
+}
+job.setDefinition(definition)
+job.setDescription('Job 011 configures the OMV Kubernetes NFS share through the supported OMV RPC interface. It discovers the unique mounted TB4a filesystem, creates only the Kubernetes folder if missing, enables NFSv4.1, restricts the read/write export to 192.168.80.0/24, and verifies the applied NFS configuration. APPLY is opt-in and requires approval. Disk formatting, network setup, and SMB shares are not modified.')
+job.save()
+JENKINS_OMV_NFS_PIPELINE_HOOK
+chown jenkins:jenkins "$jenkins_home/init.groovy.d/107-homelab-omv-nfs-pipeline.groovy"
+chmod 0640 "$jenkins_home/init.groovy.d/107-homelab-omv-nfs-pipeline.groovy"
+
 # Declarative pipeline parameters normally refresh only when that job runs.
 # Keep the router SSH-key form current as part of the server update so users
 # do not have to submit the obsolete manual fingerprint parameter once first.

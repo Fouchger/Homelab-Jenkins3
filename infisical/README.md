@@ -45,6 +45,13 @@ The current secret layout is:
 | `/mikrotik/wifi_security` | `SEC_GUEST_PASSWORD`, `SEC_IOT_PASSWORD`, `SEC_MGMT_PASSWORD`, `SEC_USERS_PASSWORD` |
 | `/cloudflare` | `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_DOMAIN_1`, `CLOUDFLARE_DOMAIN_2`, `CLOUDFLARE_ZONE_ID_1`, `CLOUDFLARE_ZONE_ID_2` |
 | `/dockflare` | `DOCKFLARE_ACCESS_EMAILS`, `DOCKFLARE_ADMIN_CIDRS` |
+| `/omv` | `OMV_USER`, `OMV_USER_PASSWORD` (OMV Workbench administrator login for Job 011; NFS itself does not use these credentials) |
+
+Job 011 reads only `OMV_USER` and `OMV_USER_PASSWORD` from `/omv` using the
+Jenkins Infisical read identity. Ensure that identity is allowed to read both
+secrets in the Production environment. The values must be an OMV Workbench
+administrator login; they are not Linux credentials and are not used by NFS
+clients.
 
 Job `003 - DNS and Cloudflare Settings` lets an operator supply or update these
 values at run time, including each DNS LXC root password, MikroTik management

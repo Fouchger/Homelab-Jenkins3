@@ -211,7 +211,7 @@ held in root-only temporary files on Proxmox, then removed after Jenkins imports
 them. The generated public key is installed on Proxmox; the private key stays in
 Infisical and Jenkins' encrypted store.
 
-The controller seeds seven operator jobs: `001 - Update Servers`, which updates
+The controller seeds eleven operator jobs: `001 - Update Servers`, which updates
 both LXCs daily; `002 - Proxmox Access Setup`, which rotates the Proxmox API
 token; `003 - DNS and Cloudflare Settings`, which collects configurable
 network/service settings and stores them in Infisical; `004 - MikroTik
@@ -224,7 +224,11 @@ Deployment and Router Sync`, which creates/reuses the two Technitium LXCs,
 configures DNS zone replication, then applies DHCP DNS settings to MikroTik
 after taking an encrypted backup; and `007 - Infisical Variable Audit`, which
 lists configured variable names (never values), checks required entries against
-the repository inventory, and archives a CSV report. Jobs 003 and 004 do not deploy DockFlare. For
+the repository inventory, and archives a CSV report. Job 008 plans/applies
+Talos VM infrastructure, Job 009 installs and bootstraps Talos, Job 010
+bootstraps Flux, and Job 011 configures the OMV Kubernetes NFS export. See
+[`omv/README.md`](omv/README.md) for the verified OMV baseline and rebuild
+sequence. Jobs 003 and 004 do not deploy DockFlare. For
 an existing installation that does not yet have the Proxmox SSH key in Infisical, run the one-command
 bootstrap from the Proxmox shell, choose
 **reuse** for both matching LXCs, then choose **configure** in the Infisical

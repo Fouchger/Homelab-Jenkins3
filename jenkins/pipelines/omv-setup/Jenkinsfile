@@ -1,0 +1,62 @@
+pipeline {
+    agent { label 'homelab-automation' }
+
+    options {
+        disableConcurrentBuilds()
+        timestamps()
+        timeout(time: 20, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+
+    parameters {
+        string(name: 'OMV_URL', defaultValue: 'http://192.168.70.20', description: 'OMV Workbench URL. Use a trusted HTTPS certificate if OMV HTTPS is configured.')
+        booleanParam(name: 'APPLY', defaultValue: false, description: 'Unchecked: read-only OMV preflight and configuration plan. Checked: approve and reconcile the Kubernetes NFS service.')
+        booleanParam(name: 'ALLOW_INSECURE_HTTP', defaultValue: false, description: 'Required only while OMV has no HTTPS certificate. Sends OMV credentials unencrypted over the trusted management LAN; use HTTPS with a valid certificate whenever available.')
+    }
+
+    stages {
+        stage('Inspect OMV and plan changes') {
+            steps {
+                withCredentials([
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                    string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
+                    string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
+                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT')
+                ]) {
+                    withEnv(["OMV_ACTION=plan", "OMV_ALLOW_INSECURE_HTTP=${params.ALLOW_INSECURE_HTTP}", "OMV_URL=${params.OMV_URL}"]) {
+                        sh(label: 'Read OMV state and calculate NFS changes', script: '''#!/bin/sh
+set +x
+python3 -u jenkins/pipelines/omv-setup/configure-omv.py
+''')
+                    }
+                }
+            }
+        }
+
+        stage('Approve OMV NFS setup') {
+            when { expression { params.APPLY } }
+            steps {
+                input message: 'Jenkins will use the OMV administrator account from Infisical to enable NFS, ensure the Kubernetes shared folder exists on the uniquely detected TB4a mounted filesystem, and export it read/write to 192.168.80.0/24 with sync,no_subtree_check,no_root_squash. It applies only OMV NFS, shared-folder and bind-mount configuration; it does not format disks, alter network interfaces, or change SMB shares. The dedicated export grants root-level file access to VLAN 80 clients. Approve only if TB4a is the intended data filesystem.', ok: 'Apply OMV NFS configuration'
+            }
+        }
+
+        stage('Apply and verify OMV NFS setup') {
+            when { expression { params.APPLY } }
+            steps {
+                withCredentials([
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                    string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
+                    string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
+                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT')
+                ]) {
+                    withEnv(["OMV_ACTION=apply", "OMV_ALLOW_INSECURE_HTTP=${params.ALLOW_INSECURE_HTTP}", "OMV_URL=${params.OMV_URL}"]) {
+                        sh(label: 'Reconcile OMV NFS configuration through OMV RPC', script: '''#!/bin/sh
+set +x
+python3 -u jenkins/pipelines/omv-setup/configure-omv.py
+''')
+                    }
+                }
+            }
+        }
+    }
+}

@@ -12,7 +12,7 @@ ongoing in-cluster application configuration after the cluster is bootstrapped.
 | Talos OS, machine configuration, and control-plane bootstrap | Talos API with `talosctl`, invoked by Jenkins | Inventory is `kubernetes/talos/cluster.json`. Generate secrets once and store them outside Git/state. Bootstrap exactly one control-plane node once; subsequent runs must be safe to repeat. |
 | Cluster networking and ingress | Cilium, reconciled by Job 009 and Flux | Cilium Gateway API and L2 announcements use the VLAN 80 NIC. Direct service IPs are reserved from `192.168.80.210-192.168.80.219`. |
 | Applications and cluster add-ons | Flux | Bootstrap Flux to `kubernetes/clusters/homelab`; Git is the desired state for normal operation. |
-| NFS export on OpenMediaVault | OMV management interface (currently configured) | Dedicated `Kubernetes` shared folder on TB4a is exported read/write to `192.168.80.0/24` with root squashing. Preserve existing SMB shares. |
+| NFS export on OpenMediaVault | Jenkins Job 011 through the OMV RPC interface | Dedicated `Kubernetes` shared folder on the uniquely discovered mounted `TB4a` filesystem is exported read/write to `192.168.80.0/24` with `no_root_squash` so the CSI provisioner can create per-claim directories. Keep this share dedicated to Kubernetes: root on an allowed NFS client has root-level file access within the export. Preserve existing SMB shares. See [`omv/README.md`](../omv/README.md) for the verified baseline and rebuild sequence. |
 | Persistent volumes | Kubernetes storage configuration reconciled by Flux | OMV NFSv4 `192.168.70.20:/Kubernetes` is the initial NFS target (the share is mounted beneath OMV's `/export` pseudo-root). The `omv-nfs-retain` StorageClass creates one directory per claim and retains data when a claim is removed. Select an application-aware backup/restore approach for databases; an NFS snapshot alone is not a database backup. |
 | Secrets | Infisical plus SOPS encryption for Git-held Kubernetes secrets | Keep Talos machine secrets and private keys out of Git, OpenTofu state, and build logs. |
 
@@ -48,35 +48,39 @@ additional rpcbind/mountd ports.
    as part of configuration, before checking all five nodes Ready. On an
    existing cluster, an approved Job 009 apply rolls the Cilium agents and may
    briefly interrupt cluster networking.
-6. Run Job 010 to install Flux and configure Git synchronization. It uses the
+6. Run Job 011 to configure the OMV `Kubernetes` NFS export before testing
+   persistent storage. It discovers the mounted `TB4a` filesystem and applies
+   the export through OMV's supported RPC interface. See [`omv/README.md`](../omv/README.md)
+   for the OMV rebuild record and prerequisites.
+7. Run Job 010 to install Flux and configure Git synchronization. It uses the
    existing KUBECONFIG in Infisical, requires all five inventory nodes Ready,
    and defaults to a read-only preflight. APPLY requires a separate Jenkins
    approval. The initial Git sync is public read-only and does not need a Git
    write token.
-7. Flux installs the NFS CSI driver and creates the opt-in `omv-nfs-retain`
+8. Flux installs the NFS CSI driver and creates the opt-in `omv-nfs-retain`
    StorageClass for NFSv4 `192.168.70.20:/Kubernetes`. Before using it for
    workloads, verify an end-to-end claim and mount from a Talos node. The OMV
-   export is root-squashed, so the shared-folder filesystem permissions must
-   allow the CSI controller to create per-claim directories and the workload
-   UID/GID to write its files. Do not use this class for database data until
+   export uses `no_root_squash` on this dedicated Kubernetes share so the CSI
+   controller can create per-claim directories. Ensure workload UID/GID
+   permissions allow applications to write their files. Do not use this class for database data until
    database locking and application-aware backup/restore are validated. For a
    Sonarr/Radarr/Lidarr/qBittorrent migration, expose
    the existing media/download folders separately where needed; use the new
    Kubernetes folder for cluster-specific files. Keep app databases on a
    storage path tested for their database locking behavior, and back them up
    with application-aware procedures.
-8. Flux creates the Cilium LoadBalancer pool and a Cilium Gateway at
+9. Flux creates the Cilium LoadBalancer pool and a Cilium Gateway at
    `192.168.80.210`. Direct LAN routes use the same gateway IP; add the
    corresponding Technitium DNS records after deciding the app hostnames.
    Public routes will use Cloudflare Tunnel and edge HTTPS, targeting the
    gateway from inside the cluster. The tunnel token must stay out of Git and
    will be supplied from Infisical when the connector deployment is added.
-9. Add app HTTPRoutes and the Cloudflare Tunnel connector after choosing public
+10. Add app HTTPRoutes and the Cloudflare Tunnel connector after choosing public
    hostnames and storing its tunnel token in Infisical. Local DNS can point
    those names directly to `192.168.80.210`; public DNS remains managed by
    Cloudflare Tunnel. Existing router and Technitium changes remain with Jobs
    004 and 006; Flux owns only in-cluster components and configuration.
-10. Add scheduled/read-only health checks and manually approved Jenkins
+11. Add scheduled/read-only health checks and manually approved Jenkins
    workflows for Talos upgrades, Kubernetes upgrades, and tested recovery.
 
 ## Recovery expectations
@@ -89,8 +93,8 @@ destroy/recreate a live cluster as a routine upgrade path.
 
 The current code implements the Proxmox Talos VM definitions and the Jenkins
 plan/approval/apply workflow, Job 009 for guarded Talos installation, initial
-cluster bootstrap, and Cilium, and Job 010 for approved Flux installation and
-initial Git synchronization. It also includes the Flux-managed NFS CSI driver
+cluster bootstrap, and Cilium, Job 010 for approved Flux installation and
+initial Git synchronization, and Job 011 for approved OMV NFS setup. It also includes the Flux-managed NFS CSI driver
 and retained StorageClass, Cilium service IP pool, L2 announcement policy, and
 HTTP Gateway manifests. DHCP reservations remain a manual prerequisite. The
 NFS claim and write check, app routes, Cloudflare Tunnel connector, and local
