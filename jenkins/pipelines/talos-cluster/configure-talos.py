@@ -432,8 +432,8 @@ def configure_cilium(inventory, env, read_token):
     # validate; a multi-address `--nodes` target is not supported by health.
     run(["talosctl", "config", "node", controlplanes[0]], env=env)
     print(
-        "Running Talos health checks from the Jenkins agent; Cilium can change "
-        "node-local addresses used by server-side health discovery.",
+        "Running Talos health checks from the Jenkins agent with the same "
+        "generated kubeconfig used for the five-node readiness check.",
         flush=True,
     )
     health_result = run([
@@ -445,7 +445,7 @@ def configure_cilium(inventory, env, read_token):
         "--init-node", controlplanes[0],
         "--endpoints", ",".join(controlplanes),
         "--wait-timeout", "10m",
-    ], check=False, capture=True, env=env)
+    ], check=False, capture=True, env=kube_env)
     if health_result.returncode:
         print("Talos health output:", flush=True)
         print((health_result.stdout or "<no output>").strip(), flush=True)
