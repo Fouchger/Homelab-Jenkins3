@@ -5,9 +5,11 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import queue
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -148,7 +150,56 @@ def load_inventory():
     return data
 
 
-def run(args, *, check=True, capture=False, env=None, timeout=None):
+def run(args, *, check=True, capture=False, stream=False, env=None, timeout=None):
+    if capture and stream:
+        process = subprocess.Popen(
+            args,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=1,
+            env=env,
+        )
+        output_lines = []
+        lines = queue.Queue()
+
+        def read_output():
+            for line in process.stdout:
+                lines.put(line)
+            lines.put(None)
+
+        reader = threading.Thread(target=read_output, daemon=True)
+        reader.start()
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        reader_finished = False
+        while not reader_finished:
+            wait = 30
+            if deadline is not None:
+                wait = max(0.1, min(wait, deadline - time.monotonic()))
+            try:
+                line = lines.get(timeout=wait)
+            except queue.Empty:
+                if deadline is not None and time.monotonic() >= deadline:
+                    process.kill()
+                    process.wait()
+                    raise subprocess.TimeoutExpired(args, timeout, output="".join(output_lines))
+                print(f"Still waiting for {Path(args[0]).name}; no output in the last 30 seconds.", flush=True)
+                continue
+            if line is None:
+                reader_finished = True
+            else:
+                output_lines.append(line)
+                print(line, end="", flush=True)
+
+        result = subprocess.CompletedProcess(args, process.wait(), "".join(output_lines))
+        if check and result.returncode:
+            details = result.stdout.strip()
+            raise RuntimeError(
+                f"Command failed ({Path(args[0]).name}, exit {result.returncode})"
+                + (f": {details[-1200:]}" if details else "")
+            )
+        return result
+
     result = subprocess.run(
         args,
         check=False,
@@ -445,10 +496,9 @@ def configure_cilium(inventory, env, read_token):
         "--init-node", controlplanes[0],
         "--endpoints", ",".join(controlplanes),
         "--wait-timeout", "10m",
-    ], check=False, capture=True, env=kube_env)
+    ], check=False, capture=True, stream=True, env=kube_env)
     if health_result.returncode:
-        print("Talos health output:", flush=True)
-        print((health_result.stdout or "<no output>").strip(), flush=True)
+        print(f"Talos health exited with status {health_result.returncode}; collecting node diagnostics.", flush=True)
         print("Address diagnostics from each Talos node:", flush=True)
         for node in inventory["nodes"]:
             print(f"--- {node['name']} ({node['ip']}) nodeaddresses ---", flush=True)
