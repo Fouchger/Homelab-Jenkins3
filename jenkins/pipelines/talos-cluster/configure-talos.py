@@ -307,7 +307,10 @@ def initialize_cluster(inventory, read_token, *, secrets_existed):
     assert_fresh_maintenance(inventory)
     print("Generating persistent Talos machine secrets and saving them to Infisical before touching any node.")
     secrets_file = WORKDIR / "secrets.yaml"
-    run(["talosctl", "gen", "secrets", "--output-file", str(secrets_file)])
+    # Preflight may have materialized the old Infisical bundle at this path.
+    # Rebuild initialization intentionally replaces it with a new CA, so tell
+    # talosctl explicitly that overwriting this private workspace file is safe.
+    run(["talosctl", "gen", "secrets", "--force", "--output-file", str(secrets_file)])
     os.chmod(secrets_file, 0o600)
     secrets_text = secrets_file.read_text(encoding="utf-8")
     writer = login("WRITE")
