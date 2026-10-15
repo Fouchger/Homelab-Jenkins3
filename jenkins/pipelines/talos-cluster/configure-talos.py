@@ -130,6 +130,7 @@ def write_secret(token, name, value, *, existed):
 def load_inventory():
     data = json.loads(INVENTORY.read_text(encoding="utf-8"))
     vip = ipaddress.ip_address(data["api_vip"])
+    node_subnet = ipaddress.ip_network(data["node_subnet"], strict=True)
     nodes = data["nodes"]
     names = [node["name"] for node in nodes]
     addresses = [ipaddress.ip_address(node["ip"]) for node in nodes]
@@ -138,6 +139,8 @@ def load_inventory():
         raise RuntimeError("Inventory must contain five nodes with unique names and addresses")
     if addresses.count(vip) or roles.count("controlplane") != 3 or roles.count("worker") != 2:
         raise RuntimeError("Inventory must define three control planes, two workers, and a separate API VIP")
+    if vip not in node_subnet or any(address not in node_subnet for address in addresses):
+        raise RuntimeError("Inventory node addresses and API VIP must belong to node_subnet")
     if any(role not in ("controlplane", "worker") for role in roles):
         raise RuntimeError("Inventory contains an unsupported Talos node role")
     if not data.get("cluster_name") or not data.get("install_disk"):
@@ -214,7 +217,14 @@ def prepare_machineconfigs(inventory, secrets_file, output_dir):
         "    cni:\n"
         "      name: none\n"
         "  proxy:\n"
-        "    disabled: true\n",
+        "    disabled: true\n"
+        # Keep kubelet's registered InternalIP on the Kubernetes VLAN. Talos
+        # otherwise selects among addresses discovered on the node.
+        "machine:\n"
+        + "  kubelet:\n"
+        + "    nodeIP:\n"
+        + "      validSubnets:\n"
+        + f"        - {inventory['node_subnet']}\n",
         encoding="utf-8",
     )
     patch_file = WORKDIR / "controlplane.patch.yaml"
@@ -374,14 +384,19 @@ def configure_cilium(inventory, env, read_token):
                         for address in status.get("addresses", [])
                         if address.get("type") == "InternalIP"
                     }
+                    all_addresses = sorted({
+                        f"{address.get('type', 'Unknown')}={address.get('address', '')}"
+                        for address in status.get("addresses", [])
+                        if address.get("address")
+                    })
                     if is_ready:
                         ready_ips.update(internal_ips & expected_ips)
                     if not is_ready:
                         reason = ready_condition.get("reason", "Ready condition missing")
                         message = ready_condition.get("message", "").strip()
-                        node_summaries.append(f"{name} ({','.join(sorted(internal_ips)) or 'no InternalIP'}): {reason} {message}".strip())
+                        node_summaries.append(f"{name} ({';'.join(all_addresses) or 'no addresses'}): {reason} {message}".strip())
                     else:
-                        node_summaries.append(f"{name} ({','.join(sorted(internal_ips)) or 'no InternalIP'}): Ready")
+                        node_summaries.append(f"{name} ({';'.join(all_addresses) or 'no addresses'}): Ready")
                 last_node_summary = "; ".join(node_summaries) or "Kubernetes returned no nodes."
                 pending_ips = sorted(expected_ips - ready_ips)
                 print(
@@ -421,7 +436,7 @@ def configure_cilium(inventory, env, read_token):
         "node-local addresses used by server-side health discovery.",
         flush=True,
     )
-    run([
+    health_result = run([
         "talosctl", "health",
         "--server=false",
         "--nodes", controlplanes[0],
@@ -430,7 +445,30 @@ def configure_cilium(inventory, env, read_token):
         "--init-node", controlplanes[0],
         "--endpoints", ",".join(controlplanes),
         "--wait-timeout", "10m",
-    ], env=env)
+    ], check=False, capture=True, env=env)
+    if health_result.returncode:
+        print("Talos health output:", flush=True)
+        print((health_result.stdout or "<no output>").strip(), flush=True)
+        print("Address diagnostics from each Talos node:", flush=True)
+        for node in inventory["nodes"]:
+            print(f"--- {node['name']} ({node['ip']}) nodeaddresses ---", flush=True)
+            result = run(
+                ["talosctl", "get", "nodeaddresses", "--nodes", node["ip"], "-o", "yaml"],
+                check=False, capture=True, env=env,
+            )
+            print((result.stdout or f"talosctl exited {result.returncode} without output").strip(), flush=True)
+        print("--- Talos cluster members ---", flush=True)
+        result = run(
+            ["talosctl", "get", "members", "--nodes", controlplanes[0], "-o", "yaml"],
+            check=False, capture=True, env=env,
+        )
+        print((result.stdout or f"talosctl exited {result.returncode} without output").strip(), flush=True)
+        details = (health_result.stdout or "").strip()
+        raise RuntimeError(
+            "Talos cluster health failed after Kubernetes readiness passed. "
+            "Compare the logged Kubernetes node addresses with Talos nodeaddresses and members."
+            + (f" Details: {details[-1200:]}" if details else "")
+        )
 
     kubeconfig_text = kubeconfig.read_text(encoding="utf-8")
     writer = login("WRITE")

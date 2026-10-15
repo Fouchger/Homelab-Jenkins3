@@ -3,6 +3,7 @@
   "talos_version": "v1.13.10",
   "kubernetes_version": "1.35.0",
   "cilium_version": "1.20.2",
+  "node_subnet": "192.168.80.0/24",
   "api_vip": "192.168.80.200",
   "install_disk": "/dev/sda",
   "nodes": [
