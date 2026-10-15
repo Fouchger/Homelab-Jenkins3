@@ -4,18 +4,21 @@ pipeline {
     options {
         disableConcurrentBuilds()
         timestamps()
-        timeout(time: 20, unit: 'MINUTES')
+        timeout(time: 45, unit: 'MINUTES')
         buildDiscarder(logRotator(numToKeepStr: '20'))
     }
 
     parameters {
+        choice(name: 'OPERATION', choices: ['INVENTORY', 'RESTORE', 'NFS'], description: 'INVENTORY captures the current server before rebuild. RESTORE reconstructs OMV service configuration from the protected Infisical OMV_RESTORE_INVENTORY secret after a clean OS install and disk reattachment. NFS reconciles only the Kubernetes export on the current server.')
         string(name: 'OMV_URL', defaultValue: 'http://192.168.70.20', description: 'OMV Workbench URL. Use a trusted HTTPS certificate if OMV HTTPS is configured.')
-        booleanParam(name: 'APPLY', defaultValue: false, description: 'Unchecked: read-only OMV preflight and configuration plan. Checked: approve and reconcile the Kubernetes NFS service.')
+        string(name: 'PROXMOX_API_HOSTNAME', defaultValue: 'pve01.fouchger.uk', description: 'Certificate-valid Proxmox API hostname used to capture VM 22000 hardware configuration in the inventory artifact.')
+        booleanParam(name: 'APPLY', defaultValue: false, description: 'Unchecked: read-only preflight/plan. Checked: require approval and apply the selected RESTORE or NFS operation. INVENTORY is always read-only.')
         booleanParam(name: 'ALLOW_INSECURE_HTTP', defaultValue: false, description: 'Required only while OMV has no HTTPS certificate. Sends OMV credentials unencrypted over the trusted management LAN; use HTTPS with a valid certificate whenever available.')
     }
 
     stages {
-        stage('Inspect OMV and plan changes') {
+        stage('Capture OMV rebuild inventory') {
+            when { expression { params.OPERATION == 'INVENTORY' } }
             steps {
                 withCredentials([
                     usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
@@ -23,8 +26,28 @@ pipeline {
                     string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
                     string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT')
                 ]) {
-                    withEnv(["OMV_ACTION=plan", "OMV_ALLOW_INSECURE_HTTP=${params.ALLOW_INSECURE_HTTP}", "OMV_URL=${params.OMV_URL}"]) {
-                        sh(label: 'Read OMV state and calculate NFS changes', script: '''#!/bin/sh
+                    withEnv(["OMV_ACTION=inventory", "OMV_ALLOW_INSECURE_HTTP=${params.ALLOW_INSECURE_HTTP}", "OMV_URL=${params.OMV_URL}", "PROXMOX_API_HOSTNAME=${params.PROXMOX_API_HOSTNAME}", 'OMV_INVENTORY_PATH=omv-inventory.json']) {
+                        sh(label: 'Capture password-redacted OMV inventory', script: '''#!/bin/sh
+set +x
+python3 -u jenkins/pipelines/omv-setup/configure-omv.py
+''')
+                    }
+                }
+                archiveArtifacts artifacts: 'omv-inventory.json', fingerprint: true, onlyIfSuccessful: true
+            }
+        }
+
+        stage('Inspect OMV and plan changes') {
+            when { expression { params.OPERATION != 'INVENTORY' } }
+            steps {
+                withCredentials([
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                    string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
+                    string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
+                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT')
+                ]) {
+                    withEnv(["OMV_ACTION=${params.OPERATION == 'RESTORE' ? 'restore-plan' : 'plan'}", "OMV_ALLOW_INSECURE_HTTP=${params.ALLOW_INSECURE_HTTP}", "OMV_URL=${params.OMV_URL}", "PROXMOX_API_HOSTNAME=${params.PROXMOX_API_HOSTNAME}"]) {
+                        sh(label: params.OPERATION == 'RESTORE' ? 'Validate OMV rebuild inventory and restore plan' : 'Read OMV state and calculate NFS changes', script: '''#!/bin/sh
 set +x
 python3 -u jenkins/pipelines/omv-setup/configure-omv.py
 ''')
@@ -33,15 +56,21 @@ python3 -u jenkins/pipelines/omv-setup/configure-omv.py
             }
         }
 
-        stage('Approve OMV NFS setup') {
-            when { expression { params.APPLY } }
+        stage('Approve OMV changes') {
+            when { expression { params.APPLY && params.OPERATION != 'INVENTORY' } }
             steps {
-                input message: 'Jenkins will use the OMV administrator account from Infisical to enable NFS, ensure the Kubernetes shared folder exists on the uniquely detected TB4a mounted filesystem, and export it read/write to 192.168.80.0/24 with sync,no_subtree_check,no_root_squash. It applies only OMV NFS, shared-folder and bind-mount configuration; it does not format disks, alter network interfaces, or change SMB shares. The dedicated export grants root-level file access to VLAN 80 clients. Approve only if TB4a is the intended data filesystem.', ok: 'Apply OMV NFS configuration'
+                script {
+                    def message = params.OPERATION == 'RESTORE'
+                        ? 'RESTORE applies the protected pre-rebuild OMV inventory after a clean OMV OS install. It will register ONLY the five exact pre-existing BTRFS filesystem UUIDs and recreate shared-folder, SMB/NFS, and local user/group configuration through OMV RPC. It never creates/formats filesystems, changes Proxmox hardware, or edits network settings. Confirm the five original physical disks are attached in their recorded SCSI slots and UUID/labels match. The OS installation and network recovery are manual prerequisites. Ensure replacement passwords are saved under /omv/user-passwords before approval.'
+                        : 'Jenkins will use the OMV administrator account from Infisical to enable NFS, ensure the Kubernetes shared folder exists on the uniquely detected TB4a mounted filesystem, and export it read/write to 192.168.80.0/24 with sync,no_subtree_check,no_root_squash. It applies only OMV NFS, shared-folder and bind-mount configuration; it does not format disks, alter network interfaces, or change SMB shares. The dedicated export grants root-level file access to VLAN 80 clients. Approve only if TB4a is the intended data filesystem.'
+                    def button = params.OPERATION == 'RESTORE' ? 'Restore OMV configuration' : 'Apply OMV NFS configuration'
+                    input(message: message, ok: button)
+                }
             }
         }
 
         stage('Apply and verify OMV NFS setup') {
-            when { expression { params.APPLY } }
+            when { expression { params.APPLY && params.OPERATION == 'NFS' } }
             steps {
                 withCredentials([
                     usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
@@ -57,6 +86,31 @@ python3 -u jenkins/pipelines/omv-setup/configure-omv.py
                     }
                 }
             }
+        }
+
+        stage('Restore OMV data services') {
+            when { expression { params.APPLY && params.OPERATION == 'RESTORE' } }
+            steps {
+                withCredentials([
+                    usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                    string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
+                    string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
+                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT')
+                ]) {
+                    withEnv(["OMV_ACTION=restore", "OMV_ALLOW_INSECURE_HTTP=${params.ALLOW_INSECURE_HTTP}", "OMV_URL=${params.OMV_URL}", "PROXMOX_API_HOSTNAME=${params.PROXMOX_API_HOSTNAME}"]) {
+                        sh(label: 'Restore existing filesystems and OMV shares without formatting', script: '''#!/bin/sh
+set +x
+python3 -u jenkins/pipelines/omv-setup/configure-omv.py
+''')
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            sh(label: 'Remove temporary OMV inventory artifact from workspace', script: 'rm -f -- omv-inventory.json')
         }
     }
 }

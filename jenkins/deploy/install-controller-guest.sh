@@ -896,7 +896,7 @@ JENKINS_FLUX_BOOTSTRAP_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/106-homelab-flux-bootstrap-pipeline.groovy"
 chmod 0640 "$jenkins_home/init.groovy.d/106-homelab-flux-bootstrap-pipeline.groovy"
 
-# Seed the approved OMV NFS configuration and rebuild pipeline.
+# Seed the OMV rebuild, restore, inventory, and NFS pipeline.
 cat >"$jenkins_home/init.groovy.d/107-homelab-omv-nfs-pipeline.groovy" <<'JENKINS_OMV_NFS_PIPELINE_HOOK'
 import hudson.plugins.git.BranchSpec
 import hudson.plugins.git.GitSCM
@@ -921,12 +921,12 @@ def definition = new CpsScmFlowDefinition(scm, 'jenkins/pipelines/omv-setup/Jenk
 definition.setLightweight(true)
 if (job == null) {
     job = jenkins.createProject(WorkflowJob, jobName)
-    println("Created guarded OMV NFS setup Pipeline for branch '${branch}'.")
+    println("Created guarded OMV rebuild, restore, inventory, and NFS Pipeline for branch '${branch}'.")
 } else if (!(job instanceof WorkflowJob)) {
     throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
 }
 job.setDefinition(definition)
-job.setDescription('Job 011 configures the OMV Kubernetes NFS share through the supported OMV RPC interface. It discovers the unique mounted TB4a filesystem, creates only the Kubernetes folder if missing, enables NFSv4.1, restricts the read/write export to 192.168.80.0/24, and verifies the applied NFS configuration. APPLY is opt-in and requires approval. Disk formatting, network setup, and SMB shares are not modified.')
+job.setDescription('Job 011 - OpenMediaVault Rebuild and Restore. OPERATION=INVENTORY captures the password-redacted OMV and Proxmox VM 22000 configuration, which must be promoted to Infisical /omv/OMV_RESTORE_INVENTORY before rebuild. OPERATION=RESTORE validates all original physical disk serials, SCSI slots and filesystem UUIDs, then after APPLY and approval registers only existing filesystems and restores shared folders, SMB/NFS records and local accounts using replacement passwords stored in Infisical. OPERATION=NFS reconciles only the Kubernetes NFS export. The job never formats or mutates Proxmox/data disks, and deliberately leaves network interfaces and routes unchanged. OS installation and network recovery are manual steps.')
 job.save()
 JENKINS_OMV_NFS_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/107-homelab-omv-nfs-pipeline.groovy"
