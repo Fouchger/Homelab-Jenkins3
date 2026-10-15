@@ -13,7 +13,7 @@ ongoing in-cluster application configuration after the cluster is bootstrapped.
 | Cluster networking and ingress | Cilium, reconciled by Job 009 and Flux | Cilium Gateway API and L2 announcements use the VLAN 80 NIC. Direct service IPs are reserved from `192.168.80.210-192.168.80.219`. |
 | Applications and cluster add-ons | Flux | Bootstrap Flux to `kubernetes/clusters/homelab`; Git is the desired state for normal operation. |
 | NFS export on OpenMediaVault | OMV management interface (currently configured) | Dedicated `Kubernetes` shared folder on TB4a is exported read/write to `192.168.80.0/24` with root squashing. Preserve existing SMB shares. |
-| Persistent volumes | Kubernetes storage configuration reconciled by Flux | OMV `192.168.70.20:/export/Kubernetes` is the initial NFS target. The `omv-nfs-retain` StorageClass creates one directory per claim and retains data when a claim is removed. Select an application-aware backup/restore approach for databases; an NFS snapshot alone is not a database backup. |
+| Persistent volumes | Kubernetes storage configuration reconciled by Flux | OMV NFSv4 `192.168.70.20:/Kubernetes` is the initial NFS target (the share is mounted beneath OMV's `/export` pseudo-root). The `omv-nfs-retain` StorageClass creates one directory per claim and retains data when a claim is removed. Select an application-aware backup/restore approach for databases; an NFS snapshot alone is not a database backup. |
 | Secrets | Infisical plus SOPS encryption for Git-held Kubernetes secrets | Keep Talos machine secrets and private keys out of Git, OpenTofu state, and build logs. |
 
 The MikroTik configuration job now includes the narrow NFSv4 path required by
@@ -54,7 +54,7 @@ additional rpcbind/mountd ports.
    approval. The initial Git sync is public read-only and does not need a Git
    write token.
 7. Flux installs the NFS CSI driver and creates the opt-in `omv-nfs-retain`
-   StorageClass for `192.168.70.20:/export/Kubernetes`. Before using it for
+   StorageClass for NFSv4 `192.168.70.20:/Kubernetes`. Before using it for
    workloads, verify an end-to-end claim and mount from a Talos node. The OMV
    export is root-squashed, so the shared-folder filesystem permissions must
    allow the CSI controller to create per-claim directories and the workload

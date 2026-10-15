@@ -5,7 +5,8 @@ metadata:
 provisioner: nfs.csi.k8s.io
 parameters:
   server: 192.168.70.20
-  share: /export/Kubernetes
+  # OMV exposes this shared folder under its NFSv4 pseudo-root.
+  share: /Kubernetes
   subDir: "${pvc.metadata.namespace}/${pvc.metadata.name}"
 mountOptions:
   - nfsvers=4.1
