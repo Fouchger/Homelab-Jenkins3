@@ -387,6 +387,47 @@ def configure_cilium(inventory, env, read_token):
     os.chmod(kubeconfig, 0o600)
     kube_env = env.copy()
     kube_env["KUBECONFIG"] = str(kubeconfig)
+
+    # Bootstrap can return before the Kubernetes API VIP is routable/ready.
+    # Do not let Helm turn that normal startup delay into a failed build.
+    api_deadline = time.monotonic() + 10 * 60
+    next_api_notice = time.monotonic()
+    while True:
+        remaining = max(1, int(api_deadline - time.monotonic()))
+        try:
+            api_check = run(
+                ["kubectl", "get", "--raw=/readyz"],
+                check=False,
+                capture=True,
+                env=kube_env,
+                timeout=min(20, remaining),
+            )
+        except subprocess.TimeoutExpired:
+            api_check = None
+
+        if api_check is not None and api_check.returncode == 0 and api_check.stdout.strip() == "ok":
+            print(f"Kubernetes API at https://{inventory['api_vip']}:6443 is ready.", flush=True)
+            break
+
+        now = time.monotonic()
+        if now >= api_deadline:
+            details = (api_check.stdout or "").strip().replace("\n", " ") if api_check else "kubectl request timed out"
+            details = details[-500:] or (f"kubectl exited {api_check.returncode}" if api_check else details)
+            raise RuntimeError(
+                f"Kubernetes API at {inventory['api_vip']}:6443 did not become ready within 10 minutes. "
+                f"Cilium was not installed. Latest check: {details}"
+            )
+        if now >= next_api_notice:
+            details = (api_check.stdout or "").strip().replace("\n", " ") if api_check else "kubectl request timed out"
+            details = details[-300:] if details else (f"kubectl exited {api_check.returncode}" if api_check else details)
+            print(
+                f"Waiting for Kubernetes API readiness at {inventory['api_vip']}:6443; "
+                f"latest check: {details or 'no response yet'}",
+                flush=True,
+            )
+            next_api_notice = now + 30
+        time.sleep(min(10, max(0, api_deadline - time.monotonic())))
+
     run([
         "helm", "upgrade", "--install", "cilium", "oci://quay.io/cilium/charts/cilium",
         "--version", inventory["cilium_version"], "--namespace", "kube-system", "--create-namespace",
