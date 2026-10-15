@@ -25,7 +25,7 @@ pipeline {
                     ]) {
                         sh(label: 'Check Infisical state and all Talos nodes without changes', script: '''#!/bin/sh
 set +x
-python3 jenkins/pipelines/talos-cluster/configure-talos.py
+python3 -u jenkins/pipelines/talos-cluster/configure-talos.py
 ''')
                     }
                 }
@@ -53,7 +53,7 @@ python3 jenkins/pipelines/talos-cluster/configure-talos.py
                     ]) {
                         sh(label: 'Configure Talos nodes and safely bootstrap', script: '''#!/bin/sh
 set +x
-python3 jenkins/pipelines/talos-cluster/configure-talos.py
+python3 -u jenkins/pipelines/talos-cluster/configure-talos.py
 ''')
                     }
                 }

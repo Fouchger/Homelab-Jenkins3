@@ -478,13 +478,15 @@ def configure_cilium(inventory, env, read_token):
         )
 
     workers = [node["ip"] for node in inventory["nodes"] if node["role"] == "worker"]
-    # `talosctl health` accepts a single configured target node. The
-    # control-plane and worker lists below tell it which cluster members to
-    # validate; a multi-address `--nodes` target is not supported by health.
+    # `--nodes` selects the single Talos API target for this client-side
+    # health check. The control-plane and worker lists define cluster members.
+    # Do not pass --init-node here: Talos appends it as a separate expected
+    # node, and this cluster's init node is already in controlplanes.
     run(["talosctl", "config", "node", controlplanes[0]], env=env)
     print(
-        "Running Talos health checks from the Jenkins agent with the same "
-        "generated kubeconfig used for the five-node readiness check.",
+        "Running Talos client-side health checks for "
+        f"{len(controlplanes)} control planes and {len(workers)} workers "
+        "using the generated cluster kubeconfig.",
         flush=True,
     )
     health_result = run([
@@ -493,9 +495,8 @@ def configure_cilium(inventory, env, read_token):
         "--nodes", controlplanes[0],
         "--control-plane-nodes", ",".join(controlplanes),
         "--worker-nodes", ",".join(workers),
-        "--init-node", controlplanes[0],
         "--endpoints", ",".join(controlplanes),
-        "--wait-timeout", "10m",
+        "--wait-timeout", "5m",
     ], check=False, capture=True, stream=True, env=kube_env)
     if health_result.returncode:
         print(f"Talos health exited with status {health_result.returncode}; collecting node diagnostics.", flush=True)
