@@ -42,6 +42,7 @@ KUBERNETES_INFRA_FIREWALL_PREFIX = "homelab-managed-kubernetes-infra-"
 OMV_NFS_IPV4 = "192.168.70.20"
 KUBERNETES_SERVICE_IP_START = "192.168.80.210"
 KUBERNETES_SERVICE_IP_STOP = "192.168.80.219"
+KUBERNETES_API_VIP = "192.168.80.200"
 
 
 def required(name):
@@ -73,14 +74,14 @@ def ipv4_range_values(value):
     return parsed
 
 
-def validate_kubernetes_service_ip_pool(router, inventory):
+def validate_kubernetes_service_ip_pool(router, nodes):
     start = ipaddress.ip_address(KUBERNETES_SERVICE_IP_START)
     stop = ipaddress.ip_address(KUBERNETES_SERVICE_IP_STOP)
-    network = ipaddress.ip_network(inventory["node_subnet"], strict=True)
+    network = ipaddress.ip_network(TALOS_DHCP_NETWORK, strict=True)
     if start.version != 4 or stop.version != 4 or start not in network or stop not in network or int(start) > int(stop):
         raise RuntimeError("Configured Kubernetes service IP range is invalid or outside the Talos VLAN 80 subnet")
     reserved = {str(start + offset) for offset in range(int(stop) - int(start) + 1)}
-    inventory_ips = {node["ip"] for node in inventory["nodes"]} | {inventory["api_vip"], TALOS_DHCP_GATEWAY}
+    inventory_ips = {node["ip"] for node in nodes} | {KUBERNETES_API_VIP, TALOS_DHCP_GATEWAY}
     if reserved & inventory_ips:
         raise RuntimeError("Kubernetes service IP range overlaps the gateway, API VIP, or a Talos node address")
 
