@@ -226,7 +226,9 @@ after taking an encrypted backup; and `007 - Infisical Variable Audit`, which
 lists configured variable names (never values), checks required entries against
 the repository inventory, and archives a CSV report. Job 008 plans/applies
 Talos VM infrastructure, Job 009 installs and bootstraps Talos, Job 010
-bootstraps Flux, and Job 011 configures the OMV Kubernetes NFS export. See
+restores OMV and configures NFS/media exports, and Job 011 bootstraps Flux.
+The Jenkins startup migration preserves the existing OMV and Flux job histories
+while swapping their names to match that execution order. See
 [`omv/README.md`](omv/README.md) for the verified OMV baseline and rebuild
 sequence. Jobs 003 and 004 do not deploy DockFlare. For
 an existing installation that does not yet have the Proxmox SSH key in Infisical, run the one-command

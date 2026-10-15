@@ -12,9 +12,9 @@ ongoing in-cluster application configuration after the cluster is bootstrapped.
 | Talos OS, machine configuration, and control-plane bootstrap | Talos API with `talosctl`, invoked by Jenkins | Inventory is `kubernetes/talos/cluster.json`. Generate secrets once and store them outside Git/state. Bootstrap exactly one control-plane node once; subsequent runs must be safe to repeat. |
 | Cluster networking and ingress | Cilium, reconciled by Job 009 and Flux | Cilium Gateway API and L2 announcements use the VLAN 80 NIC. Direct service IPs are reserved from `192.168.80.210-192.168.80.219`. |
 | Applications and cluster add-ons | Flux | Bootstrap Flux to `kubernetes/clusters/homelab`; Git is the desired state for normal operation. |
-| NFS export on OpenMediaVault | Jenkins Job 011 through the OMV RPC interface | Dedicated `Kubernetes` shared folder on the uniquely discovered mounted `TB4a` filesystem is exported read/write to `192.168.80.0/24` with `no_root_squash` so the CSI provisioner can create per-claim directories. Keep this share dedicated to Kubernetes: root on an allowed NFS client has root-level file access within the export. Preserve existing SMB shares. See [`omv/README.md`](../omv/README.md) for the verified baseline and rebuild sequence. |
+| NFS export on OpenMediaVault | Jenkins Job 010 through the OMV RPC interface | Dedicated `Kubernetes` shared folder on the uniquely discovered mounted `TB4a` filesystem is exported read/write to `192.168.80.0/24` with `no_root_squash` so the CSI provisioner can create per-claim directories. Keep this share dedicated to Kubernetes: root on an allowed NFS client has root-level file access within the export. Preserve existing SMB shares. See [`omv/README.md`](../omv/README.md) for the verified baseline and rebuild sequence. |
 | Persistent volumes | Kubernetes storage configuration reconciled by Flux | OMV NFSv4 `192.168.70.20:/Kubernetes` is the initial NFS target (the share is mounted beneath OMV's `/export` pseudo-root). The `omv-nfs-retain` StorageClass creates one directory per claim and retains data when a claim is removed. Select an application-aware backup/restore approach for databases; an NFS snapshot alone is not a database backup. |
-| Existing media shares | Jenkins Job 011 (`MEDIA`) plus Flux | The five existing SMB folders are additionally exported over NFSv4 to VLAN 80 and mounted as retained static PVs/PVCs in the `media` namespace. SMB stays enabled for existing clients. These static volumes expose the existing share contents; they do not create per-app directories or copy data. |
+| Existing media shares | Jenkins Job 010 (`MEDIA`) plus Flux | The five existing SMB folders are additionally exported over NFSv4 to VLAN 80 and mounted as retained static PVs/PVCs in the `media` namespace. SMB stays enabled for existing clients. These static volumes expose the existing share contents; they do not create per-app directories or copy data. |
 | Secrets | Infisical plus SOPS encryption for Git-held Kubernetes secrets | Keep Talos machine secrets and private keys out of Git, OpenTofu state, and build logs. |
 
 The MikroTik configuration job now includes the narrow NFSv4 path required by
@@ -49,11 +49,11 @@ additional rpcbind/mountd ports.
    as part of configuration, before checking all five nodes Ready. On an
    existing cluster, an approved Job 009 apply rolls the Cilium agents and may
    briefly interrupt cluster networking.
-6. Run Job 011 to configure the OMV `Kubernetes` NFS export before testing
-   persistent storage. It discovers the mounted `TB4a` filesystem and applies
+6. Run Job 010 with `OPERATION=NFS` to configure the OMV `Kubernetes` NFS
+   export before testing persistent storage. It discovers the mounted `TB4a` filesystem and applies
    the export through OMV's supported RPC interface. See [`omv/README.md`](../omv/README.md)
    for the OMV rebuild record and prerequisites.
-7. Run Job 010 to install Flux and configure Git synchronization. It uses the
+7. Run Job 011 to install Flux and configure Git synchronization. It uses the
    existing KUBECONFIG in Infisical, requires all five inventory nodes Ready,
    and defaults to a read-only preflight. APPLY requires a separate Jenkins
    approval. The initial Git sync is public read-only and does not need a Git
@@ -65,7 +65,7 @@ additional rpcbind/mountd ports.
    controller can create per-claim directories. Ensure workload UID/GID
    permissions allow applications to write their files. Do not use this class for database data until
    database locking and application-aware backup/restore are validated. For a
-   Sonarr/Radarr/Lidarr/qBittorrent migration, run Job 011 with
+   Sonarr/Radarr/Lidarr/qBittorrent migration, run Job 010 with
    `OPERATION=MEDIA`, review its read-only plan, then rerun with `APPLY` checked
    and approve. This exports existing `TB4a`, `TB16a`, `TB10a`, `TB10b`, and
    `TB5a` SMB folders over NFSv4 to VLAN 80 with root squashing; it leaves SMB
@@ -103,8 +103,9 @@ destroy/recreate a live cluster as a routine upgrade path.
 
 The current code implements the Proxmox Talos VM definitions and the Jenkins
 plan/approval/apply workflow, Job 009 for guarded Talos installation, initial
-cluster bootstrap, and Cilium, Job 010 for approved Flux installation and
-initial Git synchronization, and Job 011 for approved OMV NFS setup. It also includes the Flux-managed NFS CSI driver
+cluster bootstrap, and Cilium, Job 010 for OMV rebuild/restore and NFS/media
+exports, and Job 011 for approved Flux installation and initial Git
+synchronization. It also includes the Flux-managed NFS CSI driver
 and retained StorageClass, Cilium service IP pool, L2 announcement policy, and
 HTTP Gateway manifests. DHCP reservations remain a manual prerequisite. The
 NFS claim and write check, app routes, Cloudflare Tunnel connector, and local

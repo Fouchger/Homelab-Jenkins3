@@ -206,7 +206,7 @@ def inspect_flux(env):
     if bool(source) != bool(sync):
         raise RuntimeError("Found only one of the homelab GitRepository/Kustomization objects; inspect the partial Flux sync before proceeding")
     if controller_names and not source:
-        raise RuntimeError("Flux is installed without the expected homelab Git sync; migrate it deliberately before using Job 010")
+        raise RuntimeError("Flux is installed without the expected homelab Git sync; migrate it deliberately before using Job 011")
     if source:
         try:
             source_spec = json.loads(source).get("spec", {})

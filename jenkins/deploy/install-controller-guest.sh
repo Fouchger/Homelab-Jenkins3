@@ -472,7 +472,7 @@ JENKINS_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/95-homelab-github-pipeline.groovy"
 chmod 0640 "$jenkins_home/init.groovy.d/95-homelab-github-pipeline.groovy"
 
-# Preserve build history while moving the two operator jobs to their current
+# Preserve build history while moving managed Pipeline jobs to their current
 # names. Temporary names make swaps safe if an earlier numbering was deployed.
 cat >"$jenkins_home/init.groovy.d/95-z-homelab-pipeline-numbering.groovy" <<'JENKINS_PIPELINE_RENUMBER_HOOK'
 import jenkins.model.Jenkins
@@ -481,7 +481,9 @@ import org.jenkinsci.plugins.workflow.job.WorkflowJob
 
 def targets = [
     'jenkins/pipelines/server-update/Jenkinsfile': '001 - Update Servers',
-    'jenkins/pipelines/proxmox-access/Jenkinsfile': '002 - Proxmox Access Setup'
+    'jenkins/pipelines/proxmox-access/Jenkinsfile': '002 - Proxmox Access Setup',
+    'jenkins/pipelines/omv-setup/Jenkinsfile': '010 - OpenMediaVault Setup and Storage',
+    'jenkins/pipelines/flux-bootstrap/Jenkinsfile': '011 - Flux Bootstrap and Sync'
 ]
 def jenkins = Jenkins.get()
 def obsoleteSetup = jenkins.getItem('001 - Infisical Credential Setup')
@@ -860,7 +862,8 @@ JENKINS_TALOS_CLUSTER_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/105-homelab-talos-cluster-pipeline.groovy"
 chmod 0640 "$jenkins_home/init.groovy.d/105-homelab-talos-cluster-pipeline.groovy"
 
-# Seed the separately approved Flux bootstrap and Git synchronization job.
+# Seed the Flux bootstrap and Git synchronization job. Its displayed job
+# number follows OMV's storage prerequisite.
 cat >"$jenkins_home/init.groovy.d/106-homelab-flux-bootstrap-pipeline.groovy" <<'JENKINS_FLUX_BOOTSTRAP_PIPELINE_HOOK'
 import hudson.plugins.git.BranchSpec
 import hudson.plugins.git.GitSCM
@@ -874,7 +877,7 @@ new File('/etc/homelab/project.properties').withInputStream { projectSettings.lo
 def repositoryUrl = "https://github.com/${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
 def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
 def branch = projectSettings.getProperty('githubBranch', 'main')
-def jobName = '010 - Flux Bootstrap and Sync'
+def jobName = '011 - Flux Bootstrap and Sync'
 def job = jenkins.getItem(jobName)
 def scm = new GitSCM(
     GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
@@ -890,13 +893,13 @@ if (job == null) {
     throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
 }
 job.setDefinition(definition)
-job.setDescription('Job 010 verifies the existing Talos cluster and retrieves its kubeconfig from Infisical. After APPLY and manual approval, it installs pinned Flux controllers only when absent, then configures Flux to reconcile kubernetes/clusters/homelab from the public Git repository. The committed configuration includes the retained OMV NFS StorageClass, Cilium service IP pool, and HTTP Gateway. It does not write Git or modify MikroTik/DNS settings; app routes and the Cloudflare Tunnel connector are added separately after their hostnames and tunnel token are configured.')
+job.setDescription('Job 011 verifies the existing Talos cluster and retrieves its kubeconfig from Infisical. Run after Job 010 has configured OMV NFS exports. After APPLY and manual approval, it installs pinned Flux controllers only when absent, then configures Flux to reconcile kubernetes/clusters/homelab from the public Git repository. The committed configuration includes the retained OMV NFS StorageClass, Cilium service IP pool, and HTTP Gateway. It does not write Git or modify MikroTik/DNS settings; app routes and the Cloudflare Tunnel connector are added separately after their hostnames and tunnel token are configured.')
 job.save()
 JENKINS_FLUX_BOOTSTRAP_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/106-homelab-flux-bootstrap-pipeline.groovy"
 chmod 0640 "$jenkins_home/init.groovy.d/106-homelab-flux-bootstrap-pipeline.groovy"
 
-# Seed the OMV rebuild, restore, inventory, and NFS pipeline.
+# Seed the OMV rebuild, restore, inventory, NFS, and media pipeline.
 cat >"$jenkins_home/init.groovy.d/107-homelab-omv-nfs-pipeline.groovy" <<'JENKINS_OMV_NFS_PIPELINE_HOOK'
 import hudson.plugins.git.BranchSpec
 import hudson.plugins.git.GitSCM
@@ -907,10 +910,10 @@ import org.jenkinsci.plugins.workflow.job.WorkflowJob
 def jenkins = Jenkins.get()
 def projectSettings = new Properties()
 new File('/etc/homelab/project.properties').withInputStream { projectSettings.load(it) }
-def repositoryUrl = "https://${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
+def repositoryUrl = "https://github.com/${projectSettings.getProperty('githubOwner')}/${projectSettings.getProperty('githubRepository')}.git"
 def credentialId = projectSettings.getProperty('githubCredentialId', 'github-homelab-jenkins-readonly')
 def branch = projectSettings.getProperty('githubBranch', 'main')
-def jobName = '011 - OpenMediaVault NFS Setup'
+def jobName = '010 - OpenMediaVault Setup and Storage'
 def job = jenkins.getItem(jobName)
 def scm = new GitSCM(
     GitSCM.createRepoList(repositoryUrl, credentialId ?: null),
@@ -926,7 +929,7 @@ if (job == null) {
     throw new IllegalStateException("Jenkins item '${jobName}' exists but is not a Pipeline job")
 }
 job.setDefinition(definition)
-job.setDescription('Job 011 - OpenMediaVault Rebuild and Restore. OPERATION=INVENTORY captures the password-redacted OMV and Proxmox VM 22000 configuration, which must be promoted to Infisical /omv/OMV_RESTORE_INVENTORY before rebuild. OPERATION=RESTORE validates all original physical disk serials, SCSI slots and filesystem UUIDs, then after APPLY and approval registers only existing filesystems and restores shared folders, SMB/NFS records and local accounts using replacement passwords stored in Infisical. OPERATION=NFS reconciles only the Kubernetes NFS export. The job never formats or mutates Proxmox/data disks, and deliberately leaves network interfaces and routes unchanged. OS installation and network recovery are manual steps.')
+job.setDescription('Job 010 - OpenMediaVault Setup and Storage. OPERATION=INVENTORY captures the password-redacted OMV and Proxmox VM 22000 configuration, which must be promoted to Infisical /omv/OMV_RESTORE_INVENTORY before rebuild. OPERATION=RESTORE validates all original physical disk serials, SCSI slots and filesystem UUIDs, then after APPLY and approval registers only existing filesystems and restores shared folders, SMB/NFS records and local accounts using replacement passwords stored in Infisical. Run OPERATION=NFS to reconcile the Kubernetes NFS export before Job 011 Flux bootstrap; run OPERATION=MEDIA to export the existing media shares before deploying media apps. The job never formats or mutates Proxmox/data disks, and deliberately leaves network interfaces and routes unchanged. OS installation and network recovery are manual steps.')
 job.save()
 JENKINS_OMV_NFS_PIPELINE_HOOK
 chown jenkins:jenkins "$jenkins_home/init.groovy.d/107-homelab-omv-nfs-pipeline.groovy"

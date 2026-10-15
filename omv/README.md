@@ -1,7 +1,7 @@
 # OpenMediaVault rebuild and configuration record
 
 This file records the verified OpenMediaVault configuration used by the
-Kubernetes cluster and Job 011's rebuild/restore workflow. The pipeline
+Kubernetes cluster and Job 010's rebuild/restore workflow. The pipeline
 captures a password-redacted inventory and, after a clean OMV OS install,
 re-registers the existing filesystems and restores OMV data services. This is
 configuration recovery, not a backup of NAS data.
@@ -35,7 +35,7 @@ Workbench administrator login used by Jenkins to configure the service.
 The MikroTik rule for Kubernetes to OMV is maintained separately by Job 004:
 VLAN 80 to `192.168.70.20`, TCP/2049 only. NFSv4.1 avoids NFSv3's extra
 rpcbind/mountd ports. Flux owns the Kubernetes CSI driver and StorageClass;
-Job 011 owns the OMV NFS service/exports. The existing SMB shares remain
+Job 010 owns the OMV NFS service/exports. The existing SMB shares remain
 enabled for current clients.
 
 The live OMV storage screen on 2026-10-15 showed five separate BTRFS
@@ -79,7 +79,7 @@ and a VirtIO SCSI single controller. It starts at boot, with boot order
 The `scsi0` disk is the only disk on Proxmox local-lvm and is the system disk.
 The OMV guest currently sees the five data disks as `/dev/sdb` through
 `/dev/sdf`; the pasted Proxmox and guest inventory now confirms the slot,
-physical serial, and filesystem UUID mapping above. Job 011 also maps these
+physical serial, and filesystem UUID mapping above. Job 010 also maps these
 using OMV's QEMU SCSI slot identity (`drive-scsiN`), because the guest sees
 virtual disk serials rather than the physical host serials. For an OMV ISO installation, detach `scsi1`
 through `scsi5` from the VM configuration before booting the installer, then
@@ -89,7 +89,7 @@ format its physical disk.
 
 ## Rebuild procedure
 
-1. Before replacing OMV, run **011 - OpenMediaVault Rebuild and Restore** with
+1. Before replacing OMV, run **010 - OpenMediaVault Setup and Storage** with
    `OPERATION=INVENTORY`. Download the successful build's `omv-inventory.json`
    artifact. In Infisical, create/update `/omv/OMV_RESTORE_INVENTORY` with the
    complete JSON text and grant the Jenkins read identity permission to read
@@ -113,12 +113,12 @@ format its physical disk.
    and create the Workbench administrator account. Preserve current route
    behavior; the planned VLAN 70 gateway preference is deferred. Ensure the
    Workbench is reachable at `OMV_URL`. Jenkins leaves networking unchanged.
-6. Run Job 011 with `OPERATION=RESTORE`, `APPLY` unchecked, and a reachable
+6. Run Job 010 with `OPERATION=RESTORE`, `APPLY` unchecked, and a reachable
    `OMV_URL`. Review all five disk serial/slot/UUID matches and the restore
    plan. The job checks that every required replacement password exists before
    it offers approval. Use a trusted HTTPS URL if configured; otherwise enable
    `ALLOW_INSECURE_HTTP` only on the trusted LAN.
-7. Rerun with `OPERATION=RESTORE`, `APPLY` checked, and approve. Job 011
+7. Rerun with `OPERATION=RESTORE`, `APPLY` checked, and approve. Job 010
    registers only existing filesystems by UUID, restores shared folders,
    SMB/NFS definitions, local users/groups and applies OMV configuration. It
    never creates/formats filesystems or changes Proxmox hardware/networking.
@@ -126,7 +126,8 @@ format its physical disk.
    five existing data shares are exported to VLAN 80, even if the saved
    pre-rebuild inventory predates those exports.
 8. Run Job 004's read-only review and approved apply if the MikroTik NFS rule
-   is missing. Run Job 010 only after the Talos cluster is healthy; Flux then
+   is missing. Run Job 011 only after the Talos cluster is healthy and Job 010
+   has configured the NFS export; Flux then
    restores the NFS CSI driver and `omv-nfs-retain` StorageClass.
 9. Verify storage with the temporary `nfs-smoke-test` namespace, a PVC using
    `omv-nfs-retain`, and a writer Pod mounting the claim at `/data`. Wait for
@@ -135,16 +136,16 @@ format its physical disk.
    read `NFS-mount-works`. Keep this as an operational smoke check; it is not
    yet a tracked Jenkins stage or repository manifest.
 
-## Jenkins Job 011 — OpenMediaVault Rebuild and Restore
+## Jenkins Job 010 — OpenMediaVault Setup and Storage
 
-With `OPERATION=INVENTORY`, Job 011 exports physical disk identities,
+With `OPERATION=INVENTORY`, Job 010 exports physical disk identities,
 mounted filesystem details, OMV mountpoint definitions, shared folders,
 network interface definitions, users and groups, NFS settings and exports,
 SMB settings and shares, and an allowlisted Proxmox VM 22000 hardware config
 to `omv-inventory.json`. It removes email, password, token, and private-key fields
 before archiving the artifact. This is a read-only capture. The artifact
 contains private network, account, storage and share metadata; its visibility
-follows the Jenkins permissions on Job 011 and its build artifacts.
+follows the Jenkins permissions on Job 010 and its build artifacts.
 The inventory matches each Proxmox passthrough disk to OMV's disk and
 filesystem records using the guest-visible SCSI slot identity, with physical
 serial matching as an additional path where available. The output reports the
@@ -171,7 +172,7 @@ methods. It leaves network configuration alone. Restore should first be
 exercised against cloned disks, not the only production copy.
 
 With `OPERATION=NFS`, the separate approved path only reconciles the
-Kubernetes NFS service and export. With `OPERATION=MEDIA`, Job 011 adds NFSv4
+Kubernetes NFS service and export. With `OPERATION=MEDIA`, Job 010 adds NFSv4
 exports for the existing `TB4a`, `TB16a`, `TB10a`, `TB10b`, and `TB5a` shared
 folders, read/write for `192.168.80.0/24`, with `sync,no_subtree_check,root_squash`.
 It does not change the SMB service/share records, share contents, ownership,
@@ -204,7 +205,7 @@ only `fstab`, `sharedfolders`, and `nfs`; RESTORE also applies `samba`.
 
 ## Automation boundary
 
-Job 011 automates OMV configuration restore only after an operator installs
+Job 010 automates OMV configuration restore only after an operator installs
 the OS and recovers network access. It does not install Debian/OMV, change
 Proxmox hardware, configure VLAN interfaces/routes, or back up media data.
 Keep a separate backup of the actual data. Do not import `config.xml`

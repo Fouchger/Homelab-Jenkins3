@@ -278,7 +278,7 @@ def load_restore_inventory(token):
     except json.JSONDecodeError:
         raise RuntimeError(f"Infisical /omv/{RESTORE_SECRET} must contain the complete JSON from a successful INVENTORY build") from None
     if not isinstance(document, dict) or document.get("schemaVersion") != 3:
-        raise RuntimeError("OMV restore inventory schema is not supported; recapture with this Job 011 version")
+        raise RuntimeError("OMV restore inventory schema is not supported; recapture with this Job 010 version")
     return document
 
 
