@@ -2,6 +2,7 @@ pipeline {
     agent { label 'homelab-automation' }
 
     options {
+        ansiColor('xterm')
         disableConcurrentBuilds()
         timestamps()
         timeout(time: 45, unit: 'MINUTES')

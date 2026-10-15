@@ -111,10 +111,10 @@ chmod 0640 "$jenkins_home/init.groovy.d/89-homelab-jenkins-location.groovy"
 plugin_dir="$jenkins_home/plugins"
 install -d -o jenkins -g jenkins -m 0750 "$plugin_dir"
 
-# Install the Git, Pipeline, SSH credential, binding, Infisical, and extended
-# timer trigger plugins before Jenkins starts so seeded jobs are ready.
+# Install the Git, Pipeline, SSH credential, binding, Infisical, extended timer,
+# timestamp, ANSI color, password masking, and test-report plugins before startup.
 plugins_present=yes
-for plugin_name in git workflow-job workflow-cps workflow-scm-step ssh-credentials credentials-binding infisical extended-timer-trigger mask-passwords timestamper; do
+for plugin_name in git workflow-job workflow-cps workflow-scm-step ssh-credentials credentials-binding infisical extended-timer-trigger mask-passwords timestamper ansicolor junit; do
   if [[ ! -s "$plugin_dir/$plugin_name.jpi" && ! -s "$plugin_dir/$plugin_name.hpi" ]]; then
     plugins_present=no
     break
@@ -136,7 +136,7 @@ if [[ "$plugins_present" == no ]]; then
     --verbose \
     --war /usr/share/java/jenkins.war \
     --plugin-download-directory "$plugin_stage/plugins" \
-    --plugins git workflow-aggregator ssh-credentials credentials-binding infisical extended-timer-trigger mask-passwords timestamper
+    --plugins git workflow-aggregator ssh-credentials credentials-binding infisical extended-timer-trigger mask-passwords timestamper ansicolor junit
   find "$plugin_stage/plugins" -maxdepth 1 -type f \( -name '*.jpi' -o -name '*.hpi' \) \
     -exec install -o jenkins -g jenkins -m 0644 {} "$plugin_dir/" \;
   rm -rf -- "$plugin_stage"

@@ -2,6 +2,7 @@
 pipeline {
     agent { label 'homelab-automation' }
     options {
+        ansiColor('xterm')
         buildDiscarder(logRotator(numToKeepStr: '20'))
         timeout(time: 10, unit: 'MINUTES')
     }
@@ -35,9 +36,14 @@ pipeline {
                 sh '''
                     set -eu
                     python3 -m compileall -q jenkins proxmox_helper_script tests
-                    python3 -m unittest discover -s tests -v
+                    python3 jenkins/pipelines/toolchain-check/run-unittests.py
                 '''
             }
+        }
+    }
+    post {
+        always {
+            junit testResults: 'junit-results/*.xml', allowEmptyResults: true
         }
     }
 }

@@ -2,6 +2,7 @@ pipeline {
     agent { label 'homelab-automation' }
 
     options {
+        ansiColor('xterm')
         disableConcurrentBuilds()
         timestamps()
         timeout(time: 90, unit: 'MINUTES')
@@ -57,23 +58,25 @@ pipeline {
 
         stage('Update controller and agent') {
             steps {
-                withCredentials([
-                    usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
-                    string(credentialsId: 'homelab-proxmox-host', variable: 'PROXMOX_HOST'),
-                    string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
-                    string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
-                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT'),
-                    string(credentialsId: 'homelab-infisical-project-slug', variable: 'INFISICAL_PROJECT_SLUG')
-                ]) {
-                    withEnv([
-                        "GITHUB_OWNER=${params.GITHUB_OWNER}",
-                        "GITHUB_REPOSITORY=${params.GITHUB_REPOSITORY}",
-                        "GITHUB_TOKEN=${params.GITHUB_TOKEN ?: ''}"
+                maskPasswords(varPasswordPairs: [[var: 'GITHUB_TOKEN']], varMaskRegexes: []) {
+                    withCredentials([
+                        usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                        string(credentialsId: 'homelab-proxmox-host', variable: 'PROXMOX_HOST'),
+                        string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
+                        string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
+                        string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT'),
+                        string(credentialsId: 'homelab-infisical-project-slug', variable: 'INFISICAL_PROJECT_SLUG')
                     ]) {
-                        sh(label: 'Update both matching Jenkins LXCs from this repository revision', script: '''#!/bin/sh
+                        withEnv([
+                            "GITHUB_OWNER=${params.GITHUB_OWNER}",
+                            "GITHUB_REPOSITORY=${params.GITHUB_REPOSITORY}",
+                            "GITHUB_TOKEN=${params.GITHUB_TOKEN ?: ''}"
+                        ]) {
+                            sh(label: 'Update both matching Jenkins LXCs from this repository revision', script: '''#!/bin/sh
 set +x
 python3 jenkins/pipelines/server-update/update-servers.py
 ''')
+                        }
                     }
                 }
             }

@@ -5,6 +5,7 @@ pipeline {
         HOMELAB_KUBERNETES_STATE_DIR = '/var/lib/jenkins-agent/homelab/kubernetes'
     }
     options {
+        ansiColor('xterm')
         disableConcurrentBuilds()
         timestamps()
         timeout(time: 60, unit: 'MINUTES')

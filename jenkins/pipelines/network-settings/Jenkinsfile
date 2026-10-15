@@ -2,6 +2,7 @@ pipeline {
     agent { label 'homelab-automation' }
 
     options {
+        ansiColor('xterm')
         disableConcurrentBuilds()
         timestamps()
         timeout(time: 20, unit: 'MINUTES')
@@ -45,38 +46,68 @@ pipeline {
     stages {
         stage('Save configurable DNS and Cloudflare settings') {
             steps {
-                catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
-                withCredentials([
-                    usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
-                    usernamePassword(credentialsId: 'infisical-homelab-prod-writer-api', usernameVariable: 'INFISICAL_WRITE_CLIENT_ID', passwordVariable: 'INFISICAL_WRITE_CLIENT_SECRET'),
-                    string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
-                    string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
-                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT')
-                ]) {
-                    sh(label: 'Validate and save settings in Infisical', script: '''#!/bin/sh
+                maskPasswords(varPasswordPairs: [
+                    [var: 'DNS01_ROOT_PASSWORD'],
+                    [var: 'DNS02_ROOT_PASSWORD'],
+                    [var: 'DNS01_ADMIN_PASSWORD'],
+                    [var: 'DNS02_ADMIN_PASSWORD'],
+                    [var: 'MIKROTIK_PASSWORD'],
+                    [var: 'MIKROTIK_BOOTSTRAP_PASSWORD'],
+                    [var: 'BINARY_BACKUP_PASSWORD'],
+                    [var: 'SEC_GUEST_PASSWORD'],
+                    [var: 'SEC_IOT_PASSWORD'],
+                    [var: 'SEC_MGMT_PASSWORD'],
+                    [var: 'SEC_USERS_PASSWORD'],
+                    [var: 'CLOUDFLARE_API_TOKEN']
+                ], varMaskRegexes: []) {
+                    catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
+                        withCredentials([
+                            usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                            usernamePassword(credentialsId: 'infisical-homelab-prod-writer-api', usernameVariable: 'INFISICAL_WRITE_CLIENT_ID', passwordVariable: 'INFISICAL_WRITE_CLIENT_SECRET'),
+                            string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
+                            string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
+                            string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT')
+                        ]) {
+                            sh(label: 'Validate and save settings in Infisical', script: '''#!/bin/sh
 set +x
 script_file=$(mktemp)
 trap 'rm -f "$script_file"' EXIT
 git show HEAD:jenkins/pipelines/network-settings/save-network-settings.py > "$script_file"
 python3 "$script_file"
 ''')
-                }
+                        }
+                    }
                 }
             }
         }
 
         stage('Review MikroTik connection and planned changes') {
             steps {
-                withCredentials([
-                    usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
-                    string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
-                    string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
-                    string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT')
-                ]) {
-                    sh(label: 'Verify pinned RouterOS connection and preview managed settings', script: '''#!/bin/sh
+                maskPasswords(varPasswordPairs: [
+                    [var: 'DNS01_ROOT_PASSWORD'],
+                    [var: 'DNS02_ROOT_PASSWORD'],
+                    [var: 'DNS01_ADMIN_PASSWORD'],
+                    [var: 'DNS02_ADMIN_PASSWORD'],
+                    [var: 'MIKROTIK_PASSWORD'],
+                    [var: 'MIKROTIK_BOOTSTRAP_PASSWORD'],
+                    [var: 'BINARY_BACKUP_PASSWORD'],
+                    [var: 'SEC_GUEST_PASSWORD'],
+                    [var: 'SEC_IOT_PASSWORD'],
+                    [var: 'SEC_MGMT_PASSWORD'],
+                    [var: 'SEC_USERS_PASSWORD'],
+                    [var: 'CLOUDFLARE_API_TOKEN']
+                ], varMaskRegexes: []) {
+                    withCredentials([
+                        usernamePassword(credentialsId: 'infisical-homelab-prod-read-api', usernameVariable: 'INFISICAL_READ_CLIENT_ID', passwordVariable: 'INFISICAL_READ_CLIENT_SECRET'),
+                        string(credentialsId: 'homelab-infisical-url', variable: 'INFISICAL_URL'),
+                        string(credentialsId: 'homelab-infisical-project-id', variable: 'INFISICAL_PROJECT_ID'),
+                        string(credentialsId: 'homelab-infisical-environment', variable: 'INFISICAL_ENVIRONMENT')
+                    ]) {
+                        sh(label: 'Verify pinned RouterOS connection and preview managed settings', script: '''#!/bin/sh
 set +x
 python3 jenkins/pipelines/network-settings/review-mikrotik-settings.py
 ''')
+                    }
                 }
             }
         }
