@@ -35,7 +35,8 @@ Workbench administrator login used by Jenkins to configure the service.
 The MikroTik rule for Kubernetes to OMV is maintained separately by Job 004:
 VLAN 80 to `192.168.70.20`, TCP/2049 only. NFSv4.1 avoids NFSv3's extra
 rpcbind/mountd ports. Flux owns the Kubernetes CSI driver and StorageClass;
-Job 011 owns the OMV NFS service/export.
+Job 011 owns the OMV NFS service/exports. The existing SMB shares remain
+enabled for current clients.
 
 The live OMV storage screen on 2026-10-15 showed five separate BTRFS
 filesystems and six shared-folder definitions:
@@ -121,6 +122,9 @@ format its physical disk.
    registers only existing filesystems by UUID, restores shared folders,
    SMB/NFS definitions, local users/groups and applies OMV configuration. It
    never creates/formats filesystems or changes Proxmox hardware/networking.
+   Then run `OPERATION=MEDIA` with `APPLY` checked and approve to ensure the
+   five existing data shares are exported to VLAN 80, even if the saved
+   pre-rebuild inventory predates those exports.
 8. Run Job 004's read-only review and approved apply if the MikroTik NFS rule
    is missing. Run Job 010 only after the Talos cluster is healthy; Flux then
    restores the NFS CSI driver and `omv-nfs-retain` StorageClass.
@@ -167,8 +171,21 @@ methods. It leaves network configuration alone. Restore should first be
 exercised against cloned disks, not the only production copy.
 
 With `OPERATION=NFS`, the separate approved path only reconciles the
-Kubernetes NFS service and export. It does not alter the network, SMB, or
-user/group records.
+Kubernetes NFS service and export. With `OPERATION=MEDIA`, Job 011 adds NFSv4
+exports for the existing `TB4a`, `TB16a`, `TB10a`, `TB10b`, and `TB5a` shared
+folders, read/write for `192.168.80.0/24`, with `sync,no_subtree_check,root_squash`.
+It does not change the SMB service/share records, share contents, ownership,
+network, or local users. Root squashing means application processes should use
+the numeric UID/GID that already owns the files on OMV. The CIFS fstab lines
+map the client-visible owner to `1000:1000`; confirm that this matches server
+ownership before enabling app writes. The exports are reachable by any client
+on VLAN 80, so keep that VLAN restricted to trusted infrastructure.
+
+Flux defines static, retained PV/PVC pairs in namespace `media` for each NFS
+export. They mount the existing share root and do not create a subdirectory or
+copy data. Use only the claims needed by an application; Sonarr and Radarr can
+mount the same media claim when their container UID/GID and path layout are
+configured consistently. Keep app configuration/database claims separate.
 
 The pipeline uses the OpenMediaVault JSON-RPC interface used by the Workbench.
 It discovers the filesystem by label and resolves the mounted filesystem to

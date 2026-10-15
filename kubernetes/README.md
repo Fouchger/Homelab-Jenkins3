@@ -14,6 +14,7 @@ ongoing in-cluster application configuration after the cluster is bootstrapped.
 | Applications and cluster add-ons | Flux | Bootstrap Flux to `kubernetes/clusters/homelab`; Git is the desired state for normal operation. |
 | NFS export on OpenMediaVault | Jenkins Job 011 through the OMV RPC interface | Dedicated `Kubernetes` shared folder on the uniquely discovered mounted `TB4a` filesystem is exported read/write to `192.168.80.0/24` with `no_root_squash` so the CSI provisioner can create per-claim directories. Keep this share dedicated to Kubernetes: root on an allowed NFS client has root-level file access within the export. Preserve existing SMB shares. See [`omv/README.md`](../omv/README.md) for the verified baseline and rebuild sequence. |
 | Persistent volumes | Kubernetes storage configuration reconciled by Flux | OMV NFSv4 `192.168.70.20:/Kubernetes` is the initial NFS target (the share is mounted beneath OMV's `/export` pseudo-root). The `omv-nfs-retain` StorageClass creates one directory per claim and retains data when a claim is removed. Select an application-aware backup/restore approach for databases; an NFS snapshot alone is not a database backup. |
+| Existing media shares | Jenkins Job 011 (`MEDIA`) plus Flux | The five existing SMB folders are additionally exported over NFSv4 to VLAN 80 and mounted as retained static PVs/PVCs in the `media` namespace. SMB stays enabled for existing clients. These static volumes expose the existing share contents; they do not create per-app directories or copy data. |
 | Secrets | Infisical plus SOPS encryption for Git-held Kubernetes secrets | Keep Talos machine secrets and private keys out of Git, OpenTofu state, and build logs. |
 
 The MikroTik configuration job now includes the narrow NFSv4 path required by
@@ -64,9 +65,18 @@ additional rpcbind/mountd ports.
    controller can create per-claim directories. Ensure workload UID/GID
    permissions allow applications to write their files. Do not use this class for database data until
    database locking and application-aware backup/restore are validated. For a
-   Sonarr/Radarr/Lidarr/qBittorrent migration, expose
-   the existing media/download folders separately where needed; use the new
-   Kubernetes folder for cluster-specific files. Keep app databases on a
+   Sonarr/Radarr/Lidarr/qBittorrent migration, run Job 011 with
+   `OPERATION=MEDIA`, review its read-only plan, then rerun with `APPLY` checked
+   and approve. This exports existing `TB4a`, `TB16a`, `TB10a`, `TB10b`, and
+   `TB5a` SMB folders over NFSv4 to VLAN 80 with root squashing; it leaves SMB
+   enabled and unchanged. Flux provides matching static PVs and PVCs named
+   `omv-tb4a`, `omv-tb16a`, `omv-tb10a`, `omv-tb10b`, and `omv-tb5a` in the
+   `media` namespace, each with `Retain` reclaim behavior. These claims expose
+   the whole existing share, so mounts should be limited to the media apps
+   that need them. Deploy those apps in `media` because PVCs are namespace
+   scoped. Use the UID/GID that owns the files on OMV (the current CIFS
+   clients map visible ownership to 1000:1000; verify server-side ownership
+   before enabling app writes). Keep app databases on a
    storage path tested for their database locking behavior, and back them up
    with application-aware procedures.
 9. Flux creates the Cilium LoadBalancer pool and a Cilium Gateway at

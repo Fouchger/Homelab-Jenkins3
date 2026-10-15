@@ -19,6 +19,9 @@ NFS_CLIENT = "192.168.80.0/24"
 NFS_OPTIONS = "rw"
 NFS_EXTRA_OPTIONS = "sync,no_subtree_check,no_root_squash"
 NFS_COMMENT = "Dedicated Kubernetes persistent volume export"
+MEDIA_SHARES = ("TB4a", "TB16a", "TB10a", "TB10b", "TB5a")
+MEDIA_NFS_EXTRA_OPTIONS = "sync,no_subtree_check,root_squash"
+MEDIA_NFS_COMMENT = "Kubernetes media storage export; VLAN 80 only"
 ACTION = os.environ.get("OMV_ACTION", "plan").strip().lower()
 INVENTORY_PATH = os.environ.get("OMV_INVENTORY_PATH", "omv-inventory.json")
 RESTORE_SECRET = "OMV_RESTORE_INVENTORY"
@@ -745,9 +748,83 @@ def apply(rpc, state):
     print("NFS reconciliation completed successfully.", flush=True)
 
 
+def media_export_plan(rpc):
+    """Plan NFS exports for the existing SMB data folders without changing SMB."""
+    folders = config_list(rpc, "conf.system.sharedfolder", "name")
+    by_name = {item.get("name"): item for item in folders if isinstance(item, dict)}
+    missing = [name for name in MEDIA_SHARES if not isinstance(by_name.get(name), dict)]
+    if missing:
+        raise RuntimeError("Cannot export missing OMV shared folders: " + ", ".join(missing) + ". No changes made")
+
+    settings = rpc.call("NFS", "getSettings", {})
+    if not isinstance(settings, dict) or not isinstance(settings.get("versions", []), list):
+        raise RuntimeError("OMV did not return valid NFS service settings")
+    versions = list(dict.fromkeys([*(settings.get("versions") or []), "4.1"]))
+
+    exports = rpc_list(rpc, "NFS", "getShareList", {
+        "start": 0, "limit": -1, "sortfield": "sharedfoldername", "sortdir": "ASC",
+    })
+    export_names = [item.get("sharedfoldername") for item in exports if isinstance(item, dict)]
+    duplicates = sorted(name for name in MEDIA_SHARES if export_names.count(name) > 1)
+    if duplicates:
+        raise RuntimeError("OMV has duplicate NFS exports for: " + ", ".join(duplicates) + ". No changes made")
+    by_name = {item.get("sharedfoldername"): item for item in exports if isinstance(item, dict)}
+    plans = []
+    for name in MEDIA_SHARES:
+        folder = next(item for item in folders if isinstance(item, dict) and item.get("name") == name)
+        if not folder.get("uuid") or not folder.get("mntentref"):
+            raise RuntimeError(f"OMV shared folder {name} is missing its configuration references; no changes made")
+        desired = {
+            "client": NFS_CLIENT,
+            "options": "rw",
+            "extraoptions": MEDIA_NFS_EXTRA_OPTIONS,
+        }
+        current = by_name.get(name)
+        if current and current.get("sharedfolderref") != folder["uuid"]:
+            raise RuntimeError(f"Existing NFS export {name} points to a different shared folder; refusing to move it")
+        changed = current is None or any(current.get(key, "") != value for key, value in desired.items())
+        if current and changed:
+            raise RuntimeError(f"Existing NFS export {name} has different access settings; review it manually before changing it")
+        plans.append((name, folder, current, desired, changed))
+
+    print("Existing SMB shares will remain enabled and unchanged.", flush=True)
+    print("NFS service: " + ("enabled" if settings.get("enable") else "disabled") + f"; versions {','.join(settings.get('versions') or []) or '(none)'}", flush=True)
+    for name, _folder, current, desired, changed in plans:
+        if changed:
+            print(f"Plan: export {name} read/write to {NFS_CLIENT} with {desired['extraoptions']} (root-squashed).", flush=True)
+        else:
+            print(f"NFS export {name}: already matches the planned VLAN 80 settings.", flush=True)
+    return settings, versions, plans
+
+
+def apply_media_exports(rpc, state):
+    settings, versions, plans = state
+    if not settings.get("enable") or settings.get("versions") != versions:
+        rpc.call("NFS", "setSettings", {"enable": True, "versions": versions})
+    for name, folder, current, desired, changed in plans:
+        if not changed:
+            continue
+        payload = {
+            "sharedfolderref": folder["uuid"],
+            "mntentref": folder["mntentref"],
+            **desired,
+            "comment": MEDIA_NFS_COMMENT,
+        }
+        if current:
+            payload["uuid"] = current["uuid"]
+        rpc.call("NFS", "setShare", payload)
+        print(f"Configured VLAN 80 NFS export for {name}.", flush=True)
+    if any(item[4] for item in plans) or not settings.get("enable") or settings.get("versions") != versions:
+        rpc.call("Config", "applyChanges", {"modules": ["nfs"], "force": False})
+    verified = media_export_plan(rpc)
+    if any(item[4] for item in verified[2]):
+        raise RuntimeError("OMV media exports did not converge to the planned configuration")
+    print("OMV media exports are available over NFSv4.1 to VLAN 80. SMB definitions were preserved.", flush=True)
+
+
 def main():
-    if ACTION not in {"plan", "apply", "inventory", "restore-plan", "restore"}:
-        raise RuntimeError("OMV_ACTION must be plan, apply, inventory, restore-plan, or restore")
+    if ACTION not in {"plan", "apply", "inventory", "restore-plan", "restore", "media", "media-apply"}:
+        raise RuntimeError("OMV_ACTION must be plan, apply, inventory, restore-plan, restore, media, or media-apply")
     base = required("INFISICAL_URL").rstrip("/")
     if not base.startswith("https://"):
         raise RuntimeError("INFISICAL_URL must use HTTPS")
@@ -766,6 +843,13 @@ def main():
     try:
         if ACTION == "inventory":
             inventory(rpc, read_proxmox_vm_config())
+            return
+        if ACTION == "media":
+            media_export_plan(rpc)
+            print("Read-only media-export preflight complete.", flush=True)
+            return
+        if ACTION == "media-apply":
+            apply_media_exports(rpc, media_export_plan(rpc))
             return
         if ACTION == "restore-plan":
             current_proxmox_vm = read_proxmox_vm_config()
